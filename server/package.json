@@ -1,0 +1,15 @@
+{
+  "name": "ram-doctor-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker relay that commits RAM Doctor reports to a private GitHub data repository.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check worker/src/index.js && node --check worker/src/lib.js"
+  }
+}

@@ -1,0 +1,24 @@
+# RAM Doctor relay - Cloudflare Worker configuration.
+# Deploy:  cd server/worker  &&  npx wrangler deploy      (see server/README.md for the full walk-through)
+#
+# NOTHING SECRET GOES IN THIS FILE. The two secrets are stored in Cloudflare, not here:
+#   npx wrangler secret put GITHUB_TOKEN     (fine-grained PAT, ONLY the data repo, Contents: read+write)
+#   npx wrangler secret put INVITE_CODES     (JSON map {"code":"label"}, see server/scripts/New-InviteCode.ps1)
+
+name = "ram-doctor-relay"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[vars]
+GITHUB_OWNER = "iiKurro"
+GITHUB_REPO = "ram-doctor-reports"
+GITHUB_BRANCH = "main"
+
+# Optional but recommended: rate limiting (10 uploads/hour per user, 30 requests/hour per IP).
+# 1) npx wrangler kv namespace create RATE      2) paste the printed id below and remove the leading '#'
+#    3) npx wrangler deploy
+# Without it the relay still works (the invite code remains the gate) - it just has no rate brake.
+# [[kv_namespaces]]
+# binding = "RATE"
+# id = "PASTE_THE_NAMESPACE_ID_HERE"

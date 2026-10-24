@@ -1,0 +1,645 @@
+﻿# RAM Doctor - "share my report with my helper" client library.
+#
+# Opt-in only: nothing in this file runs unless the user presses the share button. The scan itself never
+# touches the network. This file only defines functions (no side effects when dot-sourced).
+#
+# Flow:  profile (chosen name, fixed userId, DPAPI-protected invite code)
+#        -> bundle (summary.md + report.html + plan.json, all redacted)
+#        -> POST {endpoint}/v1/reports   (protocol v1, answered by the relay; the GitHub token lives ONLY in the relay)
+#   The profile is just a chosen name + a random fixed userId; the invite code is OPTIONAL (sent only if stored).
+#   share.config.json ships with an empty endpoint, so uploading stays dormant until the helper configures a relay.
+#   Also offline: New-ShareShortSummary (short redacted text for pasting into a chat app, no profile, no network).
+#
+# Windows PowerShell 5.1. Contains Arabic => keep this file UTF-8 with BOM.
+
+$script:ShareToolVersion = '1.0.0'
+$script:ShareReservedUserNames = @('public', 'default', 'default user', 'all users', 'defaultuser0', 'desktop.ini')
+# account names that are ordinary words: a whole-word search for them would damage the prose, so only the
+# C:\Users\<name> form is masked for these.
+$script:ShareGenericNames = @('user', 'users', 'admin', 'administrator', 'public', 'default', 'guest', 'system', 'test', 'owner', 'root', 'windows', 'home', 'local')
+
+# ---------------------------------------------------------------- messages (Arabic, shown to the user)
+function Get-ShareMessage {
+    param([Parameter(Mandatory)][string]$Key)
+    switch ($Key) {
+        'not-configured' { 'الرفع غير مفعّل بعد: لم يُضبط عنوان الخدمة. اطلب من مساعدك نسخة محدّثة من الأداة.' }
+        'insecure-endpoint' { 'عنوان الخدمة غير آمن (يجب أن يبدأ بـ https).' }
+        'no-profile' { 'لم يتم إنشاء ملفك الشخصي بعد. اختر اسم المستخدم ورمز الدعوة أولًا.' }
+        'no-plan' { 'لا توجد نتيجة فحص للرفع. شغّل الفحص أولًا.' }
+        'bad-plan' { 'ملف نتيجة الفحص تالف أو غير مقروء. أعد الفحص.' }
+        '400' { 'تعذّر قبول التقرير (بيانات غير صالحة).' }
+        '401' { 'رمز الدعوة غير صحيح. تأكد من الرمز الذي أعطاك إياه مساعدك.' }
+        '401-nocode' { 'المساعد فعّل رمز دعوة؛ اطلبه منه.' }
+        '413' { 'التقرير كبير جدًا ولا يمكن رفعه.' }
+        '429' { 'محاولات كثيرة. انتظر قليلًا ثم أعد المحاولة.' }
+        '5xx' { 'الخدمة لا تستجيب الآن. حاول مرة أخرى بعد قليل.' }
+        'offline' { 'تعذّر الاتصال بالإنترنت أو بالخدمة. تأكد من اتصالك ثم أعد المحاولة.' }
+        'bad-response' { 'ردّ غير متوقع من الخدمة.' }
+        'name-length' { 'اسم المستخدم يجب أن يكون من حرفين إلى 24 حرفًا.' }
+        'name-chars' { 'يُسمح فقط بالحروف العربية أو الإنجليزية والأرقام والمسافة والشرطة (- أو _).' }
+        'code-invalid' { 'رمز الدعوة (إن وُجد) يجب أن يكون من 4 إلى 128 حرفًا بدون مسافات.' }
+        'name-fixed' { 'اسم المستخدم ثابت ولا يمكن تغييره بعد إنشائه. لتغييره احذف الملف الشخصي أولًا.' }
+        'code-unreadable' { 'تعذّرت قراءة رمز الدعوة المحفوظ على هذا الحساب. أعد إدخاله.' }
+        'profile-write' { 'تعذّر حفظ الملف الشخصي على هذا الجهاز.' }
+        default { $Key }
+    }
+}
+
+# ---------------------------------------------------------------- config
+function Get-ShareConfig {
+    [CmdletBinding()]
+    param([string]$Path)
+    $cfg = [pscustomobject]@{ endpoint = ''; helperName = '7san'; maxBytes = 2000000 }
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        try {
+            $j = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($j.endpoint) { $cfg.endpoint = ([string]$j.endpoint).Trim() }
+            if ($j.helperName) { $cfg.helperName = [string]$j.helperName }
+            if ($j.maxBytes -and ([int64]$j.maxBytes) -gt 0) { $cfg.maxBytes = [int64]$j.maxBytes }
+        } catch { }
+    }
+    return $cfg
+}
+
+# Returns $null when the endpoint is acceptable, otherwise the message key. https only - plain http is allowed
+# for loopback addresses so the local test relay works.
+function Test-ShareEndpoint {
+    [CmdletBinding()]
+    param([string]$Endpoint)
+    if ([string]::IsNullOrWhiteSpace($Endpoint)) { return 'not-configured' }
+    $uri = $null
+    if (-not [Uri]::TryCreate($Endpoint.Trim(), [UriKind]::Absolute, [ref]$uri)) { return 'insecure-endpoint' }
+    if ($uri.Scheme -eq 'https') { return $null }
+    if ($uri.Scheme -eq 'http' -and ($uri.IsLoopback)) { return $null }
+    return 'insecure-endpoint'
+}
+
+# ---------------------------------------------------------------- user name rules
+# 2-24 chars: Arabic or Latin letters, digits, space, '_' or '-'.  The relay applies the same rule.
+function Test-ShareUsername {
+    [CmdletBinding()]
+    param([string]$Name)
+    $n = if ($null -eq $Name) { '' } else { ($Name -replace '\s+', ' ').Trim() }
+    if ($n.Length -lt 2 -or $n.Length -gt 24) { return [pscustomobject]@{ Ok = $false; Name = $n; Error = (Get-ShareMessage 'name-length') } }
+    if ($n -notmatch '^[A-Za-z0-9\u0600-\u06FF _-]+$' -or $n -notmatch '[A-Za-z0-9\u0600-\u06FF]') {
+        return [pscustomobject]@{ Ok = $false; Name = $n; Error = (Get-ShareMessage 'name-chars') }
+    }
+    return [pscustomobject]@{ Ok = $true; Name = $n; Error = '' }
+}
+
+# Folder slug used by the relay: lower-case, every run of characters outside [a-z0-9 Arabic] becomes one '-'.
+function ConvertTo-ShareSlug {
+    [CmdletBinding()]
+    param([string]$Name)
+    $s = ([string]$Name).ToLowerInvariant() -replace '[^a-z0-9\u0600-\u06ff]+', '-'
+    $s = $s.Trim('-')
+    if (-not $s) { $s = 'user' }
+    return $s
+}
+
+function Test-ShareInviteCode {
+    [CmdletBinding()]
+    param([string]$Code)
+    return ($Code -match '^\S{4,128}$')
+}
+
+# ---------------------------------------------------------------- profile (%APPDATA%\RAM-Doctor\profile.json)
+function Get-ShareDefaultProfileDir { Join-Path $env:APPDATA 'RAM-Doctor' }
+
+function Get-ShareProfile {
+    [CmdletBinding()]
+    param([string]$ProfileDir)
+    if (-not $ProfileDir) { $ProfileDir = Get-ShareDefaultProfileDir }
+    $p = Join-Path $ProfileDir 'profile.json'
+    if (-not (Test-Path -LiteralPath $p)) { return $null }
+    try {
+        $j = Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $j.displayName -or -not $j.userId) { return $null }
+        return [pscustomobject]@{ displayName = [string]$j.displayName; userId = [string]$j.userId; createdAt = [string]$j.createdAt; codeProtected = [string]$j.code }
+    } catch { return $null }
+}
+
+# Decrypts the invite code (DPAPI, current Windows user only). Returns $null if it cannot be read.
+function Get-ShareInviteCode {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', '', Justification = 'A parameter named Profile only shadows the profile-path variable inside this function.')]
+    [CmdletBinding()]
+    param($Profile)
+    if (-not $Profile -or -not $Profile.codeProtected) { return $null }
+    try {
+        $sec = ConvertTo-SecureString -String $Profile.codeProtected -ErrorAction Stop
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+        try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    } catch { return $null }
+}
+
+function New-ShareUserId {
+    $b = New-Object byte[] 4
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($b) } finally { $rng.Dispose() }
+    return (($b | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+# Creates the profile, or (same name) refreshes the invite code. The name and userId never change afterwards.
+function Save-ShareProfile {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '', Justification = 'The optional invite code arrives as text from the user and is immediately encrypted with DPAPI (current user); it is never stored in clear.')]
+    [CmdletBinding()]
+    param([string]$Username, [string]$Code, [string]$ProfileDir)
+    if (-not $ProfileDir) { $ProfileDir = Get-ShareDefaultProfileDir }
+    $v = Test-ShareUsername $Username
+    if (-not $v.Ok) { return [pscustomobject]@{ Ok = $false; Error = $v.Error; Profile = $null } }
+    # the invite code is OPTIONAL (only needed if the helper's relay enforces one)
+    if ($Code -and -not (Test-ShareInviteCode $Code)) { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'code-invalid'); Profile = $null } }
+    $existing = Get-ShareProfile -ProfileDir $ProfileDir
+    $userId = $null; $created = $null; $prot = ''
+    if ($existing) {
+        if ($existing.displayName -ne $v.Name) { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'name-fixed'); Profile = $existing } }
+        $userId = $existing.userId; $created = $existing.createdAt; $prot = $existing.codeProtected   # saving again without a code keeps the stored one
+    } else {
+        $userId = New-ShareUserId
+        $created = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    try {
+        if ($Code) {
+            $sec = ConvertTo-SecureString -String $Code -AsPlainText -Force
+            $prot = ConvertFrom-SecureString -SecureString $sec
+        }
+        New-Item -ItemType Directory -Force -Path $ProfileDir | Out-Null
+        $obj = [ordered]@{ v = 1; displayName = $v.Name; userId = $userId; createdAt = $created; code = $prot }
+        [IO.File]::WriteAllText((Join-Path $ProfileDir 'profile.json'), ($obj | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($true)))
+    } catch { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'profile-write'); Profile = $null } }
+    return [pscustomobject]@{ Ok = $true; Error = ''; Profile = (Get-ShareProfile -ProfileDir $ProfileDir) }
+}
+
+function Remove-ShareProfile {
+    [CmdletBinding()]
+    param([string]$ProfileDir)
+    if (-not $ProfileDir) { $ProfileDir = Get-ShareDefaultProfileDir }
+    $p = Join-Path $ProfileDir 'profile.json'
+    if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+}
+
+# ---------------------------------------------------------------- redaction
+# Every account name that appears as ...\Users\<name>\... in the given texts (reserved folders excluded).
+function Find-ShareUserNames {
+    [CmdletBinding()]
+    param([string[]]$Texts)
+    $found = New-Object System.Collections.Generic.List[string]
+    foreach ($t in $Texts) {
+        if ([string]::IsNullOrEmpty($t)) { continue }
+        foreach ($m in [regex]::Matches($t, '(?i)(?<=[\\/])Users(?:\\\\|\\|/)+([^\\/\r\n"''<>|:*?&]+)')) {
+            $n = $m.Groups[1].Value.Trim()
+            if ($n -and -not $n.StartsWith('<') -and ($script:ShareReservedUserNames -notcontains $n.ToLowerInvariant())) { $found.Add($n) }
+        }
+    }
+    return @($found | Select-Object -Unique)
+}
+
+# Builds the rule list once (compiled regexes) so large reports are redacted quickly.
+# -UserNames / -ComputerName / -ExtraComputerNames inject names; -DiscoverFrom adds every name found under
+# \Users\ in those texts; -NoAutoDetect skips reading this PC's real names (tests).
+function New-ShareRedactor {
+    [CmdletBinding()]
+    param([string[]]$UserNames = @(), [string]$ComputerName = '', [string[]]$ExtraComputerNames = @(), [string[]]$DiscoverFrom = @(), [switch]$IncludeHostName, [switch]$NoAutoDetect)
+
+    $ro = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Compiled
+    $rules = New-Object System.Collections.ArrayList
+    $add = { param($pattern, $replacement) [void]$rules.Add([pscustomobject]@{ Regex = (New-Object System.Text.RegularExpressions.Regex($pattern, $ro)); Replacement = $replacement; Evaluator = $null }) }
+    $addEval = { param($pattern, [scriptblock]$eval) [void]$rules.Add([pscustomobject]@{ Regex = (New-Object System.Text.RegularExpressions.Regex($pattern, $ro)); Replacement = $null; Evaluator = [System.Text.RegularExpressions.MatchEvaluator]$eval }) }
+
+    # names to hide: injected + (auto) this PC's account / profile folders / domain
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($n in $UserNames) { if ($n) { $names.Add($n.Trim()) } }
+    foreach ($n in (Find-ShareUserNames -Texts $DiscoverFrom)) { $names.Add($n) }
+    $compNames = New-Object System.Collections.Generic.List[string]
+    if ($ComputerName) { $compNames.Add($ComputerName.Trim()) }
+    foreach ($c in $ExtraComputerNames) { if ($c) { $compNames.Add($c.Trim()) } }
+    $domain = ''
+    if (-not $NoAutoDetect) {
+        if ($env:USERNAME) { $names.Add($env:USERNAME) }
+        try { if ([Environment]::UserName) { $names.Add([Environment]::UserName) } } catch { }
+        try {
+            $usersDir = Join-Path $env:SystemDrive 'Users'
+            if (Test-Path -LiteralPath $usersDir) { foreach ($d in (Get-ChildItem -LiteralPath $usersDir -Directory -ErrorAction SilentlyContinue)) { $names.Add($d.Name) } }
+        } catch { }
+        if ($env:COMPUTERNAME) { $compNames.Add($env:COMPUTERNAME) }
+        if ($env:USERDOMAIN -and $env:USERDOMAIN -ne $env:COMPUTERNAME -and @('WORKGROUP', 'AzureAD', 'NT AUTHORITY') -notcontains $env:USERDOMAIN) { $domain = $env:USERDOMAIN }
+    }
+    $names = @($names | Where-Object { $_ -and $_.Length -ge 3 -and ($script:ShareReservedUserNames -notcontains $_.ToLowerInvariant()) -and ($_ -notmatch '^[<$]') } | Select-Object -Unique)
+
+    $valueAlt = '(?:&quot;.*?&quot;|&#39;.*?&#39;|"[^"\r\n]*"|''[^''\r\n]*''|[^\s"''<>&,;]+)'
+    $secretWord = '(?:token|api[_-]?key|apikey|password|passwd|pwd|secret|credential|private[_-]?key|access[_-]?key)'
+
+    # 1. Windows SIDs identify the account
+    & $add 'S-1-5-21-\d+-\d+-\d+(?:-\d+)?' '<SID>'
+    # 2. credentials inside URLs  scheme://user:pass@host
+    & $add '\b([a-z][a-z0-9+.\-]*://)[^/\s:@"''<>]+:[^/\s@"''<>]+@' '${1}<USER>:<REDACTED>@'
+    # 2b. e-mail addresses - BEFORE the name rules, otherwise "friend@example.com" would become "<USER>@example.com"
+    & $add '\b[A-Z0-9._%+\-]+@[A-Z0-9\-]+(?:\.[A-Z0-9\-]+)*\.[A-Z]{2,}\b' '<EMAIL>'
+    # 3. profile folders: ...\Users\<name>\..., also JSON-escaped (\\) and forward slashes; Public/Default untouched
+    & $addEval '(?<=[\\/])(Users(?:\\\\|\\|/)+)([^\\/\r\n"''<>|:*?&]+)' {
+        param($m)
+        $nm = $m.Groups[2].Value.Trim()
+        if ($nm.StartsWith('<') -or ($script:ShareReservedUserNames -contains $nm.ToLowerInvariant())) { return $m.Value }
+        return $m.Groups[1].Value + '<USER>'
+    }
+    # OneDrive for work/school folder names carry the organisation name
+    & $add '\bOneDrive - [^\\/\r\n"<>|]+' 'OneDrive - <ORG>'
+    # 4. account names as whole words (not alphanumerics around them)
+    foreach ($n in $names) {
+        if ($script:ShareGenericNames -contains $n.ToLowerInvariant()) { continue }
+        & $add ('(?<![A-Za-z0-9_])' + [regex]::Escape($n) + '(?![A-Za-z0-9_])') '<USER>'
+    }
+    if ($domain -and $domain.Length -ge 3) { & $add ('(?<![A-Za-z0-9_])' + [regex]::Escape($domain) + '(?![A-Za-z0-9_])') '<DOMAIN>' }
+    # 5. computer name (kept only on request)
+    if (-not $IncludeHostName) {
+        foreach ($c in ($compNames | Where-Object { $_ -and $_.Length -ge 3 -and $_ -notmatch '^[<$]' } | Select-Object -Unique)) {
+            & $add ('(?<![A-Za-z0-9_])' + [regex]::Escape($c) + '(?![A-Za-z0-9_])') '<PC>'
+        }
+    }
+    # 6. authorization headers / long bearer tokens
+    & $add '(authorization\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s"''<>&,;]+' '${1}<REDACTED>'
+    & $add '\bbearer\s+[A-Za-z0-9._~+/=\-]{16,}' 'Bearer <REDACTED>'
+    # 7. key=value / key: value  (token, api-key, password, secret, ... also inside names like API_KEY_21ST)
+    & $add ('(?<![A-Za-z0-9])([\w.\-]*' + $secretWord + '[\w.\-]*)(\s*[=:]\s*)' + $valueAlt) '${1}${2}<REDACTED>'
+    # 8. command-line flags with a separate value:  --token VALUE
+    & $add ('(\s--?[\w\-]*' + $secretWord + '[\w\-]*\s+)(?!-)' + $valueAlt) '${1}<REDACTED>'
+    # 9. PowerShell encoded commands
+    & $add '(\s-(?:enc|ec|encodedcommand)\s+)[A-Za-z0-9+/=]{24,}' '${1}<REDACTED-BASE64>'
+    & $add '(\s-e\s+)[A-Za-z0-9+/=]{60,}' '${1}<REDACTED-BASE64>'
+    # 10. tokens in query strings (also after &amp;)
+    & $add '([?&;](?:access_token|refresh_token|id_token|token|auth|authorization|key|api_key|apikey|sig|signature|password|pwd|secret|code|session|sid)=)[^&\s"''<>#]+' '${1}<REDACTED>'
+    # 12. any very long base64-looking blob (SHA-256 is 64 hex chars and is never touched)
+    & $add '(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{120,}={0,2}(?![A-Za-z0-9+/=])' '<BASE64-BLOB>'
+
+    return [pscustomobject]@{ Rules = @($rules); IncludeHostName = [bool]$IncludeHostName; ComputerNames = @($compNames | Select-Object -Unique); UserNames = $names }
+}
+
+function Protect-Text {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Text, $Redactor)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    if (-not $Redactor) { $Redactor = New-ShareRedactor -DiscoverFrom @($Text) }
+    $t = $Text
+    foreach ($r in $Redactor.Rules) {
+        if ($r.Evaluator) { $t = $r.Regex.Replace($t, $r.Evaluator) } else { $t = $r.Regex.Replace($t, $r.Replacement) }
+    }
+    return $t
+}
+
+# HTML: <script>, <style> and the report marker comment (<!-- ram-doctor-report ... -->) are passed through
+# byte-for-byte (the relay accepts report.html only if it is inert and carries the marker); only the visible
+# text/attributes are redacted.
+function Protect-Html {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Html, $Redactor)
+    if ([string]::IsNullOrEmpty($Html)) { return $Html }
+    if (-not $Redactor) { $Redactor = New-ShareRedactor -DiscoverFrom @($Html) }
+    # protected: whole script/style blocks and the literal marker prefix "<!-- ram-doctor-report" (the rest of that
+    # comment is ordinary text and IS redacted)
+    $parts = [regex]::Split($Html, '(?is)(<script\b[^>]*>.*?</script\s*>|<style\b[^>]*>.*?</style\s*>|<!--\s*ram-doctor-report)')
+    $sb = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $parts.Count; $i++) {
+        if ($i % 2 -eq 1) { [void]$sb.Append($parts[$i]) }   # captured protected segment
+        else { [void]$sb.Append((Protect-Text -Text $parts[$i] -Redactor $Redactor)) }
+    }
+    return $sb.ToString()
+}
+
+# Walks a parsed JSON value and redacts every string (keeps the structure valid).
+function ConvertTo-ShareRedactedObject {
+    param($Value, $Redactor)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) { return (Protect-Text -Text $Value -Redactor $Redactor) }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $h = [ordered]@{}
+        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = (ConvertTo-ShareRedactedObject -Value $p.Value -Redactor $Redactor) }
+        return [pscustomobject]$h
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $list = New-Object System.Collections.ArrayList
+        foreach ($i in $Value) { [void]$list.Add((ConvertTo-ShareRedactedObject -Value $i -Redactor $Redactor)) }
+        return , $list.ToArray()
+    }
+    return $Value
+}
+
+function Protect-ShareJson {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Json, $Redactor)
+    if (-not $Redactor) { $Redactor = New-ShareRedactor -DiscoverFrom @($Json) }
+    $obj = $Json | ConvertFrom-Json
+    $red = ConvertTo-ShareRedactedObject -Value $obj -Redactor $Redactor
+    return ($red | ConvertTo-Json -Depth 20)
+}
+
+# ---------------------------------------------------------------- bundle (summary.md + report.html + plan.json)
+function ConvertTo-ShareMdCell {
+    param([AllowNull()]$Value)
+    $s = if ($null -eq $Value) { '' } else { [string]$Value }
+    return (($s -replace '\|', '\|') -replace '\s*[\r\n]+\s*', ' ').Trim()
+}
+
+function New-ShareSummary {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Plan, [string]$DisplayName = '', [string]$UserId = '', [string]$Version = $script:ShareToolVersion, [string]$HostLabel = '<PC>')
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $sb = New-Object System.Text.StringBuilder
+    $nl = "`n"
+    $verdict = $Plan.verdict
+    $level = if ($verdict -and $verdict.Level) { [string]$verdict.Level } else { 'unknown' }
+    $headline = if ($verdict -and $verdict.Headline) { [string]$verdict.Headline } else { '' }
+    $who = if ($DisplayName) { "$DisplayName ($UserId)" } else { '(profile not set)' }
+    $bt = [string][char]96   # markdown code-span backtick
+
+    [void]$sb.Append("# RAM Doctor report - $who$nl$nl")
+    [void]$sb.Append("| | |$nl|---|---|$nl")
+    [void]$sb.Append("| Scan time | $(ConvertTo-ShareMdCell $Plan.created) |$nl")
+    [void]$sb.Append("| Tool | RAM-Doctor $(ConvertTo-ShareMdCell $Version) |$nl")
+    [void]$sb.Append("| Computer | $(ConvertTo-ShareMdCell $HostLabel) |$nl")
+    [void]$sb.Append("| Administrator scan | $(if ($Plan.isAdmin) { 'yes' } else { 'no (limited)' }) |$nl$nl")
+
+    [void]$sb.Append("## Verdict ($level)$nl$nl")
+    [void]$sb.Append("<div dir=`"rtl`">$nl$nl**$(ConvertTo-ShareMdCell $headline)**$nl$nl</div>$nl$nl")
+
+    $m = $Plan.memory
+    if ($m) {
+        [void]$sb.Append("## Memory$nl$nl| Metric | GB |$nl|---|---:|$nl")
+        $rows = @(
+            @('Total (usable)', 'TotalGB'), @('Used', 'UsedGB'), @('Available', 'AvailGB'), @('Standby (cache)', 'StandbyGB'), @('Modified', 'ModifiedGB'),
+            @('Process private', 'ProcPrivateGB'), @('Process shared', 'ProcSharedGB'), @('Kernel non-paged pool', 'NonPagedGB'), @('Kernel paged pool', 'PagedGB'),
+            @('Not attributed to any process', 'UnaccountedGB'), @('Committed', 'CommittedGB'), @('Commit limit', 'CommitLimitGB'))
+        foreach ($r in $rows) { $v = $m.($r[1]); if ($null -ne $v) { [void]$sb.Append("| $($r[0]) | $(([double]$v).ToString('0.##', $inv)) |$nl") } }
+        $g = @()
+        if ($null -ne $m.NonPagedGrowthMB) { $g += "non-paged $($m.NonPagedGrowthMB) MB" }
+        if ($null -ne $m.PagedGrowthMB) { $g += "paged $($m.PagedGrowthMB) MB" }
+        if ($null -ne $m.CommitGrowthMB) { $g += "commit $($m.CommitGrowthMB) MB" }
+        if ($null -ne $m.UsedGrowthMB) { $g += "used $($m.UsedGrowthMB) MB" }
+        if ($g.Count -gt 0) { [void]$sb.Append("$nl*Growth during the scan window ($($m.WindowSec) s): $($g -join ', ')*$nl") }
+        [void]$sb.Append($nl)
+    }
+
+    $obs = @($Plan.observations | Where-Object { $_ })
+    [void]$sb.Append("## Observations ($($obs.Count))$nl$nl")
+    if ($obs.Count -eq 0) { [void]$sb.Append("None.$nl$nl") }
+    else {
+        [void]$sb.Append("<div dir=`"rtl`">$nl$nl")
+        foreach ($o in $obs) { [void]$sb.Append("- **[$(ConvertTo-ShareMdCell $o.Level)] $(ConvertTo-ShareMdCell $o.Title)** - $(ConvertTo-ShareMdCell $o.Body)$nl") }
+        [void]$sb.Append("$nl</div>$nl$nl")
+    }
+
+    $sus = @($Plan.suspects | Where-Object { $_ })
+    [void]$sb.Append("## Suspicious files ($($sus.Count))$nl$nl")
+    if ($sus.Count -eq 0) { [void]$sb.Append("None above the reporting threshold.$nl$nl") }
+    else {
+        [void]$sb.Append("| # | Risk | Score | Name | Trust | SHA-256 | VirusTotal |$nl|---:|---|---:|---|---|---|---|$nl")
+        foreach ($s in $sus) {
+            $sha = [string]$s.sha256
+            $shaCell = if ($sha) { $bt + $sha + $bt } else { '-' }
+            $vt = if ($sha) { "[lookup](https://www.virustotal.com/gui/file/$sha)" } else { '-' }
+            $trust = (ConvertTo-ShareMdCell $s.trust) + $(if ($s.publisher) { ' / ' + (ConvertTo-ShareMdCell $s.publisher) } else { '' })
+            [void]$sb.Append("| $($s.id) | $(ConvertTo-ShareMdCell $s.risk) | $($s.score) | $(ConvertTo-ShareMdCell $s.name) | $trust | $shaCell | $vt |$nl")
+        }
+        [void]$sb.Append($nl)
+        foreach ($s in $sus) {
+            [void]$sb.Append("### #$($s.id) $(ConvertTo-ShareMdCell $s.name) ($(ConvertTo-ShareMdCell $s.risk))$nl$nl")
+            if ($s.path) { [void]$sb.Append("Path: $bt$(ConvertTo-ShareMdCell $s.path)$bt$nl$nl") }
+            $reasons = @($s.reasons | Where-Object { $_ })
+            if ($reasons.Count -gt 0) {
+                [void]$sb.Append("<div dir=`"rtl`">$nl$nl")
+                foreach ($r in $reasons) { [void]$sb.Append("- $(ConvertTo-ShareMdCell $r)$nl") }
+                [void]$sb.Append("$nl</div>$nl$nl")
+            }
+        }
+    }
+    [void]$sb.Append("---$nl*Generated by RAM Doctor $(ConvertTo-ShareMdCell $Version). Redacted before upload: account/computer names, e-mails and secrets are masked.*$nl")
+    return $sb.ToString()
+}
+
+# Builds the three upload files from a Plan-<HOST>-<stamp>.json (and its RAMDoctor-<HOST>-<stamp>.html neighbour).
+function New-ShareBundle {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', '', Justification = 'A parameter named Profile only shadows the profile-path variable inside this function.')]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$PlanPath,
+        $Profile,
+        [switch]$IncludeHostName,
+        $Redactor,
+        [string]$Version = $script:ShareToolVersion
+    )
+    if (-not (Test-Path -LiteralPath $PlanPath)) { throw 'no-plan' }
+    $raw = Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8
+    try { $planObj = $raw | ConvertFrom-Json } catch { throw 'bad-plan' }
+    if (-not $planObj) { throw 'bad-plan' }
+    # matching html report: same <HOST>-<stamp> as the plan file
+    $dir = Split-Path -Parent (Resolve-Path -LiteralPath $PlanPath).Path
+    $base = [IO.Path]::GetFileNameWithoutExtension($PlanPath)
+    $html = $null
+    if ($base -match '^Plan-(?<hs>.+-\d{8}-\d{6})$') { $html = Join-Path $dir ('RAMDoctor-' + $Matches['hs'] + '.html') }
+    if ((-not $html -or -not (Test-Path -LiteralPath $html)) -and $planObj.report) {
+        $alt = Join-Path $dir ([IO.Path]::GetFileName([string]$planObj.report))
+        if (Test-Path -LiteralPath $alt) { $html = $alt }
+    }
+    $htmlRaw = $null
+    if ($html -and (Test-Path -LiteralPath $html)) { $htmlRaw = Get-Content -LiteralPath $html -Raw -Encoding UTF8 }
+    # names found under \Users\ anywhere in the scan data are masked everywhere; the plan's own host is the computer name
+    if (-not $Redactor) { $Redactor = New-ShareRedactor -DiscoverFrom @($raw, $htmlRaw) -ExtraComputerNames @([string]$planObj.host) -IncludeHostName:$IncludeHostName }
+
+    $planJson = Protect-ShareJson -Json $raw -Redactor $Redactor
+    $redPlan = $planJson | ConvertFrom-Json
+    $hostLabel = if ($IncludeHostName) { [string]$planObj.host } else { '<PC>' }
+    $name = if ($Profile) { [string]$Profile.displayName } else { '' }
+    $uid = if ($Profile) { [string]$Profile.userId } else { '' }
+    # The chosen display name is the user's own pseudonym: keep it literal even if it equals their account name
+    # (placeholders survive the redaction rules, then are swapped back).
+    $summary = New-ShareSummary -Plan $redPlan -DisplayName $(if ($name) { '%%RDNAME%%' } else { '' }) -UserId $uid -Version $Version -HostLabel $hostLabel
+    $summary = (Protect-Text -Text $summary -Redactor $Redactor).Replace('%%RDNAME%%', $name)
+
+    $files = New-Object System.Collections.ArrayList
+    [void]$files.Add([pscustomobject]@{ name = 'summary.md'; content = $summary })
+
+    if ($null -ne $htmlRaw) {
+        [void]$files.Add([pscustomobject]@{ name = 'report.html'; content = (Protect-Html -Html $htmlRaw -Redactor $Redactor) })
+    }
+    [void]$files.Add([pscustomobject]@{ name = 'plan.json'; content = $planJson })
+    return [pscustomobject]@{ Files = @($files); Host = $hostLabel; CreatedPlan = [string]$planObj.created }
+}
+
+function Get-ShareBodyBytes {
+    param([Parameter(Mandatory)][string]$Json)
+    return [Text.Encoding]::UTF8.GetByteCount($Json)
+}
+
+# ---------------------------------------------------------------- short text summary (copy & paste into a chat app)
+# Plain text, <= ~1500 characters, no profile and no network needed. Redaction is applied twice: on the plan's
+# strings first, then on the final text.
+function New-ShareShortSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$PlanPath,
+        [switch]$IncludeHostName,
+        $Redactor,
+        [int]$MaxChars = 1500,
+        [string]$Version = $script:ShareToolVersion
+    )
+    if (-not (Test-Path -LiteralPath $PlanPath)) { throw 'no-plan' }
+    $raw = Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8
+    try { $rawObj = $raw | ConvertFrom-Json } catch { throw 'bad-plan' }
+    if (-not $Redactor) { $Redactor = New-ShareRedactor -DiscoverFrom @($raw) -ExtraComputerNames @([string]$rawObj.host) -IncludeHostName:$IncludeHostName }
+    $plan = (Protect-ShareJson -Json $raw -Redactor $Redactor) | ConvertFrom-Json
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $nl = "`r`n"
+
+    $cut = {
+        param([string]$s, [int]$n)
+        $t = (([string]$s) -replace '\s+', ' ').Trim()
+        if ($t.Length -gt $n) { $t = $t.Substring(0, [Math]::Max(1, $n - 1)).TrimEnd() + [string][char]0x2026 }
+        return $t
+    }
+    $num = { param($v) if ($null -eq $v -or "$v" -eq '') { '?' } else { ([double]$v).ToString('0.##', $inv) } }
+    $riskAr = @{ High = 'عالٍ'; Medium = 'متوسط'; Low = 'منخفض' }
+
+    $headline = if ($plan.verdict -and $plan.verdict.Headline) { & $cut $plan.verdict.Headline 160 } else { '-' }
+    $m = $plan.memory
+    $memLine = $null
+    if ($m) {
+        $memLine = 'الذاكرة: مستخدم {0}/{1} GB | Non-paged {2} GB | Paged {3} GB | غير منسوبة {4} GB' -f (& $num $m.UsedGB), (& $num $m.TotalGB), (& $num $m.NonPagedGB), (& $num $m.PagedGB), (& $num $m.UnaccountedGB)
+    }
+    $obsAll = @($plan.observations | Where-Object { $_ -and $_.Level -ne 'info' -and $_.Title } | ForEach-Object { '- ' + (& $cut $_.Title 90) })
+    $susAll = @($plan.suspects | Where-Object { $_ -and $_.risk -in 'High', 'Medium' } | ForEach-Object {
+            $r = if ($riskAr.ContainsKey([string]$_.risk)) { $riskAr[[string]$_.risk] } else { [string]$_.risk }
+            $reason = & $cut (@($_.reasons)[0]) 80
+            $sha = if ($_.sha256) { ' | sha256:' + ([string]$_.sha256).Substring(0, [Math]::Min(12, ([string]$_.sha256).Length)) } else { '' }
+            '- [{0}] {1} ({2}) - {3}{4}' -f $r, (& $cut $_.name 40), (& $cut $_.trust 24), $reason, $sha
+        })
+    $susTotal = @($plan.suspects | Where-Object { $_ }).Count
+    $hostLine = if ($IncludeHostName -and $plan.host) { 'الجهاز: ' + (& $cut $plan.host 40) } else { $null }
+    $footer = 'RAM-Doctor {0} | وقت الفحص: {1}' -f $Version, (& $cut $plan.created 25)
+
+    $build = {
+        param([int]$nObs, [int]$nSus)
+        $l = New-Object System.Collections.Generic.List[string]
+        $l.Add('تقرير RAM Doctor')
+        $l.Add('الحكم: ' + $headline)
+        if ($memLine) { $l.Add($memLine) }
+        if ($hostLine) { $l.Add($hostLine) }
+        if ($nObs -gt 0) { $l.Add('أهم الملاحظات:'); foreach ($o in ($obsAll | Select-Object -First $nObs)) { $l.Add($o) } }
+        if ($nSus -gt 0) {
+            $l.Add('ملفات مشبوهة ({0}):' -f $susTotal)
+            foreach ($s in ($susAll | Select-Object -First $nSus)) { $l.Add($s) }
+        } elseif ($susTotal -eq 0) { $l.Add('ملفات مشبوهة: لا يوجد') }
+        else { $l.Add('ملفات منخفضة الخطورة فقط ({0}) - التفاصيل في التقرير' -f $susTotal) }
+        $l.Add($footer)
+        return ($l -join $nl)
+    }
+    $nObs = [Math]::Min(5, $obsAll.Count); $nSus = [Math]::Min(5, $susAll.Count)
+    $text = & $build $nObs $nSus
+    while ($text.Length -gt $MaxChars -and ($nObs -gt 3 -or $nSus -gt 1 -or $nObs -gt 0)) {
+        if ($nObs -gt 3) { $nObs-- } elseif ($nSus -gt 1) { $nSus-- } elseif ($nObs -gt 0) { $nObs-- } else { break }
+        $text = & $build $nObs $nSus
+    }
+    $text = Protect-Text -Text $text -Redactor $Redactor
+    if ($text.Length -gt $MaxChars) { $text = $text.Substring(0, $MaxChars - 1) + [string][char]0x2026 }
+    return $text
+}
+
+# ---------------------------------------------------------------- upload (protocol v1)
+function New-ShareRequestJson {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', '', Justification = 'A parameter named Profile only shadows the profile-path variable inside this function.')]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Profile, [string]$Code = '', [Parameter(Mandatory)]$Bundle, [string]$Version = $script:ShareToolVersion)
+    $files = @()
+    foreach ($f in $Bundle.Files) { $files += [ordered]@{ name = $f.name; content = $f.content } }
+    $body = [ordered]@{ v = 1; displayName = $Profile.displayName; userId = $Profile.userId }
+    if ($Code) { $body['code'] = $Code }   # "code" is only sent when one is stored
+    $body['tool'] = [ordered]@{ name = 'RAM-Doctor'; version = $Version }
+    $body['createdAt'] = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
+    $body['host'] = $Bundle.Host
+    $body['files'] = $files
+    return ($body | ConvertTo-Json -Depth 6 -Compress)
+}
+
+# One HTTP exchange. Returns Status (0 = network failure) and the response text.
+function Send-ShareRequest {
+    param([Parameter(Mandatory)][string]$Uri, [string]$Method = 'POST', [string]$Json, [int]$TimeoutSec = 30)
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+    $res = [pscustomobject]@{ Status = 0; Text = ''; Network = $true; Error = '' }
+    try {
+        $req = [Net.HttpWebRequest]::Create($Uri)
+        $req.Method = $Method
+        $req.Timeout = $TimeoutSec * 1000
+        $req.ReadWriteTimeout = $TimeoutSec * 1000
+        $req.UserAgent = 'RAM-Doctor/' + $script:ShareToolVersion
+        $req.KeepAlive = $false
+        $req.Accept = 'application/json'
+        if ($Method -eq 'POST') {
+            $bytes = [Text.Encoding]::UTF8.GetBytes($Json)
+            $req.ContentType = 'application/json; charset=utf-8'
+            $req.ContentLength = $bytes.Length
+            $rs = $req.GetRequestStream()
+            try { $rs.Write($bytes, 0, $bytes.Length) } finally { $rs.Close() }
+        }
+        $resp = $req.GetResponse()
+        try {
+            $sr = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+            $res.Text = $sr.ReadToEnd(); $sr.Close()
+            $res.Status = [int]$resp.StatusCode; $res.Network = $false
+        } finally { $resp.Close() }
+    } catch [System.Net.WebException] {
+        $we = $_.Exception
+        if ($we.Response) {
+            try {
+                $res.Status = [int]([Net.HttpWebResponse]$we.Response).StatusCode; $res.Network = $false
+                $sr = New-Object IO.StreamReader($we.Response.GetResponseStream(), [Text.Encoding]::UTF8)
+                $res.Text = $sr.ReadToEnd(); $sr.Close()
+            } catch { }
+            try { $we.Response.Close() } catch { }
+        } else { $res.Error = [string]$we.Status }
+    } catch { $res.Error = $_.Exception.GetType().Name }
+    return $res
+}
+
+# Posts the report. Retries only network failures and 5xx (never 4xx). Never logs the request body.
+function Send-ShareReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Endpoint,
+        [Parameter(Mandatory)][string]$Json,
+        [switch]$CodeSent,
+        [int]$MaxAttempts = 3,
+        [double]$BackoffSeconds = 2,
+        [int]$TimeoutSec = 30
+    )
+    $uri = $Endpoint.TrimEnd('/') + '/v1/reports'
+    $last = $null
+    for ($a = 1; $a -le $MaxAttempts; $a++) {
+        $r = Send-ShareRequest -Uri $uri -Method POST -Json $Json -TimeoutSec $TimeoutSec
+        $last = $r
+        if (-not $r.Network -and $r.Status -ge 200 -and $r.Status -lt 300) {
+            $j = $null; try { $j = $r.Text | ConvertFrom-Json } catch { }
+            if ($j -and $j.ok) {
+                $u = if ($j.url) { [string]$j.url } else { [string]$j.folder }
+                return [pscustomobject]@{ Ok = $true; Code = 'ok'; Message = ''; Url = $u; Folder = [string]$j.folder; Attempts = $a }
+            }
+            return [pscustomobject]@{ Ok = $false; Code = 'bad-response'; Message = (Get-ShareMessage 'bad-response'); Url = ''; Folder = ''; Attempts = $a }
+        }
+        $retry = ($r.Network -or $r.Status -ge 500)
+        if (-not $retry -or $a -eq $MaxAttempts) { break }
+        if ($BackoffSeconds -gt 0) { Start-Sleep -Milliseconds ([int](1000 * $BackoffSeconds * $a)) }
+    }
+    if ($last.Network) { return [pscustomobject]@{ Ok = $false; Code = 'offline'; Message = (Get-ShareMessage 'offline'); Url = ''; Folder = ''; Attempts = $MaxAttempts } }
+    $code = [string]$last.Status
+    $key = if ($last.Status -ge 500) { '5xx' } elseif ($last.Status -eq 401 -and -not $CodeSent) { '401-nocode' } else { $code }
+    $msg = Get-ShareMessage $key
+    if ($msg -eq $key) { $msg = Get-ShareMessage '400' }
+    return [pscustomobject]@{ Ok = $false; Code = $code; Message = $msg; Url = ''; Folder = ''; Attempts = $a }
+}
+
+function Test-ShareHealth {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Endpoint, [int]$TimeoutSec = 10)
+    $r = Send-ShareRequest -Uri ($Endpoint.TrimEnd('/') + '/v1/health') -Method GET -TimeoutSec $TimeoutSec
+    if ($r.Network) { return [pscustomobject]@{ Ok = $false; Code = 'offline'; Message = (Get-ShareMessage 'offline') } }
+    $ok = $false; try { $ok = [bool](($r.Text | ConvertFrom-Json).ok) } catch { }
+    if ($r.Status -ge 200 -and $r.Status -lt 300 -and $ok) { return [pscustomobject]@{ Ok = $true; Code = 'ok'; Message = '' } }
+    return [pscustomobject]@{ Ok = $false; Code = [string]$r.Status; Message = (Get-ShareMessage '5xx') }
+}

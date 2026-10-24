@@ -1,0 +1,7 @@
+# Nothing but reports and the generated index belongs here.
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.log
+*.swp

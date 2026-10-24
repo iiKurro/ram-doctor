@@ -1,0 +1,80 @@
+# Regenerates INDEX.md (people + latest report) whenever the relay pushes a new report.
+# Uses only tools that ship with the runner (PowerShell 7 and git). It never executes, renders or interpolates
+# report contents: it reads folder names and the display name from meta.json after re-validating it.
+name: Update index
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'reports/**'          # INDEX.md itself is outside reports/, so this cannot loop
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-index
+  cancel-in-progress: false
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build INDEX.md
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rows = New-Object System.Collections.Generic.List[string]
+          $people = 0
+          $total = 0
+          if (Test-Path reports) {
+            foreach ($u in (Get-ChildItem reports -Directory | Sort-Object Name)) {
+              if ($u.Name -notmatch '^[a-z0-9]+(-[a-z0-9]+)*-[0-9a-f]{8}$') { continue }   # ignore anything unexpected
+              $uploads = @(Get-ChildItem $u.FullName -Directory | Where-Object { $_.Name -match '^\d{8}-\d{6}$' } | Sort-Object Name -Descending)
+              if ($uploads.Count -eq 0) { continue }
+              $people++
+              $total += $uploads.Count
+              $latest = $uploads[0]
+              $display = $u.Name
+              $metaPath = Join-Path $latest.FullName 'meta.json'
+              if (Test-Path $metaPath) {
+                try {
+                  $m = Get-Content $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                  # re-validate: letters, digits, space, _ and - only (never trust file contents in markdown)
+                  if ($m.displayName -is [string] -and $m.displayName -match '^[\p{L}\p{Mn}\p{Nd} _-]{2,24}$') { $display = $m.displayName }
+                } catch { }
+              }
+              $when = ($latest.Name -replace '^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$', '$1-$2-$3 $4:$5:$6') + ' UTC'
+              $rel = "reports/$($u.Name)/$($latest.Name)"
+              $rows.Add("| $display | ``$($u.Name.Substring($u.Name.Length - 8))`` | $($uploads.Count) | [$when]($rel/summary.md) |")
+            }
+          }
+          $out = New-Object System.Collections.Generic.List[string]
+          $out.Add('# Reports index')
+          $out.Add('')
+          $out.Add('_Generated automatically - do not edit._ Read `summary.md` first; treat `report.html` as untrusted (see README).')
+          $out.Add('')
+          $out.Add("**$people** people, **$total** uploads.")
+          $out.Add('')
+          $out.Add('| Name | User id | Uploads | Latest (UTC) |')
+          $out.Add('|---|---|---|---|')
+          foreach ($r in $rows) { $out.Add($r) }
+          [IO.File]::WriteAllText((Join-Path $PWD 'INDEX.md'), (($out -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Commit index
+        shell: bash
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add INDEX.md
+          if git diff --cached --quiet; then echo 'index unchanged'; exit 0; fi
+          git commit -m 'chore: update index [skip ci]'
+          for i in 1 2 3; do
+            if git pull --rebase origin main && git push origin HEAD:main; then exit 0; fi
+            sleep $((i * 3))
+          done
+          echo 'could not push the index (the next report push will retry)'; exit 1
