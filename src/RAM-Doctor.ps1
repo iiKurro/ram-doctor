@@ -7,7 +7,19 @@
   READ-ONLY. Collects memory / kernel pool / process / startup / driver evidence, writes an HTML
   report (Arabic) + a JSON action plan. It never kills, deletes or changes anything.
   Acting on the findings is a separate, explicit step: RAM-Doctor-Actions.ps1.
-  No network access, nothing is uploaded.
+  The tool makes no network connections and nothing is sent anywhere.
+
+  Output (two small files per scan, the 3 newest scans are kept):
+    RAMDoctor-<PC>-<stamp>.html   the report (self-contained, inert: see src/lib/Report.ps1)
+    Plan-<PC>-<stamp>.json        the action plan read by RAM-Doctor-Actions.ps1 and the GUI
+                                  (schema: verdict, observations, memory, suspects, created, host, report - only ever ADD fields)
+  -KeepRawJson additionally writes the full raw data as RAMDoctor-<PC>-<stamp>.json.
+
+  Designed for PCs that are short of RAM: no big collections are kept, files are hashed only for suspects,
+  and the peak working set of this process is printed at the end.
+
+  NOTE: the plan on the Desktop is user-writable input for the elevated Actions script, which re-verifies
+  every target live (see the SECURITY MODEL in RAM-Doctor-Actions.ps1).
 #>
 [CmdletBinding()]
 param(
@@ -20,7 +32,9 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$ToolVersion = '1.0'
+# polite by design: this tool runs on PCs that are already struggling, so it must never make them feel slower
+try { [Diagnostics.Process]::GetCurrentProcess().PriorityClass = [Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
+$ToolVersion = '1.0.0'
 $Inv = [Globalization.CultureInfo]::InvariantCulture
 $Root = $PSScriptRoot
 if (-not $Root) { $Root = (Get-Location).Path }
@@ -29,40 +43,95 @@ $WinDir = $env:SystemRoot.TrimEnd('\')
 $WinDirL = $WinDir.ToLowerInvariant()
 $Warnings = New-Object System.Collections.Generic.List[string]
 
-function Say([string]$m) { Write-Host ('[{0:HH:mm:ss}] {1}' -f (Get-Date), $m) }
+function Say([string]$m) { Write-Host ('[{0}] {1}' -f (Get-Date).ToString('HH:mm:ss', $Inv), $m) }
+# memory checkpoints, printed only with -Verbose (keeps the tool honest about its own footprint)
+# Phase boundary: collect the garbage left by the previous inventory, hand idle resident pages back to the OS
+# (they remain reclaimable standby pages) and log the footprint.
+function Phase([string]$label) {
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()
+    if ($script:NativeOk) { [RamDoc.Native]::TrimWorkingSet() }
+    Mem $label
+}
+function Mem([string]$label) {
+    if ($VerbosePreference -ne 'Continue') { return }
+    $p = [Diagnostics.Process]::GetCurrentProcess()
+    Write-Verbose ('MEM {0,-24} ws={1,4} MB  peakWS={2,4} MB  private={3,4} MB  peakCommit={4,4} MB  managed={5,4} MB' -f $label, [int]($p.WorkingSet64 / 1MB), [int]($p.PeakWorkingSet64 / 1MB), [int]($p.PrivateMemorySize64 / 1MB), [int]($p.PeakPagedMemorySize64 / 1MB), [int]([GC]::GetTotalMemory($false) / 1MB))
+}
 function Warn([string]$m) { $Warnings.Add($m); Write-Host ('   ! ' + $m) -ForegroundColor Yellow }
 function ToGB([double]$b) { [math]::Round($b / 1GB, 2) }
 function ToMB([double]$b) { [math]::Round($b / 1MB, 0) }
 function Num($x) { ([double]$x).ToString('0.##', $Inv) }
 function IsoDate($d) { if ($d) { ([datetime]$d).ToString('yyyy-MM-dd HH:mm:ss', $Inv) } else { '' } }
 
+# ---------------------------------------------------------------- native helper (loaded FIRST, so every later phase can trim)
+# Add-Type compiles INSIDE this process and costs ~30 MB of working set. Instead the small helper is compiled once per
+# run by csc.exe in a child process (it exits right away), loaded from bytes and the temp DLL is deleted.
+# Add-Type stays as the fallback when csc.exe is not available.
+function Import-Native {
+    if ('RamDoc.Native' -as [type]) { return $true }
+    $src = Join-Path $Root 'lib\Native.cs'
+    try {
+        $csc = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
+        if (Test-Path -LiteralPath $csc) {
+            # This process is usually ELEVATED and loads what csc writes, so the work folder must not be writable by a
+            # user-level program (it could swap the DLL before we read it): when elevated it is created atomically with
+            # an ACL that only gives SYSTEM and Administrators access (by SID, locale independent).
+            $work = Join-Path $env:TEMP ('RamDoctor-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+            if ($IsAdmin) {
+                $sec = New-Object Security.AccessControl.DirectorySecurity
+                $sec.SetAccessRuleProtection($true, $false)
+                foreach ($sid in 'S-1-5-18', 'S-1-5-32-544') {
+                    $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($sid)), [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)))
+                }
+                [void][IO.Directory]::CreateDirectory($work, $sec)
+            } else { [void][IO.Directory]::CreateDirectory($work) }
+            try {
+                $dll = Join-Path $work 'native.dll'
+                $cp = Start-Process -FilePath $csc -ArgumentList @('/nologo', '/target:library', '/optimize+', '/debug-', ('/out:"{0}"' -f $dll), ('"{0}"' -f $src)) -WindowStyle Hidden -PassThru -Wait
+                if ($cp.ExitCode -eq 0 -and (Test-Path -LiteralPath $dll)) {
+                    [void][Reflection.Assembly]::Load([IO.File]::ReadAllBytes($dll))
+                    if ('RamDoc.Native' -as [type]) { return $true }
+                }
+            } finally { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    } catch { }
+    Add-Type -TypeDefinition (Get-Content -LiteralPath $src -Raw) -Language CSharp -ErrorAction Stop
+    return $true
+}
+$NativeOk = $false
+try { $NativeOk = Import-Native } catch { Warn "Native helper failed to load (pool tags / hidden-process check disabled): $($_.Exception.Message)" }
+if ($NativeOk) { try { [RamDoc.Native]::LowerIoAndMemoryPriority() } catch { } }
+if ($NativeOk) { [RamDoc.Native]::TrimWorkingSet() }   # drop the compile/parse leftovers right away
+Mem 'native loaded'
+Mem 'boot'
+# Explicit imports: if PowerShell has to AUTO-discover these modules it scans every installed module first and
+# that alone costs ~40 MB of working set. (ScheduledTasks is imported right before it is needed.)
+foreach ($mod in 'CimCmdlets', 'Microsoft.PowerShell.Security') {
+    try { Import-Module -Name (Join-Path $PSHOME "Modules\$mod\$mod.psd1") -ErrorAction Stop -Verbose:$false } catch { }
+}
+Mem 'modules imported'
 . (Join-Path $Root 'lib\Report.ps1')
 
 # ---------------------------------------------------------------- output folder
-if (-not $OutDir) { $OutDir = Join-Path ([Environment]::GetFolderPath('Desktop')) 'RAM-Doctor-Reports' }   # one small, easy-to-find folder
+$desktop = [Environment]::GetFolderPath('Desktop'); if (-not $desktop) { $desktop = $env:TEMP }   # services / odd profiles have no Desktop
+if (-not $OutDir) { $OutDir = Join-Path $desktop 'RAM-Doctor-Reports' }   # one small, easy-to-find folder
 try {
-    New-Item -ItemType Directory -Force -Path $OutDir -ErrorAction Stop | Out-Null
+    [void][IO.Directory]::CreateDirectory($OutDir)
     $probe = Join-Path $OutDir '.write-test'
     Set-Content -LiteralPath $probe -Value 'x' -ErrorAction Stop
     Remove-Item -LiteralPath $probe -Force
 } catch {
-    $OutDir = Join-Path ([Environment]::GetFolderPath('Desktop')) 'RAM-Doctor-Reports'
-    New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+    $OutDir = Join-Path $desktop 'RAM-Doctor-Reports'
+    [void][IO.Directory]::CreateDirectory($OutDir)
 }
-$Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$Stamp = (Get-Date).ToString('yyyyMMdd-HHmmss', $Inv)     # invariant culture: ar-SA would otherwise stamp Hijri years (1448...)
 $HostName = $env:COMPUTERNAME
 
 Say "RAM Doctor $ToolVersion  (admin: $IsAdmin)  - read-only scan, nothing will be changed"
-if (-not $IsAdmin) { Warn 'Not running as administrator: results for protected processes / other users may be incomplete. Use 1-Scan.bat.' }
+if (-not $IsAdmin) { Warn 'Not running as administrator: results for protected processes / other users may be incomplete. Run the tool as administrator for the full picture.' }
 
 # ---------------------------------------------------------------- native helper
-$NativeOk = $false
-try {
-    if (-not ('RamDoc.Native' -as [type])) {
-        Add-Type -TypeDefinition (Get-Content -LiteralPath (Join-Path $Root 'lib\Native.cs') -Raw) -Language CSharp -ErrorAction Stop
-    }
-    $NativeOk = $true
-} catch { Warn "Native helper failed to load (pool tags / hidden-process check disabled): $($_.Exception.Message)" }
+
 
 # ---------------------------------------------------------------- generic helpers
 $SigCache = @{}
@@ -80,6 +149,8 @@ function Get-SigInfo([string]$Path) {
                 if ($subj -match 'CN=("[^"]+"|[^,]+)') { $pub = $Matches[1].Trim('"') } else { $pub = $subj }
                 if ($status -eq 'Valid' -and $subj -match 'O=Microsoft (Corporation|Windows)') { $isMs = $true }
             }
+            # release the native certificate handles right away instead of waiting for the finalizer thread
+            foreach ($c in @($s.SignerCertificate, $s.TimeStamperCertificate)) { if ($c) { try { $c.Dispose() } catch { } } }
         } catch { $status = 'Error' }
     }
     $trust = switch ($status) {
@@ -213,7 +284,8 @@ function Get-Signals {
     if ($weak -and $leaf -and (Test-RandomName $leaf)) { & $add 'random' 2 'اسم الملف يبدو عشوائيًا' }
     if ($weak -and $sig.Trust -ne 'Missing' -and (Get-HasVersionInfo $Path)) { & $add 'verinfo' -1 'يحمل معلومات إصدار كاملة (شركة/منتج/وصف) - يخفف الشبهة قليلًا' }
 
-    if (-not $trusted -and $base -in $CriticalNames -and $Path -and -not $Path.StartsWith($WinDir, [StringComparison]::OrdinalIgnoreCase)) {
+    # '\' matters: "C:\Windows Update\svchost.exe" or "C:\Windows.old\..." must NOT count as inside C:\Windows
+    if (-not $trusted -and $base -in $CriticalNames -and $Path -and -not $Path.StartsWith($WinDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
         & $add 'masq' 8 "اسمه ($leaf) يطابق عملية نظام لكنه خارج مجلد ويندوز - انتحال شائع للبرمجيات الخبيثة"
     } elseif (-not $trusted -and $base.Length -ge 5) {
         foreach ($c in $CriticalNames) {
@@ -237,8 +309,8 @@ function Get-Signals {
 
 # ---------------------------------------------------------------- memory counters (locale independent: WMI)
 function Get-MemCounters {
-    $os = Get-CimInstance Win32_OperatingSystem
-    $m = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
+    $os = Get-CimInstance Win32_OperatingSystem -Property TotalVisibleMemorySize
+    $m = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory -Property AvailableBytes, FreeAndZeroPageListBytes, StandbyCacheNormalPriorityBytes, StandbyCacheReserveBytes, StandbyCacheCoreBytes, ModifiedPageListBytes, PoolNonpagedBytes, PoolPagedBytes, PoolPagedResidentBytes, CommittedBytes, CommitLimit, SystemCacheResidentBytes, SystemDriverResidentBytes
     [pscustomobject]@{
         TotalBytes = [int64]$os.TotalVisibleMemorySize * 1KB
         AvailBytes = [int64]$m.AvailableBytes
@@ -258,8 +330,11 @@ function Get-MemCounters {
 
 function Get-ProcPerf {
     $h = @{}
-    foreach ($r in (Get-CimInstance Win32_PerfFormattedData_PerfProc_Process)) {
-        if ($r.Name -ne '_Total' -and $r.Name -ne 'Idle' -and [int]$r.IDProcess -gt 0) { $h[[int]$r.IDProcess] = $r }
+    foreach ($r in (Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Property Name, IDProcess, WorkingSetPrivate, WorkingSet, PrivateBytes, HandleCount)) {
+        # keep four numbers per process instead of the whole CIM object
+        if ($r.Name -ne '_Total' -and $r.Name -ne 'Idle' -and [int]$r.IDProcess -gt 0) {
+            $h[[int]$r.IDProcess] = [pscustomobject]@{ WorkingSetPrivate = [int64]$r.WorkingSetPrivate; WorkingSet = [int64]$r.WorkingSet; PrivateBytes = [int64]$r.PrivateBytes; HandleCount = [int]$r.HandleCount }
+        }
     }
     return $h
 }
@@ -297,6 +372,7 @@ $KnownTags = @{
 }
 
 # ---------------------------------------------------------------- snapshot #1
+Phase 'start'
 Say 'Snapshot #1: memory counters, per-process memory, kernel pool tags ...'
 $t0 = Get-Date
 $mem1 = Get-MemCounters
@@ -305,13 +381,14 @@ $pool1 = Get-PoolSnapshot
 if (-not $pool1) { Warn 'Kernel pool-tag table unavailable (needs admin / native helper).' }
 
 # ---------------------------------------------------------------- system facts
+Phase 'after snapshot1'
 Say 'Collecting system facts ...'
-$osInfo = Get-CimInstance Win32_OperatingSystem
-$csInfo = Get-CimInstance Win32_ComputerSystem
-$installedBytes = (Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum
+$osInfo = Get-CimInstance Win32_OperatingSystem -Property Caption, Version, LastBootUpTime
+$csInfo = Get-CimInstance Win32_ComputerSystem -Property TotalPhysicalMemory, HypervisorPresent
+$installedBytes = (Get-CimInstance Win32_PhysicalMemory -Property Capacity | Measure-Object Capacity -Sum).Sum
 if (-not $installedBytes) { $installedBytes = [int64]$csInfo.TotalPhysicalMemory }
-$gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name })
-$cpuName = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
+$gpus = @(Get-CimInstance Win32_VideoController -Property Name | ForEach-Object { $_.Name })
+$cpuName = (Get-CimInstance Win32_Processor -Property Name | Select-Object -First 1).Name
 $uptime = (Get-Date) - $osInfo.LastBootUpTime
 $fastStartup = $false
 try { $fastStartup = ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -Name HiberbootEnabled -ErrorAction Stop).HiberbootEnabled -eq 1) } catch { }
@@ -334,23 +411,32 @@ $sys = [pscustomobject]@{
 
 # ---------------------------------------------------------------- inventory of everything that runs / persists
 $Items = New-Object System.Collections.ArrayList
-function Add-Item([hashtable]$h) { [void]$Items.Add([pscustomobject]$h) }
+function Add-Item([hashtable]$h) {
+    # Signals / Sig are filled in later by plain assignment (Add-Member on ~1000 objects is slow and allocation-heavy)
+    if (-not $h.ContainsKey('Signals')) { $h['Signals'] = $null }
+    if (-not $h.ContainsKey('Sig')) { $h['Sig'] = $null }
+    [void]$Items.Add([pscustomobject]$h)
+}
 
+Phase 'after sysfacts'
 Say 'Inventory: processes ...'
-$cimProcs = @(Get-CimInstance Win32_Process)
+# keep a small record per process (6 fields) instead of the full CIM objects
+$cimProcs = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine, CreationDate | ForEach-Object {
+        [pscustomobject]@{ ProcessId = [int]$_.ProcessId; ParentProcessId = [int]$_.ParentProcessId; Name = [string]$_.Name; ExecutablePath = [string]$_.ExecutablePath; CommandLine = [string]$_.CommandLine; CreationDate = $_.CreationDate }
+    })
 $procById = @{}
-foreach ($p in $cimProcs) { $procById[[int]$p.ProcessId] = $p }
-$lsassCount = @($cimProcs | Where-Object { $_.Name -ieq 'lsass.exe' }).Count
+foreach ($p in $cimProcs) { $procById[$p.ProcessId] = $p }
+$lsassCount = 0; foreach ($p in $cimProcs) { if ($p.Name -ieq 'lsass.exe') { $lsassCount++ } }
 
-# network: who talks to the outside world
+# network: who talks to the outside world (native table, no PowerShell module needed)
 $netByPid = @{}
 try {
-    foreach ($c in (Get-NetTCPConnection -State Established -ErrorAction Stop)) {
-        $ra = [string]$c.RemoteAddress
-        if ($ra -match '^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|::1|fe80|f[cd][0-9a-f]{2}:|0\.0\.0\.0)') { continue }
-        $k = [int]$c.OwningProcess
+    foreach ($row in [RamDoc.Native]::GetEstablishedTcp()) {
+        $f = $row.Split('|'); $ra = $f[1]
+        if ($ra -match '^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|::1|fe80|f[cd][0-9a-f]{2}:|0\.0\.0\.0|::$)') { continue }
+        $k = [int]$f[0]
         if (-not $netByPid.ContainsKey($k)) { $netByPid[$k] = New-Object System.Collections.ArrayList }
-        [void]$netByPid[$k].Add([pscustomobject]@{ Remote = $ra; Port = [int]$c.RemotePort })
+        [void]$netByPid[$k].Add([pscustomobject]@{ Remote = $ra; Port = [int]$f[2] })
     }
 } catch { Warn "Network table unavailable: $($_.Exception.Message)" }
 
@@ -372,8 +458,9 @@ foreach ($p in $cimProcs) {
     }
 }
 
+Phase 'after proc inventory'
 Say 'Inventory: services ...'
-foreach ($s in (Get-CimInstance Win32_Service)) {
+foreach ($s in (Get-CimInstance Win32_Service -Property Name, DisplayName, PathName, StartMode, State)) {
     if (-not $s.PathName -or $s.StartMode -eq 'Disabled') { continue }
     $exe = Get-ExePathFromCommand $s.PathName
     $path = $exe
@@ -387,8 +474,10 @@ foreach ($s in (Get-CimInstance Win32_Service)) {
     Add-Item @{ Kind = 'Service'; Name = $s.Name; Display = $s.DisplayName; Path = $path; Cmd = [string]$s.PathName; StartMode = $s.StartMode; State = $s.State }
 }
 
+Phase 'after services'
 Say 'Inventory: scheduled tasks ...'
 try {
+    Import-Module -Name (Join-Path $PSHOME 'Modules\ScheduledTasks\ScheduledTasks.psd1') -ErrorAction Stop -Verbose:$false
     foreach ($t in (Get-ScheduledTask -ErrorAction Stop)) {
         if ($t.State -eq 'Disabled') { continue }
         foreach ($a in $t.Actions) {
@@ -401,6 +490,7 @@ try {
     }
 } catch { Warn "Scheduled tasks unavailable: $($_.Exception.Message)" }
 
+Phase 'after tasks'
 Say 'Inventory: startup entries ...'
 $runKeys = New-Object System.Collections.ArrayList
 foreach ($k in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
@@ -419,7 +509,8 @@ foreach ($k in $runKeys) {
 }
 $startupDirs = New-Object System.Collections.ArrayList
 [void]$startupDirs.Add((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\StartUp'))
-foreach ($d in (Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue)) {
+$usersRoot = Split-Path -Parent $env:USERPROFILE; if (-not $usersRoot) { $usersRoot = "$env:SystemDrive\Users" }
+foreach ($d in (Get-ChildItem -LiteralPath $usersRoot -Directory -ErrorAction SilentlyContinue)) {
     [void]$startupDirs.Add((Join-Path $d.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'))
 }
 $wsh = $null
@@ -440,6 +531,7 @@ foreach ($d in $startupDirs) {
     }
 }
 
+Phase 'after startup'
 Say 'Inventory: WMI permanent event subscriptions (fileless persistence) ...'
 try {
     foreach ($c in (Get-CimInstance -Namespace root\subscription -ClassName __EventConsumer -ErrorAction Stop)) {
@@ -452,23 +544,24 @@ try {
     }
 } catch { Warn "WMI subscriptions unavailable: $($_.Exception.Message)" }
 
+Phase 'after wmi'
 Say 'Inventory: running kernel drivers ...'
-$driverRows = New-Object System.Collections.ArrayList
-foreach ($d in (Get-CimInstance Win32_SystemDriver | Where-Object { $_.State -eq 'Running' })) {
+foreach ($d in (Get-CimInstance Win32_SystemDriver -Property Name, DisplayName, PathName, StartMode, State -Filter "State='Running'")) {
     if (-not $d.PathName) { continue }
     $path = Resolve-ExePath $d.PathName
     Add-Item @{ Kind = 'Driver'; Name = $d.Name; Display = $d.DisplayName; Path = $path; Cmd = ''; StartMode = $d.StartMode; State = $d.State }
 }
 
 # ---------------------------------------------------------------- hidden process check
+Phase 'after drivers inv'
 Say 'Hidden-process check (direct kernel PID probe vs. process lists) ...'
 $hidden = New-Object System.Collections.ArrayList
 if ($NativeOk) {
     try {
         $known = @{}
-        $refresh = {
-            foreach ($i in (Get-Process).Id) { $known[[uint32]$i] = $true }
-            foreach ($i in (Get-CimInstance Win32_Process).ProcessId) { $known[[uint32]$i] = $true }
+        $refresh = {   # two independent sources (kernel process list + WMI), IDs only, nothing retained
+            foreach ($pr in [Diagnostics.Process]::GetProcesses()) { $known[[uint32]$pr.Id] = $true; $pr.Dispose() }
+            foreach ($r in (Get-CimInstance Win32_Process -Property ProcessId)) { $known[[uint32]$r.ProcessId] = $true }
         }
         & $refresh
         $probe = [RamDoc.Native]::ProbePids(400000)
@@ -497,6 +590,7 @@ $hiddenLive = @($hidden | Where-Object { $_.Live })
 $zombies = @($hidden | Where-Object { -not $_.Live })
 
 # ---------------------------------------------------------------- rate every item
+Phase 'after hidden'
 Say 'Rating signatures / locations / command lines (this is the slow part) ...'
 # never rate this tool's own process chain (powershell / cmd / the app that launched us)
 $selfChain = @{}
@@ -507,6 +601,7 @@ for ($depth = 0; $depth -lt 12 -and $walk -gt 0; $depth++) {
     if (-not $pp) { break }
     $walk = [int]$pp.ParentProcessId
 }
+$rated = 0
 foreach ($it in $Items) {
     $r = Get-Signals -Path $it.Path -Cmd $it.Cmd -Name $it.Name -Kind $it.Kind
     $extra = New-Object System.Collections.ArrayList
@@ -540,8 +635,10 @@ foreach ($it in $Items) {
         $r.Sig = [pscustomobject]@{ Status = 'Internal'; Publisher = 'Windows kernel'; Trust = 'OS' }   # kernel-internal pseudo processes have no file
     }
     if ($it.Kind -eq 'Process' -and $selfChain.ContainsKey($it.Pid)) { $extra.Clear() }
-    $it | Add-Member -NotePropertyName Signals -NotePropertyValue $extra -Force
-    $it | Add-Member -NotePropertyName Sig -NotePropertyValue $r.Sig -Force
+    $it.Signals = $extra
+    $it.Sig = $r.Sig
+    $rated++
+    if ($rated % 50 -eq 0) { [GC]::Collect(); [GC]::WaitForPendingFinalizers(); if ($NativeOk) { [RamDoc.Native]::TrimWorkingSet() } }   # signature checks create many short-lived certificate objects: keep the heap flat
 }
 
 # ---------------------------------------------------------------- wait out the sampling window, snapshot #2
@@ -551,6 +648,7 @@ if ($elapsed -lt $SampleSeconds) {
     Say "Waiting $wait s to complete the growth-observation window ..."
     Start-Sleep -Seconds $wait
 }
+Phase 'after rating'
 Say 'Snapshot #2: measuring growth ...'
 $mem2 = Get-MemCounters
 $perf2 = Get-ProcPerf
@@ -571,6 +669,7 @@ foreach ($it in $Items) {
 }
 
 # ---------------------------------------------------------------- group items into suspects (by file)
+Phase 'after snapshot2'
 Say 'Correlating findings ...'
 $groups = @{}
 foreach ($it in $Items) {
@@ -668,6 +767,7 @@ $topGrowers = @($allProc | Where-Object { $_.Growth -ge 20MB } | Sort-Object Gro
 # ---------------------------------------------------------------- kernel pool tags -> owning drivers
 $poolNon = @(); $poolPaged = @(); $poolGrow = @()
 if ($pool2) {
+Phase 'after correlation'
     Say 'Mapping top pool tags to driver files ...'
     $rows2 = $pool2.Values
     $topNon = @($rows2 | Sort-Object NonPagedUsed -Descending | Select-Object -First 12)
@@ -716,12 +816,16 @@ $drivers3p = @($Items | Where-Object { $_.Kind -eq 'Driver' -and $_.Sig.Trust -n
     } | Sort-Object installed -Descending)
 
 # ---------------------------------------------------------------- misc evidence
+Phase 'after pool map'
 Say 'Collecting Defender status and event-log evidence ...'
 $defender = $null
 try {
-    $mp = Get-MpComputerStatus -ErrorAction Stop
+    # the same WMI classes the Defender cmdlets read, without loading the (large) Defender PowerShell module
+    $dns = 'root/Microsoft/Windows/Defender'
+    $mp = Get-CimInstance -Namespace $dns -ClassName MSFT_MpComputerStatus -Property AMServiceEnabled, RealTimeProtectionEnabled, AntivirusSignatureAge, QuickScanAge -ErrorAction Stop | Select-Object -First 1
+    if (-not $mp) { throw 'no Defender status' }
     $threats = @()
-    try { $threats = @(Get-MpThreatDetection -ErrorAction Stop | Sort-Object InitialDetectionTime -Descending | Select-Object -First 5 | ForEach-Object { [pscustomobject]@{ time = (IsoDate $_.InitialDetectionTime); process = [string]$_.ProcessName; resources = (@($_.Resources) -join '; ') } }) } catch { }
+    try { $threats = @(Get-CimInstance -Namespace $dns -ClassName MSFT_MpThreatDetection -Property InitialDetectionTime, ProcessName, Resources -ErrorAction Stop | Sort-Object InitialDetectionTime -Descending | Select-Object -First 5 | ForEach-Object { [pscustomobject]@{ time = (IsoDate $_.InitialDetectionTime); process = [string]$_.ProcessName; resources = (@($_.Resources) -join '; ') } }) } catch { }
     $defender = [pscustomobject]@{
         Enabled = [bool]$mp.AMServiceEnabled; RealTime = [bool]$mp.RealTimeProtectionEnabled
         SignatureAgeDays = [int]$mp.AntivirusSignatureAge; QuickScanAgeDays = [int]$mp.QuickScanAge; RecentThreats = $threats
@@ -730,17 +834,28 @@ try {
 
 $exhaustion = @()
 try {
-    $exhaustion = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Resource-Exhaustion-Detector'; Id = 2004 } -MaxEvents 3 -ErrorAction Stop | ForEach-Object {
-            $msg = [string]$_.Message; if ($msg.Length -gt 700) { $msg = $msg.Substring(0, 700) + ' ...' }
-            [pscustomobject]@{ time = (IsoDate $_.TimeCreated); message = $msg }
-        })
+    # .NET event-log reader instead of Get-WinEvent (no extra PowerShell module); newest first, at most 3 events
+    $q = New-Object System.Diagnostics.Eventing.Reader.EventLogQuery('System', [System.Diagnostics.Eventing.Reader.PathType]::LogName, "*[System[Provider[@Name='Microsoft-Windows-Resource-Exhaustion-Detector'] and (EventID=2004)]]")
+    $q.ReverseDirection = $true
+    $reader = New-Object System.Diagnostics.Eventing.Reader.EventLogReader($q)
+    try {
+        $list = New-Object System.Collections.ArrayList
+        while ($list.Count -lt 3 -and ($ev = $reader.ReadEvent())) {
+            $msg = ''; try { $msg = [string]$ev.FormatDescription() } catch { }
+            if ($msg.Length -gt 700) { $msg = $msg.Substring(0, 700) + ' ...' }
+            [void]$list.Add([pscustomobject]@{ time = (IsoDate $ev.TimeCreated); message = $msg })
+            $ev.Dispose()
+        }
+        $exhaustion = @($list)
+    } finally { $reader.Dispose() }
 } catch { }
 
+Phase 'after evidence'
 $anomalies = New-Object System.Collections.ArrayList
 try {
     $wl = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction Stop
     if ($wl.Shell -and $wl.Shell -ne 'explorer.exe') { [void]$anomalies.Add([pscustomobject]@{ Level = 'high'; Title = 'قيمة Winlogon\Shell معدّلة'; Detail = "القيمة الحالية: $($wl.Shell) (الطبيعي: explorer.exe)" }) }
-    if ($wl.Userinit -and $wl.Userinit.TrimEnd(',') -notmatch '(?i)^c:\\windows\\system32\\userinit\.exe$') { [void]$anomalies.Add([pscustomobject]@{ Level = 'high'; Title = 'قيمة Winlogon\Userinit معدّلة'; Detail = "القيمة الحالية: $($wl.Userinit)" }) }
+    if ($wl.Userinit -and $wl.Userinit.TrimEnd(',') -ine "$WinDir\system32\userinit.exe") { [void]$anomalies.Add([pscustomobject]@{ Level = 'high'; Title = 'قيمة Winlogon\Userinit معدّلة'; Detail = "القيمة الحالية: $($wl.Userinit)" }) }
 } catch { }
 try {
     $ifeo = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options' -ErrorAction Stop
@@ -771,12 +886,12 @@ if ($topTag) {
     $topTagText = " أكبر مستهلك داخل المجمّع هو الوسم [$($topTag.tag)] بحجم $($topTag.mb) MB ($who)."
 }
 if ($mem2.NonPaged -ge $Th.NppHigh) {
-    Add-Obs 'high' 'تسرّب محتمل في ذاكرة النواة (Non-paged pool)' ("مجمّع الذاكرة غير المتصفّح = $(Num (ToGB $mem2.NonPaged)) GB (الطبيعي أقل من نحو 1 GB). هذا أقوى مؤشر على تسرّب ذاكرة من تعريف/درايفر، ولا يُنسب في مدير المهام لأي برنامج." + $topTagText)
+    Add-Obs 'high' 'تسرّب محتمل في ذاكرة النواة (Non-paged pool)' ("حجم مجمّع الذاكرة غير المتصفّح يبلغ $(Num (ToGB $mem2.NonPaged)) GB والطبيعي أقل من نحو 1 GB. هذا أقوى مؤشر على تسرّب ذاكرة من تعريف (Driver)، ولا يُنسب في مدير المهام لأي برنامج." + $topTagText)
 } elseif ($mem2.NonPaged -ge $Th.NppMed) {
     Add-Obs 'med' 'ذاكرة النواة (Non-paged pool) أعلى من المعتاد' ("القيمة $(Num (ToGB $mem2.NonPaged)) GB. ليست حرجة لكنها أعلى من الطبيعي؛ راقب إن كانت تكبر مع الوقت." + $topTagText)
 }
 if ($mem2.Paged -ge $Th.PagedHigh) {
-    Add-Obs 'high' 'تضخّم في Paged pool' "حجم Paged pool = $(Num (ToGB $mem2.Paged)) GB (الطبيعي أقل من نحو 1.5 GB). يشير غالبًا لتسرّب في تعريف أو برنامج حماية/VPN."
+    Add-Obs 'high' 'تضخّم في Paged pool' "حجم Paged pool يبلغ $(Num (ToGB $mem2.Paged)) GB والطبيعي أقل من نحو 1.5 GB. يشير غالبًا لتسرّب في تعريف أو برنامج حماية أو VPN."
 }
 if ($unaccounted -ge $Th.UnaccHigh) {
     Add-Obs 'high' 'ذاكرة كبيرة خارج أي عملية' "حوالي $(Num (ToGB $unaccounted)) GB من الاستخدام لا تقع ضمن أي Working Set ولا ضمن مجمّع النواة. من أسبابها: ذاكرة محجوزة من تعريف (Driver Locked)، أو AWE، أو RAM Disk، أو عملية مخفية. افتح أداة RAMMap من Sysinternals وراجع تبويب Use Counts."
@@ -807,7 +922,7 @@ if ($medS.Count -gt 0) {
 }
 foreach ($a in $anomalies) { Add-Obs $a.Level $a.Title $a.Detail }
 if ($mem2.NonPaged - $mem1.NonPaged -ge 30MB -or $mem2.Paged - $mem1.Paged -ge 30MB) {
-    Add-Obs 'high' 'التسرّب نشط الآن' "خلال $($memory.WindowSec) ثانية فقط زاد Non-paged بمقدار $($memory.NonPagedGrowthMB) MB وPaged بمقدار $($memory.PagedGrowthMB) MB. راجع جدول الوسوم (Pool tags) الأسرع نموًا."
+    Add-Obs 'high' 'التسرّب نشط الآن' "خلال $($memory.WindowSec) ثانية فقط زاد Non-paged بمقدار $($memory.NonPagedGrowthMB) MB و Paged بمقدار $($memory.PagedGrowthMB) MB. راجع جدول الوسوم (Pool tags) الأسرع نموًا."
 } elseif ($topGrowers.Count -gt 0 -and $topGrowers[0].growthMB -ge 100) {
     Add-Obs 'med' 'برنامج تتضخّم ذاكرته الآن' "$($topGrowers[0].name) (PID $($topGrowers[0].pid)) زادت ذاكرته الخاصة $($topGrowers[0].growthMB) MB خلال $($memory.WindowSec) ثانية."
 }
@@ -855,18 +970,25 @@ $planPath = Join-Path $OutDir "Plan-$HostName-$Stamp.json"
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 # Light footprint: only two small files per scan (report ~30 KB + plan ~15 KB). The big raw JSON is optional.
 if ($KeepRawJson) { [IO.File]::WriteAllText($jsonPath, ($data | ConvertTo-Json -Depth 8), $utf8Bom) }
+Phase 'before report write'
+try { [IO.File]::WriteAllText($htmlPath, (New-RamReportHtml $data), $utf8Bom) } catch { Warn "Report generation failed: $($_.Exception.Message)" }
+Phase 'after html'
+$peakMB = 0; $peakCommitMB = 0   # measured AFTER the heaviest step
+try { $me = [Diagnostics.Process]::GetCurrentProcess(); $peakMB = [int][math]::Round($me.PeakWorkingSet64 / 1MB); $peakCommitMB = [int][math]::Round($me.PeakPagedMemorySize64 / 1MB) } catch { }
 $plan = [pscustomobject]@{
     tool = 'RAM-Doctor'; version = $ToolVersion; host = $HostName; created = IsoDate (Get-Date); isAdmin = $IsAdmin; report = $htmlPath
     verdict = $verdict; observations = @($data.Observations); memory = $memory; suspects = @($suspectOut)
+    scan = [pscustomobject]@{ durationSec = [int][math]::Round(((Get-Date) - $t0).TotalSeconds); peakWorkingSetMB = $peakMB; peakCommitMB = $peakCommitMB; sampleSeconds = [int]$windowSec }   # additive, informational
 }
 [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 8), $utf8Bom)
-[IO.File]::WriteAllText($htmlPath, (New-RamReportHtml $data), $utf8Bom)
-# keep only the 3 newest scans of this PC, so reports never pile up
+Phase 'after plan'
+# keep only the 3 newest scans of this PC, so reports never pile up (exact host match: host "PC" must not eat files of host "PC-2")
 try {
-    $old = @(Get-ChildItem -LiteralPath $OutDir -Filter "Plan-$HostName-*.json" -File | Sort-Object Name -Descending | Select-Object -Skip 3)
+    $planRx = '^Plan-' + [regex]::Escape($HostName) + '-(\d{8}-\d{6})$'
+    $old = @(Get-ChildItem -LiteralPath $OutDir -Filter 'Plan-*.json' -File | Where-Object { $_.BaseName -match $planRx } | Sort-Object Name -Descending | Select-Object -Skip 3)
     foreach ($f in $old) {
-        $stampOld = $f.BaseName.Substring(("Plan-$HostName-").Length)
-        foreach ($n in "$($f.Name)", "RAMDoctor-$HostName-$stampOld.html", "RAMDoctor-$HostName-$stampOld.json") { Remove-Item -LiteralPath (Join-Path $OutDir $n) -Force -ErrorAction SilentlyContinue }
+        $stampOld = ([regex]::Match($f.BaseName, $planRx)).Groups[1].Value
+        foreach ($n in $f.Name, "RAMDoctor-$HostName-$stampOld.html", "RAMDoctor-$HostName-$stampOld.json") { Remove-Item -LiteralPath (Join-Path $OutDir $n) -Force -ErrorAction SilentlyContinue }
     }
 } catch { }
 
@@ -875,6 +997,7 @@ Write-Host '================ RESULT ================' -ForegroundColor Cyan
 Write-Host ("Memory: used {0} GB of {1} GB | NonPaged {2} GB | Paged {3} GB | unaccounted {4} GB" -f $memory.UsedGB, $memory.TotalGB, $memory.NonPagedGB, $memory.PagedGB, $memory.UnaccountedGB)
 Write-Host ("Suspects: {0} high, {1} medium, {2} low | hidden live processes: {3}" -f $highS.Count, $medS.Count, @($suspectOut | Where-Object { $_.risk -eq 'Low' }).Count, $hiddenLive.Count)
 Write-Host "Report : $htmlPath"
-Write-Host "Plan   : $planPath   (used by 2-Quarantine.bat, nothing has been changed)"
+Write-Host "Plan   : $planPath   (read by the Quarantine step; nothing has been changed)"
+Write-Host ("Tool footprint: peak working set {0} MB, peak commit {1} MB, scan took {2} s" -f $peakMB, $peakCommitMB, [int][math]::Round(((Get-Date) - $t0).TotalSeconds))
 Write-Host '========================================' -ForegroundColor Cyan
 if (-not $NoOpen) { try { Start-Process -FilePath $htmlPath } catch { } }

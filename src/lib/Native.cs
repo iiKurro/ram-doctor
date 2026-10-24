@@ -187,32 +187,130 @@ namespace RamDoc
                 byFirst[f].Add(t);
                 first[f] = true;
             }
+            // Streams every file through ONE small reusable buffer (a 60 MB display driver must not become a 60 MB
+            // allocation on a PC that is short of RAM). The last 3 bytes of each block are carried over so a tag
+            // that straddles two blocks is still found.
+            byte[] buf = new byte[256 * 1024 + 3];
             foreach (string file in files)
             {
-                byte[] data;
+                HashSet<string> hit = new HashSet<string>();
                 try
                 {
-                    FileInfo fi = new FileInfo(file);
-                    if (!fi.Exists || fi.Length > 80L * 1024 * 1024) continue;
-                    data = File.ReadAllBytes(file);
-                }
-                catch { continue; }
-
-                HashSet<string> hit = new HashSet<string>();
-                int end = data.Length - 3;
-                for (int i = 0; i < end; i++)
-                {
-                    byte b = data[i];
-                    if (!first[b]) continue;
-                    foreach (string t in byFirst[b])
+                    using (FileStream fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 65536))
                     {
-                        if (data[i + 1] == (byte)t[1] && data[i + 2] == (byte)t[2] && data[i + 3] == (byte)t[3])
-                            hit.Add(t);
+                        if (fs.Length > 512L * 1024 * 1024) continue;
+                        int carry = 0;
+                        while (true)
+                        {
+                            int read = fs.Read(buf, carry, buf.Length - carry);
+                            if (read <= 0) break;
+                            int total = carry + read;
+                            int end = total - 3;
+                            for (int i = 0; i < end; i++)
+                            {
+                                byte b = buf[i];
+                                if (!first[b]) continue;
+                                foreach (string t in byFirst[b])
+                                {
+                                    if (buf[i + 1] == (byte)t[1] && buf[i + 2] == (byte)t[2] && buf[i + 3] == (byte)t[3])
+                                        hit.Add(t);
+                                }
+                            }
+                            carry = Math.Min(3, total);
+                            Buffer.BlockCopy(buf, total - carry, buf, 0, carry);
+                        }
                     }
                 }
+                catch { continue; }
                 foreach (string t in hit) result[t].Add(file);
             }
             return result;
+        }
+
+        [DllImport("iphlpapi.dll", SetLastError = true)]
+        static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool order, int af, int tableClass, uint reserved);
+
+        // ESTABLISHED TCP connections as "pid|remoteAddress|remotePort" (IPv4 + IPv6). Replaces Get-NetTCPConnection:
+        // no PowerShell module to load (~15 MB), same data, works the same on every Windows language.
+        public static List<string> GetEstablishedTcp()
+        {
+            List<string> res = new List<string>();
+            int[] families = new int[] { 2, 23 };   // AF_INET, AF_INET6
+            foreach (int af in families)
+            {
+                int size = 0;
+                GetExtendedTcpTable(IntPtr.Zero, ref size, false, af, 5, 0);   // 5 = TCP_TABLE_OWNER_PID_ALL
+                if (size <= 0) continue;
+                IntPtr buf = Marshal.AllocHGlobal(size + 4096);
+                try
+                {
+                    for (int attempt = 0; attempt < 3; attempt++)
+                    {
+                        uint rc = GetExtendedTcpTable(buf, ref size, false, af, 5, 0);
+                        if (rc == 122)   // ERROR_INSUFFICIENT_BUFFER: the table grew meanwhile
+                        {
+                            Marshal.FreeHGlobal(buf);
+                            buf = Marshal.AllocHGlobal(size + 4096);
+                            continue;
+                        }
+                        if (rc != 0) break;
+                        int n = Marshal.ReadInt32(buf);
+                        int rowSize = af == 2 ? 24 : 56;
+                        for (int i = 0; i < n; i++)
+                        {
+                            int o = 4 + i * rowSize;
+                            string addr; int portRaw; int pid; int state;
+                            if (af == 2)
+                            {
+                                state = Marshal.ReadInt32(buf, o);
+                                uint remote = (uint)Marshal.ReadInt32(buf, o + 12);
+                                portRaw = Marshal.ReadInt32(buf, o + 16);
+                                pid = Marshal.ReadInt32(buf, o + 20);
+                                addr = new System.Net.IPAddress((long)remote).ToString();
+                            }
+                            else
+                            {
+                                byte[] a = new byte[16];
+                                Marshal.Copy(IntPtr.Add(buf, o + 24), a, 0, 16);
+                                portRaw = Marshal.ReadInt32(buf, o + 44);
+                                state = Marshal.ReadInt32(buf, o + 48);
+                                pid = Marshal.ReadInt32(buf, o + 52);
+                                addr = new System.Net.IPAddress(a).ToString();
+                            }
+                            if (state != 5) continue;   // MIB_TCP_STATE_ESTAB
+                            int port = ((portRaw & 0xFF) << 8) | ((portRaw >> 8) & 0xFF);
+                            res.Add(pid.ToString() + "|" + addr + "|" + port.ToString());
+                        }
+                        break;
+                    }
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+            return res;
+        }
+
+        [DllImport("kernel32.dll")]
+        static extern IntPtr GetCurrentProcess();
+
+        [DllImport("ntdll.dll", EntryPoint = "NtSetInformationProcess")]
+        static extern int NtSetInfoProcess(IntPtr process, int infoClass, ref int info, int length);
+
+        [DllImport("psapi.dll")]
+        static extern bool EmptyWorkingSet(IntPtr process);
+
+        // Hands this process' resident pages back to the OS (they stay available as reclaimable standby pages and
+        // are faulted back in on demand). Called between scan phases so the tool never sits on RAM it is not using.
+        public static void TrimWorkingSet()
+        {
+            try { EmptyWorkingSet(GetCurrentProcess()); } catch { }
+        }
+
+        // Makes this process polite on a struggling PC: low I/O priority and low memory (page) priority, so its pages
+        // are the first to be trimmed and its disk reads queue behind everything else. Best effort, never throws.
+        public static void LowerIoAndMemoryPriority()
+        {
+            try { int io = 1; NtSetInfoProcess(GetCurrentProcess(), 33, ref io, 4); } catch { }   // ProcessIoPriority: 1 = low
+            try { int pg = 3; NtSetInfoProcess(GetCurrentProcess(), 39, ref pg, 4); } catch { }   // ProcessPagePriority: 3 = low (5 = normal)
         }
     }
 }
