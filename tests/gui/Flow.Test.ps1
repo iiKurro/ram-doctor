@@ -42,6 +42,7 @@ class P { static void Main() {
 '@
     Add-Type -TypeDefinition $code -OutputAssembly $hogExe -OutputType ConsoleApplication
     Start-Process -FilePath $hogExe -WindowStyle Hidden | Out-Null
+    if (-not (Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey -Force | Out-Null }   # empty profiles (CI runners) have no Run key yet
     New-ItemProperty -LiteralPath $runKey -Name $runName -Value ('"' + $hogExe + '"') -PropertyType String -Force | Out-Null
     Write-Host "hog: $hog.exe  (run value $runName)"
 
