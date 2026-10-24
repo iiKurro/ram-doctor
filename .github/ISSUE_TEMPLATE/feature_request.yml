@@ -1,0 +1,55 @@
+name: Feature request
+description: Suggest an improvement or a new capability.
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome. Keep in mind the design principles: the scan is
+        **read-only and never uses the network**, there is **no telemetry**
+        (the only network feature is the Share button, which does nothing until
+        pressed and confirmed), anything that changes the system is **explicit
+        and reversible**, and the program holds **no secrets**.
+        Check the [roadmap](https://github.com/iiKurro/ram-doctor#roadmap) first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation, not the solution. What were you trying to find out or fix?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Other tools (RAMMap, PoolMon, Autoruns, ...) or workarounds, and why they are not enough.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Scan engine / detection
+        - Report
+        - GUI
+        - Quarantine / restore / purge
+        - Sending reports (copy summary / Share button / relay)
+        - Packaging / release
+        - Documentation / localisation
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for a similar request.
+          required: true
+        - label: I would be willing to help test it.
+          required: false

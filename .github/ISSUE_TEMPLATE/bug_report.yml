@@ -1,0 +1,96 @@
+name: Bug report
+description: Something crashes, hangs, produces a wrong result, or behaves unexpectedly.
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. A good report gets fixed faster.
+
+        **Privacy first.** This tracker is public. Reports and logs contain
+        file paths, your Windows user name and your PC name. Replace them with
+        `Friend` / `DESKTOP-DEMO` before pasting, and do not attach an
+        unredacted `report.html` or `plan.json`. (The *Share with my helper*
+        button uploads a redacted bundle privately to your helper, not to this
+        tracker, and *Copy summary for sending* produces a redacted text you can
+        read first; still double-check it.)
+
+        Looking for a **false positive** (a safe program rated suspicious)? Use the
+        *False positive / false negative* form instead. Security problem? See
+        [SECURITY.md](https://github.com/iiKurro/ram-doctor/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: RAM Doctor version
+      description: Shown in the report header (for example `v1.0`) or in the release you downloaded.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: How did you run it?
+      options:
+        - RAM-Doctor.bat from a GitHub Release
+        - Built from source (build/Build-SingleFile.ps1)
+        - Directly from src/ (GUI script)
+        - Command line (src/RAM-Doctor.ps1 or RAM-Doctor-Actions.ps1)
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and language
+      placeholder: "Windows 11 24H2 (build 26100), English / Arabic"
+    validations:
+      required: true
+  - type: dropdown
+    id: admin
+    attributes:
+      label: Did you accept the administrator (UAC) prompt?
+      options:
+        - "Yes"
+        - "No / not applicable"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, and what went wrong? Screenshots are welcome (blur names and paths).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output (redacted)
+      description: The text from the *details* pane of the window, or the console output of the script. Redact user and PC names.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and the [troubleshooting guide](https://github.com/iiKurro/ram-doctor/blob/main/docs/troubleshooting.md).
+          required: true
+        - label: I removed my Windows user name, PC name, e-mail addresses and any secrets from everything I pasted or attached.
+          required: true

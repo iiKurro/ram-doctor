@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/iiKurro/ram-doctor/security/advisories/new
+    about: Never open a public issue for a security problem. Use GitHub's private vulnerability reporting.
+  - name: Troubleshooting guide
+    url: https://github.com/iiKurro/ram-doctor/blob/main/docs/troubleshooting.md
+    about: SmartScreen, blocked files, antivirus warnings, "not administrator", Constrained Language Mode, locales.
+  - name: How detection works
+    url: https://github.com/iiKurro/ram-doctor/blob/main/docs/how-detection-works.md
+    about: What every signal, score and risk level means, and what the tool cannot detect.
+  - name: Sending your report to the person helping you
+    url: https://github.com/iiKurro/ram-doctor/blob/main/docs/privacy-and-safety.md#sending-your-report-to-someone-who-is-helping-you
+    about: Do not post reports in public issues. Use the Share button, or send the file / paste the redacted summary to your helper privately. How Share works is in docs/sharing.md.

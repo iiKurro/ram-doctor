@@ -1,0 +1,119 @@
+name: False positive / false negative
+description: A safe program was rated suspicious, or something malicious was missed.
+title: "[Detection]: "
+labels: ["false-positive", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Detection quality is the most valuable feedback this project gets. Risk
+        levels are **heuristic indicators, not verdicts** (see
+        [how detection works](https://github.com/iiKurro/ram-doctor/blob/main/docs/how-detection-works.md)).
+        An unsigned program in `AppData` rated *Low* is expected; this form is for
+        things that are clearly wrong or noisy.
+
+        **Privacy:** this tracker is public. Remove your Windows user name and
+        PC name from paths (use `C:\Users\Friend\...`) and do not attach the
+        full report. Never share a sample of real malware here.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem is this?
+      options:
+        - False positive - a legitimate program was rated Medium or High
+        - False positive - a legitimate program was rated Low and it is noisy
+        - False negative - something malicious or leaking was missed
+        - Wrong explanation in the report (the reason text does not match reality)
+    validations:
+      required: true
+  - type: input
+    id: name
+    attributes:
+      label: Program / file name
+      placeholder: "ExampleApp.exe"
+    validations:
+      required: true
+  - type: input
+    id: vendor
+    attributes:
+      label: Software and vendor
+      description: What is it, who makes it, where did you get it from?
+      placeholder: "Example Corp - downloaded from the vendor's website"
+    validations:
+      required: true
+  - type: input
+    id: path
+    attributes:
+      label: Install path (redacted)
+      placeholder: 'C:\Users\Friend\AppData\Local\ExampleApp\ExampleApp.exe'
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk level shown by RAM Doctor
+      options:
+        - High
+        - Medium
+        - Low
+        - Not listed
+    validations:
+      required: true
+  - type: input
+    id: score
+    attributes:
+      label: Score shown (if any)
+      placeholder: "7"
+  - type: textarea
+    id: reasons
+    attributes:
+      label: Reasons listed under "why is it suspicious?"
+      description: Copy the bullet list from the report for this file.
+      placeholder: |
+        - Runs from a user-data folder (AppData), not Program Files
+        - File is not digitally signed
+    validations:
+      required: true
+  - type: input
+    id: sha256
+    attributes:
+      label: SHA-256 of the file
+      description: "PowerShell: `Get-FileHash <path> -Algorithm SHA256`. Safe to share (it is not secret)."
+    validations:
+      required: false
+  - type: input
+    id: signature
+    attributes:
+      label: Signature / publisher shown
+      placeholder: "Valid - Example Corp, or Unsigned"
+  - type: textarea
+    id: why
+    attributes:
+      label: Why do you believe this is wrong?
+      description: For a false negative, describe the symptoms (Task Manager vs. real usage, pool tag, behaviour) and what eventually explained them.
+    validations:
+      required: true
+  - type: dropdown
+    id: virustotal
+    attributes:
+      label: Did you check the hash on VirusTotal or a similar service?
+      options:
+        - "Yes - clean"
+        - "Yes - detections (explain above)"
+        - "No"
+  - type: input
+    id: version
+    attributes:
+      label: RAM Doctor version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I removed my Windows user name, PC name, e-mail addresses and secrets from everything I pasted.
+          required: true
+        - label: I am not attaching malware samples.
+          required: true

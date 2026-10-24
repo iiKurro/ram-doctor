@@ -1,0 +1,948 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAM Doctor — اعرف لماذا ذاكرتك ممتلئة | فاحص الذاكرة لويندوز</title>
+<meta name="description" content="أداة مجانية ومفتوحة المصدر بملف واحد: تكتشف أين تذهب ذاكرة جهازك حين لا يُظهر مدير المهام السبب. تسرّب في تعريف، ذاكرة خارج العمليات، أو برنامج متخفٍّ، مع تقرير عربي واضح وعزل قابل للتراجع.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b">
+<link rel="canonical" href="https://iikurro.github.io/ram-doctor/">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RAM Doctor">
+<meta property="og:title" content="RAM Doctor — اعرف لماذا ذاكرتك ممتلئة">
+<meta property="og:description" content="ملف واحد، نقرتان، وتقرير عربي واضح يكشف أين تذهب الذاكرة. مجاني ومفتوح المصدر.">
+<meta property="og:url" content="https://iikurro.github.io/ram-doctor/">
+<meta property="og:image" content="https://iikurro.github.io/ram-doctor/assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:locale" content="ar_AR">
+<meta property="og:locale:alternate" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="RAM Doctor — اعرف لماذا ذاكرتك ممتلئة">
+<meta name="twitter:description" content="ملف واحد، نقرتان، وتقرير عربي واضح يكشف أين تذهب الذاكرة. مجاني ومفتوح المصدر.">
+<meta name="twitter:image" content="https://iikurro.github.io/ram-doctor/assets/og-image.png">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"RAM Doctor","alternateName":"فاحص الذاكرة","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"1.0.0","inLanguage":["ar","en"],"description":"Free open-source Windows tool that finds where memory goes when Task Manager shows nothing: kernel pool leaks, hidden processes and suspicious files, with a reversible quarantine and an Arabic report.","downloadUrl":"https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat","url":"https://iikurro.github.io/ram-doctor/","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"7san","url":"https://github.com/iiKurro"}}
+</script>
+<script>
+/* apply the saved theme before first paint (no flash) */
+(function(){try{var t=localStorage.getItem('rd-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t)}}catch(e){}document.documentElement.className='js'})();
+</script>
+<style>
+/* ---------- tokens (shadcn-style, tuned toward Windows 11 / Fluent) ---------- */
+:root{
+  --bg:#fafafa;--fg:#18181b;--muted:#71717a;--muted2:#52525b;--card:#ffffff;--card2:#f4f4f5;--border:#e4e4e7;--line:rgba(24,24,27,.11);
+  --accent:#0067c0;--accent-fg:#ffffff;--accent-soft:rgba(0,103,192,.11);
+  --ok:#0f7b0f;--ok-bg:#dff6dd;--warn:#8a5200;--warn-bg:#fff4ce;--err:#c42b1c;--err-bg:#fde7e9;
+  --key-bg:#18181b;--key-bg-busy:#3f3f46;--key-fg:#fafafa;--key-hl:rgba(255,255,255,.2);
+  --glass:rgba(250,250,250,.74);--win-bar:#f3f3f3;--win-fg:#52525b;
+  --shadow:0 1px 2px rgba(0,0,0,.05),0 22px 44px -14px rgba(0,0,0,.2);
+  --font:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Tahoma,Arial,sans-serif;
+  --font-d:"Segoe UI Variable Display","Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Tahoma,Arial,sans-serif;
+  --mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#09090b;--fg:#f4f4f5;--muted:#a1a1aa;--muted2:#d4d4d8;--card:#111113;--card2:#18181b;--border:#27272a;--line:rgba(244,244,245,.09);
+    --accent:#60cdff;--accent-fg:#00263d;--accent-soft:rgba(96,205,255,.14);
+    --ok:#6ccb5f;--ok-bg:#16301a;--warn:#f5c451;--warn-bg:#3a2e12;--err:#ff99a4;--err-bg:#3a1c1f;
+    --key-bg:#f4f4f5;--key-bg-busy:#d4d4d8;--key-fg:#18181b;--key-hl:rgba(255,255,255,.9);
+    --glass:rgba(9,9,11,.74);--win-bar:#202020;--win-fg:#a1a1aa;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 22px 44px -14px rgba(0,0,0,.7);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#09090b;--fg:#f4f4f5;--muted:#a1a1aa;--muted2:#d4d4d8;--card:#111113;--card2:#18181b;--border:#27272a;--line:rgba(244,244,245,.09);
+  --accent:#60cdff;--accent-fg:#00263d;--accent-soft:rgba(96,205,255,.14);
+  --ok:#6ccb5f;--ok-bg:#16301a;--warn:#f5c451;--warn-bg:#3a2e12;--err:#ff99a4;--err-bg:#3a1c1f;
+  --key-bg:#f4f4f5;--key-bg-busy:#d4d4d8;--key-fg:#18181b;--key-hl:rgba(255,255,255,.9);
+  --glass:rgba(9,9,11,.74);--win-bar:#202020;--win-fg:#a1a1aa;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 22px 44px -14px rgba(0,0,0,.7);
+  color-scheme:dark;
+}
+
+/* ---------- base ---------- */
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;scroll-padding-top:76px}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+img,svg{max-width:100%}
+a{color:inherit}
+h1,h2,h3,p{margin:0}
+.wrap{max-width:72rem;margin-inline:auto;padding-inline:1.5rem}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.skip{position:absolute;inset-inline-start:1rem;top:-4rem;z-index:100;background:var(--fg);color:var(--bg);padding:.6rem 1rem;border-radius:.6rem;text-decoration:none;font-weight:600}
+.skip:focus{top:1rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
+.ic{width:1.25em;height:1.25em;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.ic-fill{fill:currentColor;stroke:none}
+.mono{font-family:var(--mono);direction:ltr;unicode-bidi:isolate}
+.ltr{direction:ltr;unicode-bidi:isolate}
+
+/* ---------- nav (glass) ---------- */
+.nav{position:sticky;top:0;z-index:50;background:var(--glass);-webkit-backdrop-filter:saturate(1.6) blur(14px);backdrop-filter:saturate(1.6) blur(14px);border-bottom:1px solid var(--border)}
+.nav .wrap{display:flex;align-items:center;gap:1rem;height:60px}
+.brand{display:flex;align-items:center;gap:.6rem;font-weight:700;font-family:var(--font-d);font-size:1.05rem;text-decoration:none;letter-spacing:-.01em}
+.brand svg{width:28px;height:28px}
+.nav-links{display:flex;gap:.15rem;margin-inline-start:1rem}
+.nav-links a{padding:.4rem .8rem;border-radius:.55rem;color:var(--muted2);text-decoration:none;font-size:.9rem;transition:background .2s,color .2s}
+.nav-links a:hover{background:var(--card2);color:var(--fg)}
+.nav-end{margin-inline-start:auto;display:flex;gap:.5rem;align-items:center}
+.icon-btn,.gh-btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;height:36px;border:1px solid var(--border);border-radius:.6rem;background:var(--card);color:var(--fg);font:inherit;font-size:.85rem;font-weight:600;cursor:pointer;text-decoration:none;transition:background .2s,border-color .2s}
+.icon-btn{width:36px}
+.gh-btn{padding-inline:.8rem}
+.icon-btn:hover,.gh-btn:hover{background:var(--card2)}
+.gh-btn .star{color:#d4a017}
+.theme-sun{display:none}
+:root[data-theme="dark"] .theme-sun{display:block}
+:root[data-theme="dark"] .theme-moon{display:none}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .theme-sun{display:block}:root:not([data-theme="light"]) .theme-moon{display:none}}
+
+/* ---------- hero (21st: Download Section with Column Lines) ---------- */
+.hero{position:relative;isolation:isolate;overflow:hidden;padding:5rem 0 3.5rem;text-align:center}
+.cols{position:absolute;inset:0;z-index:-1;pointer-events:none;
+  background-image:repeating-linear-gradient(to right,var(--line) 0 1px,transparent 1px 80px);background-position:center top;
+  -webkit-mask-image:radial-gradient(ellipse 62% 78% at 50% 34%,#000 30%,transparent 70%);mask-image:radial-gradient(ellipse 62% 78% at 50% 34%,#000 30%,transparent 70%)}
+.cols::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,var(--accent-soft),transparent);width:24%;opacity:.9}
+.hero-inner{display:flex;flex-direction:column;align-items:center}
+.badge{display:inline-flex;align-items:center;gap:.5rem;border-radius:999px;background:var(--fg);color:var(--bg);padding:.375rem 1rem;font-size:.875rem;font-weight:500;margin-bottom:1.5rem}
+.badge i{width:.5rem;height:.5rem;border-radius:50%;background:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.3)}
+h1.display{font-family:var(--font-d);font-size:clamp(2.1rem,5.4vw,3.9rem);line-height:1.22;font-weight:700;letter-spacing:-.02em;max-width:19em;text-wrap:balance;margin-bottom:1.1rem}
+.sub{max-width:41rem;color:var(--muted);font-size:1.125rem;text-wrap:balance;margin-bottom:2.25rem}
+.cta{display:flex;flex-wrap:wrap;gap:.9rem;align-items:center;justify-content:center}
+.meta{margin-top:1.1rem;font-size:.85rem;color:var(--muted)}
+.btn-outline{display:inline-flex;align-items:center;gap:.65rem;height:3.5rem;padding-inline:1.5rem;border:2px solid var(--fg);border-radius:.75rem;color:var(--fg);font-size:.95rem;font-weight:600;text-decoration:none;transition:background .2s,color .2s}
+.btn-outline:hover{background:var(--fg);color:var(--bg)}
+
+/* 21st: Download Button - the soft 3D key that morphs idle -> downloading -> done */
+.key{--hl:var(--key-hl);position:relative;display:inline-flex;align-items:center;gap:.8rem;height:3.5rem;padding-inline:2rem;border-radius:.75rem;background:var(--key-bg);color:var(--key-fg);font-family:inherit;font-size:1.0625rem;font-weight:600;text-decoration:none;cursor:pointer;user-select:none;outline:none;
+  box-shadow:0 0 0 1px rgba(0,0,0,.06),0 1px 1px rgba(0,0,0,.1),0 2px 4px rgba(0,0,0,.08),inset 0 1px 2px var(--hl),inset 0 -2px 4px rgba(0,0,0,.18);
+  transition:background-color .3s cubic-bezier(.32,.72,0,1),box-shadow .3s cubic-bezier(.32,.72,0,1),color .3s cubic-bezier(.32,.72,0,1),transform .3s cubic-bezier(.32,.72,0,1)}
+.key:hover{transform:translateY(-1px)}
+.key:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.key[data-phase="downloading"]{background:var(--key-bg-busy);cursor:default;transform:none;
+  box-shadow:0 0 0 1px rgba(0,0,0,.06),0 1px 1px rgba(0,0,0,.06),inset 0 1px 2px rgba(0,0,0,.16),inset 0 2px 4px rgba(0,0,0,.08),inset 0 -1px 2px rgba(0,0,0,.08)}
+.key[data-phase="done"]{background:#059669;color:#fff;cursor:default;transform:none;
+  box-shadow:0 1px 1px rgba(0,0,0,.25),0 3px 6px rgba(0,0,0,.2),0 6px 12px rgba(0,0,0,.15),inset 0 1px 2px rgba(255,255,255,.22),inset 0 -3px 6px rgba(0,0,0,.35)}
+.key-ic{position:relative;width:1.25rem;height:1.25rem;flex:none}
+.key-ic svg{position:absolute;inset:0;width:100%;height:100%;opacity:0;transition:opacity .3s ease-out}
+.key[data-phase="idle"] .i-idle,.key[data-phase="downloading"] .i-busy,.key[data-phase="done"] .i-done{opacity:1}
+.key-lbl{position:relative;display:block;height:1.6em;line-height:1.6;overflow:hidden;transition:width .35s cubic-bezier(.32,.72,0,1)}
+.key-lbl span{position:absolute;inset-block-start:0;inset-inline-start:0;opacity:0;transition:opacity .2s ease-out;white-space:nowrap}
+html:not(.js) .key-lbl{height:auto;overflow:visible}
+html:not(.js) .key-lbl .l-idle{position:static;opacity:1}
+html:not(.js) .key-lbl .l-busy,html:not(.js) .key-lbl .l-done{display:none}
+.key[data-phase="idle"] .l-idle,.key[data-phase="downloading"] .l-busy,.key[data-phase="done"] .l-done{opacity:1;transition:opacity .3s ease-out .2s}
+.i-busy{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.next{width:min(100%,34rem);margin-top:1.4rem;padding:1rem 1.25rem;border:1px solid var(--border);border-radius:1rem;background:var(--card);text-align:start;box-shadow:var(--shadow)}
+.next[hidden]{display:none}
+.next b{display:block;margin-bottom:.15rem}
+.next p{color:var(--muted2);font-size:.92rem}
+.trust{display:flex;flex-wrap:wrap;gap:.6rem 1.6rem;justify-content:center;list-style:none;padding:0;margin:2.4rem 0 0;color:var(--muted2);font-size:.9rem}
+.trust li{display:inline-flex;align-items:center;gap:.5rem}
+.trust .ic{color:var(--accent)}
+
+/* ---------- sections ---------- */
+section.s{padding:5rem 0}
+.s-head{display:flex;flex-direction:column;align-items:center;gap:.75rem;text-align:center;margin-bottom:3.25rem}
+.kicker{font-size:.75rem;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.s-head h2{font-family:var(--font-d);font-size:clamp(1.7rem,3.8vw,2.7rem);line-height:1.25;font-weight:650;letter-spacing:-.02em;text-wrap:balance}
+.s-head p{max-width:40rem;color:var(--muted);text-wrap:balance}
+.alt{background:var(--card2);border-block:1px solid var(--border)}
+
+/* 21st: How It Works Steps (numbered circles + connector line + centred CTA) */
+.how{position:relative;display:grid;grid-template-columns:repeat(3,1fr);gap:2rem}
+.how::before{content:"";position:absolute;inset-inline:0;top:1.5rem;height:1px;background:var(--border)}
+.step{position:relative;display:flex;flex-direction:column;align-items:center;gap:1rem;text-align:center}
+.num{position:relative;z-index:1;display:grid;place-items:center;width:3rem;height:3rem;border-radius:50%;border:1px solid var(--border);background:var(--bg);font-size:.75rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--muted)}
+.alt .num{background:var(--card2)}
+.step h3{font-family:var(--font-d);font-size:1.15rem;font-weight:650;letter-spacing:-.01em}
+.step p{font-size:.95rem;color:var(--muted);max-width:21rem}
+@media (min-width:761px){.step p{min-height:5.2rem}}
+.vis{width:100%;flex:1;display:flex;align-items:center;justify-content:center;padding:1rem;border:1px solid var(--border);border-radius:1rem;background:var(--card);margin-top:.25rem;min-height:15.5rem;box-shadow:var(--shadow);overflow:hidden}
+.how-cta{display:flex;justify-content:center;margin-top:3rem}
+.pill{display:inline-flex;align-items:center;gap:.6rem;height:3rem;padding-inline:2rem;border-radius:999px;background:var(--fg);color:var(--bg);font-weight:600;font-size:.95rem;text-decoration:none;transition:opacity .2s,transform .2s}
+.pill:hover{opacity:.88;transform:translateY(-1px)}
+
+/* step visuals */
+.dlchip{display:flex;align-items:center;gap:.9rem;width:100%;max-width:20rem;padding:.9rem 1rem;border:1px solid var(--border);border-radius:.9rem;background:var(--bg);text-align:start}
+.dlchip-ic{display:grid;place-items:center;width:2.6rem;height:2.6rem;border-radius:.7rem;background:var(--accent-soft);color:var(--accent);flex:none}
+.dlchip b{display:block;font-size:.95rem;line-height:1.3}
+.dlchip small{display:block;color:var(--muted);font-size:.78rem}
+.dlchip-open{margin-inline-start:auto;font-size:.8rem;font-weight:600;color:var(--accent);white-space:nowrap}
+.dlchip small{line-height:1.45}
+.uac{width:100%;max-width:19.5rem;border:1px solid var(--border);border-radius:.8rem;background:var(--bg);overflow:hidden;text-align:start;font-size:.82rem}
+.uac-head{display:flex;align-items:center;gap:.5rem;padding:.7rem .9rem;background:var(--accent);color:var(--accent-fg);font-weight:600}
+.uac-body{padding:.9rem}
+.uac-body p{color:var(--muted2);line-height:1.5;margin-bottom:.7rem}
+.uac-app{display:flex;align-items:center;gap:.6rem;padding:.6rem .7rem;border-radius:.6rem;background:var(--card2);margin-bottom:.8rem}
+.uac-app small{display:block;color:var(--muted);font-size:.74rem}
+.uac-btns{display:flex;gap:.5rem}
+.uac-btns span{flex:1;text-align:center;padding:.45rem;border-radius:.45rem;border:1px solid var(--border);font-weight:600}
+.uac-btns .yes{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);box-shadow:0 0 0 3px var(--accent-soft)}
+.minibtn{display:flex;flex-direction:column;gap:.7rem;width:100%;max-width:18rem}
+.minibtn .bar{height:.5rem;border-radius:999px;background:var(--card2);overflow:hidden}
+.minibtn .bar i{display:block;height:100%;width:62%;background:var(--accent);border-radius:999px}
+.minibtn .go{display:flex;justify-content:center;align-items:center;gap:.5rem;height:2.9rem;border-radius:.6rem;background:var(--accent);color:var(--accent-fg);font-weight:650}
+.minibtn small{color:var(--muted);text-align:center}
+
+/* Windows-11 window frame (title bar drawn in CSS) */
+.win{margin:0;border:1px solid var(--border);border-radius:.8rem;overflow:hidden;background:var(--card);box-shadow:var(--shadow)}
+.win-bar{display:flex;align-items:center;gap:.6rem;height:2.25rem;padding-inline:.8rem;background:var(--win-bar);color:var(--win-fg);font-size:.78rem;direction:rtl}
+.win-bar svg.logo{width:16px;height:16px}
+.win-ctl{margin-inline-start:auto;display:flex;gap:1rem;direction:ltr;opacity:.8}
+.win-ctl i{display:block;width:10px;height:10px;position:relative}
+.win-ctl i:nth-child(1)::before{content:"";position:absolute;inset-inline:0;top:5px;height:1px;background:currentColor}
+.win-ctl i:nth-child(2)::before{content:"";position:absolute;inset:0;border:1px solid currentColor;border-radius:1px}
+.win-ctl i:nth-child(3)::before,.win-ctl i:nth-child(3)::after{content:"";position:absolute;left:-1px;top:4px;width:12px;height:1px;background:currentColor;transform:rotate(45deg)}
+.win-ctl i:nth-child(3)::after{transform:rotate(-45deg)}
+.win img{display:block;width:100%;height:auto;background:var(--card2)}
+.win.browser .win-bar{direction:ltr;gap:.7rem}
+.addr{flex:1;max-width:30rem;margin-inline:auto;text-align:center;padding:.18rem .8rem;border-radius:999px;background:var(--bg);border:1px solid var(--border);font-size:.72rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.img-dark{display:none!important}
+:root[data-theme="dark"] .img-light{display:none!important}
+:root[data-theme="dark"] .img-dark{display:block!important}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .img-light{display:none!important}:root:not([data-theme="light"]) .img-dark{display:block!important}}
+
+/* tabs: Fluent segmented control */
+.tabs{display:inline-flex;gap:2px;padding:4px;border-radius:.9rem;background:var(--card2);border:1px solid var(--border);margin:0 auto 1.6rem;flex-wrap:wrap;justify-content:center}
+.alt .tabs{background:var(--bg)}
+.tab{border:0;background:transparent;color:var(--muted2);font:inherit;font-size:.9rem;font-weight:600;padding:.5rem 1.1rem;border-radius:.65rem;cursor:pointer;transition:background .2s,color .2s}
+.tab:hover{color:var(--fg)}
+.tab[aria-selected="true"]{background:var(--card);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.12),0 0 0 1px var(--border)}
+.tabwrap{display:flex;flex-direction:column;align-items:center}
+.panel{width:100%;max-width:56rem}
+.panel[hidden]{display:none}
+.panel figcaption,.cap{margin-top:1rem;text-align:center;color:var(--muted);font-size:.95rem}
+
+/* features (bento) */
+.bento{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+.fcard{padding:1.6rem;border:1px solid var(--border);border-radius:1.1rem;background:var(--card);display:flex;flex-direction:column;gap:.7rem;transition:border-color .25s,transform .25s,box-shadow .25s}
+.fcard:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--border));transform:translateY(-2px);box-shadow:var(--shadow)}
+.span2{grid-column:span 2}
+.tile{display:grid;place-items:center;width:2.6rem;height:2.6rem;border-radius:.75rem;background:var(--accent-soft);color:var(--accent);font-size:1.1rem}
+.fcard h3{font-family:var(--font-d);font-size:1.12rem;font-weight:650;letter-spacing:-.01em}
+.fcard p{color:var(--muted);font-size:.95rem}
+.membar{display:flex;height:2.1rem;border-radius:.6rem;overflow:hidden;border:1px solid var(--border);margin-top:.5rem}
+.plist{list-style:none;margin:.5rem 0 0;padding:0;display:flex;flex-direction:column;gap:.4rem;font-size:.82rem}
+.plist li{display:flex;align-items:center;gap:.6rem;padding:.45rem .7rem;border:1px solid var(--border);border-radius:.6rem;background:var(--card2)}
+.plist i{width:.5rem;height:.5rem;border-radius:50%;background:var(--ok);flex:none}
+.plist em{margin-inline-start:auto;font-style:normal;color:var(--muted);font-family:var(--mono);direction:ltr}
+.plist .ghost{border-style:dashed;border-color:var(--err);background:var(--err-bg);color:var(--err)}
+.plist .ghost i{background:var(--err)}
+.plist .ghost em{color:var(--err)}
+.membar span{display:block;height:100%;width:var(--w)}
+.js .membar span{width:0;transition:width 1.1s cubic-bezier(.32,.72,0,1)}
+.js .membar.in span{width:var(--w)}
+.legend{display:flex;flex-wrap:wrap;gap:.35rem 1.1rem;margin-top:.7rem;font-size:.82rem;color:var(--muted2);list-style:none;padding:0}
+.legend li{display:inline-flex;align-items:center;gap:.4rem}
+.legend i{width:.7rem;height:.7rem;border-radius:3px;display:inline-block}
+.chip{display:inline-flex;align-items:center;gap:.5rem;align-self:flex-start;margin-top:.4rem;padding:.35rem .8rem;border-radius:.6rem;background:var(--err-bg);color:var(--err);font-size:.82rem;font-weight:600}
+.cap-s{font-size:.78rem;color:var(--muted)}
+
+/* hand-over cards: share / copy summary / open report */
+.hand{display:grid;grid-template-columns:2fr 1fr;gap:1rem}
+.hand .share{grid-row:span 2;display:grid;grid-template-columns:1fr 1fr;gap:1.6rem;align-items:center;padding:1.8rem}
+.share-txt{display:flex;flex-direction:column;gap:.75rem}
+.promise{list-style:none;margin:.2rem 0 0;padding:0;display:flex;flex-direction:column;gap:.5rem;font-size:.9rem;color:var(--muted2)}
+.promise li{display:flex;gap:.55rem;align-items:flex-start}
+.promise .ic{color:var(--ok);margin-top:.28rem}
+.more{display:inline-flex;align-items:center;align-self:flex-start;gap:.4rem;margin-top:.3rem;font-weight:600;font-size:.9rem;color:var(--accent);text-decoration:none}
+.more:hover{text-decoration:underline}
+.shots{display:flex;flex-direction:column;gap:.9rem;min-width:0}
+.shots .win img{display:block;width:100%;height:auto}
+.after{list-style:none;margin:2.4rem auto 0;padding:0;display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;justify-content:center;font-size:.92rem;color:var(--muted2)}
+.after li{display:inline-flex;align-items:center;gap:.5rem}
+.after .n{display:grid;place-items:center;width:1.6rem;height:1.6rem;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:.78rem;font-weight:700}
+.after .sep{color:var(--muted)}
+html[dir="rtl"] .arr{transform:scaleX(-1)}
+
+/* privacy */
+.two{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.box{border:1px solid var(--border);border-radius:1.1rem;background:var(--card);padding:1.6rem}
+.box>h3{display:flex;align-items:center;gap:.6rem;font-family:var(--font-d);font-size:1.15rem;margin-bottom:1rem}
+.rows{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.rows li{display:flex;gap:.85rem;padding:.9rem 0;border-top:1px solid var(--border)}
+.rows li:first-child{border-top:0;padding-top:.2rem}
+.rows .ic{margin-top:.2rem}
+.rows b{display:block;font-size:.98rem;line-height:1.5}
+.rows span.d{display:block;color:var(--muted);font-size:.88rem;line-height:1.6}
+.ok .ic{color:var(--ok)}
+.no .ic{color:var(--err)}
+.pathtag{display:inline-block;margin-top:.25rem;padding:.1rem .55rem;border-radius:.4rem;background:var(--card2);border:1px solid var(--border);font-size:.78rem;color:var(--muted2)}
+
+/* safety */
+.safe{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+.safe .fcard{gap:.55rem}
+.safe .tile{background:var(--ok-bg);color:var(--ok)}
+
+/* report */
+.rep{display:grid;grid-template-columns:.85fr 1.15fr;gap:3rem;align-items:center}
+.rep h2{font-family:var(--font-d);font-size:clamp(1.6rem,3.2vw,2.3rem);line-height:1.25;font-weight:650;letter-spacing:-.02em;margin:.6rem 0 1rem;text-wrap:balance}
+.rep p{color:var(--muted)}
+.checks{list-style:none;padding:0;margin:1.4rem 0 0;display:flex;flex-direction:column;gap:.65rem}
+.checks li{display:flex;gap:.65rem;align-items:flex-start;font-size:.95rem}
+.checks .ic{color:var(--accent);margin-top:.28rem}
+
+/* 21st-style accordion (shadcn) */
+.acc{max-width:46rem;margin-inline:auto;border-top:1px solid var(--border)}
+.acc-item{border-bottom:1px solid var(--border)}
+.acc-item h3{font-size:inherit}
+.acc-trigger{display:flex;width:100%;align-items:center;justify-content:space-between;gap:1rem;padding:1.15rem .25rem;background:none;border:0;color:var(--fg);font:inherit;font-weight:600;font-size:1.02rem;text-align:start;cursor:pointer}
+.acc-trigger:hover{color:var(--accent)}
+.acc-trigger .ic{color:var(--muted);transition:transform .3s cubic-bezier(.32,.72,0,1)}
+.acc-item.open .acc-trigger .ic{transform:rotate(180deg)}
+.js .acc-panel{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s cubic-bezier(.32,.72,0,1)}
+.js .acc-item.open .acc-panel{grid-template-rows:1fr}
+.js .acc-panel>div{overflow:hidden}
+.acc-body{padding:0 .25rem 1.25rem;color:var(--muted2);font-size:.97rem;max-width:42rem}
+.acc-body b{color:var(--fg)}
+
+/* footer */
+footer{border-top:1px solid var(--border);padding:3rem 0 2.5rem;background:var(--card2)}
+.foot{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:2rem}
+.foot h4{margin:0 0 .7rem;font-size:.8rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.foot ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.4rem;font-size:.93rem}
+.foot a{text-decoration:none;color:var(--muted2)}
+.foot a:hover{color:var(--accent);text-decoration:underline}
+.foot p{color:var(--muted);font-size:.9rem;max-width:26rem;margin-top:.6rem}
+.legal{margin-top:2.2rem;padding-top:1.4rem;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:.5rem 1.5rem;justify-content:space-between;color:var(--muted);font-size:.82rem}
+
+/* reveal */
+.js .rv{opacity:0;transform:translateY(14px);transition:opacity .6s ease,transform .6s cubic-bezier(.32,.72,0,1)}
+.js .rv.in{opacity:1;transform:none}
+
+/* motion + responsive */
+@media (prefers-reduced-motion:no-preference){
+  .cols{animation:colshift 30s linear infinite}
+  .cols::after{animation:sweep 11s ease-in-out infinite}
+}
+@keyframes colshift{to{background-position:calc(50% + 80px) top}}
+@keyframes sweep{0%{inset-inline-start:-30%}100%{inset-inline-start:110%}}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+  .js .rv{opacity:1;transform:none}.js .membar span{width:var(--w)}
+}
+@media (max-width:960px){
+  .nav-links{display:none}
+  .bento,.safe{grid-template-columns:1fr 1fr}
+  .span2{grid-column:span 2}
+  .rep{grid-template-columns:1fr;gap:2rem}
+  .hand{grid-template-columns:1fr}
+  .hand .share{grid-row:auto;grid-template-columns:1fr}
+}
+@media (max-width:760px){
+  section.s{padding:3.5rem 0}
+  .hero{padding:3.2rem 0 2.5rem}
+  .how{grid-template-columns:1fr;gap:2.6rem}.how::before{display:none}
+  .two,.foot{grid-template-columns:1fr}
+  .bento,.safe{grid-template-columns:1fr}.span2{grid-column:auto}
+  .vis{min-height:0}
+  .key{padding-inline:1.5rem;height:3.4rem}
+}
+@media (max-width:520px){
+  .wrap{padding-inline:1.1rem}
+  .gh-text,.gh-btn .star{display:none}.gh-btn{width:36px;padding:0}
+  .cta{flex-direction:column;width:100%}
+  .cta .key,.cta .btn-outline{width:min(100%,21rem);justify-content:center}
+  .btn-outline{height:3.2rem}
+  .tab{padding:.45rem .8rem;font-size:.84rem}
+}
+@media print{.nav,.cols{display:none}.js .rv{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main" data-i18n="skip">تخطَّ إلى المحتوى</a>
+
+<!-- icon sprite (lucide-style strokes) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2b9bff"/><stop offset="1" stop-color="#0058ad"/></linearGradient></defs>
+  <symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="url(#lg)"/><g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="10.5" width="16" height="11" rx="2" stroke-width="1.8"/><path d="M11.5 7.5v3M16 7.5v3M20.5 7.5v3M11.5 21.5v3M16 21.5v3M20.5 21.5v3" stroke-width="1.6"/><path d="M10.5 16h3l1.5-2.6 2 5.2 1.5-2.6h3" stroke-width="1.5"/></g></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/></symbol>
+  <symbol id="i-spin" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2m-7.07-2.93 1.41-1.41m11.32-11.32 1.41-1.41M2 12h2m16 0h2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  <symbol id="i-gh" viewBox="0 0 24 24"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-eyeoff" viewBox="0 0 24 24"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/></symbol>
+  <symbol id="i-wifioff" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/><path d="M5 12.859a10 10 0 0 1 5.17-2.69"/><path d="M19 12.859a10 10 0 0 0-2.007-1.523"/><path d="M2 8.82a15 15 0 0 1 4.177-2.643"/><path d="M22 8.82a15 15 0 0 0-11.288-3.764"/><path d="m2 2 20 20"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><path d="M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
+  <symbol id="i-hist" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="m6 3 14 9-14 9Z"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+</svg>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="RAM Doctor"><svg aria-hidden="true"><use href="#logo"/></svg><span>RAM Doctor</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#how" data-i18n="nav.how">كيف يعمل</a>
+      <a href="#features" data-i18n="nav.features">المزايا</a>
+      <a href="#report" data-i18n="nav.report">التقرير</a>
+      <a href="#privacy" data-i18n="nav.privacy">الخصوصية</a>
+      <a href="#faq" data-i18n="nav.faq">الأسئلة</a>
+    </nav>
+    <div class="nav-end">
+      <a class="gh-btn" href="https://github.com/iiKurro/ram-doctor" rel="noopener" data-i18n-attr="aria-label:aria.gh" aria-label="المشروع على GitHub"><svg class="ic ic-fill" aria-hidden="true"><use href="#i-gh"/></svg><span class="gh-text"><span data-i18n="nav.star">نجمة</span></span><svg class="ic ic-fill star" aria-hidden="true"><use href="#i-star"/></svg></a>
+      <button class="icon-btn" id="themeBtn" type="button" data-i18n-attr="aria-label:aria.theme;title:aria.theme" aria-label="تبديل الوضع الفاتح/الداكن" title="تبديل الوضع الفاتح/الداكن"><svg class="ic theme-moon" aria-hidden="true"><use href="#i-moon"/></svg><svg class="ic theme-sun" aria-hidden="true"><use href="#i-sun"/></svg></button>
+      <button class="icon-btn" id="langBtn" type="button" aria-label="English" lang="en" style="font-size:.78rem">EN</button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ====================== HERO ====================== -->
+<section class="hero" id="top" aria-labelledby="h1">
+  <div class="cols" aria-hidden="true"></div>
+  <div class="wrap hero-inner">
+    <span class="badge rv"><i></i><span data-i18n="hero.badge">مجاني · مفتوح المصدر · بدون تثبيت</span></span>
+    <h1 class="display rv" id="h1" data-i18n="hero.h1">الذاكرة ممتلئة…<br>ومدير المهام لا يُظهر السبب؟</h1>
+    <p class="sub rv" data-i18n="hero.sub">افتح ملفًا واحدًا، واعرف خلال دقيقة أين تذهب ذاكرتك فعلًا: تسرّب في تعريف (Driver)، ذاكرة خارج كل العمليات، أو برنامج متخفٍّ. مع تقرير عربي واضح تقدر ترسله لمن يساعدك.</p>
+
+    <div class="cta rv">
+      <a class="key" id="dl" data-phase="idle" aria-busy="false" href="https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat" download="RAM-Doctor.bat" rel="noopener">
+        <span class="key-ic" aria-hidden="true">
+          <svg class="ic i-idle"><use href="#i-dl"/></svg>
+          <svg class="ic i-busy"><use href="#i-spin"/></svg>
+          <svg class="ic i-done" style="stroke-width:2.5"><use href="#i-check"/></svg>
+        </span>
+        <span class="key-lbl">
+          <span class="l-idle" data-i18n="dl.idle">نزّل الأداة</span>
+          <span class="l-busy" data-i18n="dl.busy" aria-hidden="true">جارٍ التنزيل…</span>
+          <span class="l-done" data-i18n="dl.done" aria-hidden="true">تم التنزيل — افتح الملف</span>
+        </span>
+      </a>
+      <a class="btn-outline" href="https://github.com/iiKurro/ram-doctor" rel="noopener"><svg class="ic ic-fill" aria-hidden="true"><use href="#i-gh"/></svg><span data-i18n="hero.gh">عرض على GitHub</span></a>
+    </div>
+    <p class="meta rv" data-i18n="hero.meta">ملف واحد · نحو 340 KB · ويندوز 10 و11</p>
+    <span class="sr" id="dlLive" role="status" aria-live="polite"></span>
+
+    <div class="next" id="next" hidden>
+      <b data-i18n="next.t">الخطوة التالية</b>
+      <p data-i18n="next.b">افتح الملف <span class="mono">RAM-Doctor.bat</span> من مجلد التنزيلات. إن ظهرت رسالة «Windows protected your PC» فاضغط <b>More info</b> ثم <b>Run anyway</b>، ثم وافق على نافذة الصلاحيات بـ «نعم».</p>
+    </div>
+
+    <ul class="trust rv" aria-label="Highlights">
+      <li><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg><span data-i18n="trust.1">بدون تثبيت</span></li>
+      <li><svg class="ic" aria-hidden="true"><use href="#i-wifioff"/></svg><span data-i18n="trust.2">الفحص بلا إنترنت وبلا إحصاءات</span></li>
+      <li><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg><span data-i18n="trust.3">كل شيء قابل للتراجع</span></li>
+      <li><svg class="ic" aria-hidden="true"><use href="#i-code"/></svg><span data-i18n="trust.4">مفتوح المصدر (MIT)</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ====================== HOW IT WORKS (21st: How It Works Steps) ====================== -->
+<section class="s" id="how" aria-labelledby="how-h">
+  <div class="wrap">
+    <div class="s-head rv">
+      <span class="kicker" data-i18n="how.k">كيف يعمل</span>
+      <h2 id="how-h" data-i18n="how.h">ثلاث خطوات، وبدون تعقيد</h2>
+    </div>
+    <div class="how">
+      <div class="step rv">
+        <div class="num">01</div>
+        <h3 data-i18n="s1.t">نزّل الملف</h3>
+        <p data-i18n="s1.b">اضغط زر التنزيل. ملف واحد صغير، بدون فك ضغط وبدون تثبيت.</p>
+        <div class="vis">
+          <div class="dlchip" aria-hidden="true">
+            <div class="dlchip-ic"><svg class="ic" style="width:1.4rem;height:1.4rem"><use href="#i-file"/></svg></div>
+            <div><b class="ltr">RAM-Doctor.bat</b><small><span class="ltr">340 KB</span> · <span data-i18n="chip.done">اكتمل التنزيل</span></small></div>
+            <span class="dlchip-open" data-i18n="chip.open">فتح الملف</span>
+          </div>
+        </div>
+      </div>
+      <div class="step rv">
+        <div class="num">02</div>
+        <h3 data-i18n="s2.t">افتحه ووافق على الصلاحيات</h3>
+        <p data-i18n="s2.b">انقر نقرتين على الملف ثم اختر «نعم» في نافذة ويندوز. الصلاحيات لازمة لقراءة ذاكرة النظام.</p>
+        <div class="vis">
+          <div class="uac" aria-hidden="true">
+            <div class="uac-head"><svg class="ic" style="width:1.1rem;height:1.1rem"><use href="#i-shield"/></svg><span data-i18n="uac.t">التحكم في حساب المستخدم</span></div>
+            <div class="uac-body">
+              <p data-i18n="uac.q">هل تريد السماح لهذا التطبيق بإجراء تغييرات على جهازك؟</p>
+              <div class="uac-app"><svg class="ic" style="width:1.5rem;height:1.5rem;color:var(--muted)"><use href="#i-box"/></svg><div><b class="ltr">Windows Command Processor</b><small data-i18n="uac.pub">الناشر المعتمد: Microsoft Windows</small></div></div>
+              <div class="uac-btns"><span class="yes" data-i18n="uac.yes">نعم</span><span data-i18n="uac.no">لا</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="step rv">
+        <div class="num">03</div>
+        <h3 data-i18n="s3.t">اضغط «ابدأ الفحص»</h3>
+        <p data-i18n="s3.b">انتظر نحو دقيقة. تظهر النتيجة بألوان واضحة، وتقدر تفتح التقرير الكامل أو تعزل ما يستحق.</p>
+        <div class="vis" style="padding:.6rem">
+          <figure class="win" style="width:100%">
+            <div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+            <img class="img-light" src="assets/gui-light.png" width="940" height="740" loading="lazy" decoding="async" alt="نافذة فاحص الذاكرة بالوضع الفاتح" data-i18n-attr="alt:img.gui.l">
+            <img class="img-dark" src="assets/gui-dark.png" width="940" height="740" loading="lazy" decoding="async" alt="نافذة فاحص الذاكرة بالوضع الداكن" data-i18n-attr="alt:img.gui.d">
+          </figure>
+        </div>
+      </div>
+    </div>
+    <div class="how-cta rv">
+      <a class="pill" href="https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat" download="RAM-Doctor.bat" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-dl"/></svg><span data-i18n="how.cta">نزّل الأداة الآن</span></a>
+    </div>
+    <ol class="after rv" aria-label="After the scan" data-i18n-attr="aria-label:after.al">
+      <li><span class="n">1</span><span data-i18n="after.1">افحص</span></li>
+      <li class="sep" aria-hidden="true"><svg class="ic arr"><use href="#i-arrow"/></svg></li>
+      <li><span class="n">2</span><span data-i18n="after.2">اقرأ النتيجة</span></li>
+      <li class="sep" aria-hidden="true"><svg class="ic arr"><use href="#i-arrow"/></svg></li>
+      <li><span class="n">3</span><span data-i18n="after.3">اضغط «شاركه» أو انسخ الملخص</span></li>
+    </ol>
+  </div>
+</section>
+
+<!-- ====================== IN ACTION ====================== -->
+<section class="s alt" id="action" aria-labelledby="act-h">
+  <div class="wrap">
+    <div class="s-head rv">
+      <span class="kicker" data-i18n="act.k">من الداخل</span>
+      <h2 id="act-h" data-i18n="act.h">نافذة واحدة، ونتيجة بالعربي</h2>
+      <p data-i18n="act.p">تصميم يشبه ويندوز 11، يتبع الوضع الفاتح والداكن ولون التمييز عندك، وبأزرار كبيرة وواضحة.</p>
+    </div>
+    <div class="tabwrap rv">
+      <div class="tabs" role="tablist" aria-label="Screens">
+        <button class="tab" role="tab" id="t1" aria-controls="p1" aria-selected="true" data-i18n="tab.1">أثناء الفحص</button>
+        <button class="tab" role="tab" id="t2" aria-controls="p2" aria-selected="false" tabindex="-1" data-i18n="tab.2">جهاز سليم</button>
+        <button class="tab" role="tab" id="t3" aria-controls="p3" aria-selected="false" tabindex="-1" data-i18n="tab.3">تسرّب في تعريف</button>
+      </div>
+      <figure class="panel" id="p1" role="tabpanel" aria-labelledby="t1" style="margin:0">
+        <div class="win"><div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+        <img src="assets/gui-progress.png" width="940" height="740" loading="lazy" decoding="async" alt="النافذة أثناء الفحص مع شريط التقدم" data-i18n-attr="alt:img.progress"></div>
+        <figcaption data-i18n="cap.1">شريط تقدّم واضح وخطوات مفهومة. لا تغلق النافذة حتى ينتهي الفحص.</figcaption>
+      </figure>
+      <figure class="panel" id="p2" role="tabpanel" aria-labelledby="t2" hidden style="margin:0">
+        <div class="win"><div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+        <img src="assets/gui-clean.png" width="940" height="740" loading="lazy" decoding="async" alt="نتيجة فحص جهاز سليم" data-i18n-attr="alt:img.clean"></div>
+        <figcaption data-i18n="cap.2">إن لم يجد شيئًا فهو يقول ذلك صراحةً بدل أن يخيفك بلا سبب.</figcaption>
+      </figure>
+      <figure class="panel" id="p3" role="tabpanel" aria-labelledby="t3" hidden style="margin:0">
+        <div class="win"><div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+        <img src="assets/gui-kernel.png" width="940" height="740" loading="lazy" decoding="async" alt="نتيجة تظهر تسربًا في ذاكرة النواة" data-i18n-attr="alt:img.kernel"></div>
+        <figcaption data-i18n="cap.3">تسرّب في ذاكرة النواة: يحدد التقرير الوسم والتعريف المرجّح لتحديثه.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== FEATURES (bento) ====================== -->
+<section class="s" id="features" aria-labelledby="feat-h">
+  <div class="wrap">
+    <div class="s-head rv">
+      <span class="kicker" data-i18n="feat.k">المزايا</span>
+      <h2 id="feat-h" data-i18n="feat.h">كل ما لا يُظهره مدير المهام</h2>
+    </div>
+    <div class="bento">
+      <article class="fcard span2 rv">
+        <div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-cpu"/></svg></div>
+        <h3 data-i18n="f1.t">يكشف تسرّب ذاكرة النواة</h3>
+        <p data-i18n="f1.b">حين يكون السبب تعريفًا معيبًا، لا يظهر في أي برنامج. الأداة تقرأ مجمّع الذاكرة (Non-paged pool) وتربط الوسم بالتعريف المرجّح لتعرف ما الذي تحدّثه.</p>
+        <div class="membar rv" id="bar" role="img" aria-label="Example: 16 GB used mostly by the kernel non-paged pool" data-i18n-attr="aria-label:f1.alt">
+          <span style="--w:19%;background:#3b82f6"></span><span style="--w:6%;background:#93c5fd"></span><span style="--w:61%;background:#c42b1c"></span><span style="--w:8%;background:#94a3b8"></span><span style="--w:6%;background:#d1d5db"></span>
+        </div>
+        <ul class="legend">
+          <li><i style="background:#3b82f6"></i><span data-i18n="leg.1">برامج</span> <span class="ltr">3.1 GB</span></li>
+          <li><i style="background:#93c5fd"></i><span data-i18n="leg.2">مشتركة</span> <span class="ltr">1.0 GB</span></li>
+          <li><i style="background:#c42b1c"></i><span data-i18n="leg.3">نواة (Non-paged)</span> <span class="ltr">9.8 GB</span></li>
+          <li><i style="background:#94a3b8"></i><span data-i18n="leg.4">مخزّنة</span> <span class="ltr">1.2 GB</span></li>
+          <li><i style="background:#d1d5db"></i><span data-i18n="leg.5">حرة</span> <span class="ltr">0.9 GB</span></li>
+        </ul>
+        <span class="chip mono"><svg class="ic" aria-hidden="true" style="width:1rem;height:1rem"><use href="#i-alert"/></svg>Pool tag: Ndis → netflt64.sys</span>
+        <span class="cap-s" data-i18n="f1.cap">مثال توضيحي (بيانات وهمية) لجهاز ذاكرته 16 GB.</span>
+      </article>
+      <article class="fcard rv">
+        <div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-eyeoff"/></svg></div>
+        <h3 data-i18n="f2.t">يبحث عن العمليات المخفية</h3>
+        <p data-i18n="f2.b">يسأل النواة مباشرة عن كل رقم عملية ويقارنه بقوائم النظام، فيلتقط ما يتخفّى عن مدير المهام.</p>
+        <ul class="plist mono" aria-hidden="true">
+          <li><i></i><span>explorer.exe</span><em>4120</em></li>
+          <li><i></i><span>svchost.exe</span><em>1096</em></li>
+          <li class="ghost"><i></i><span>hidden ?</span><em>4812</em></li>
+        </ul>
+      </article>
+      <article class="fcard rv">
+        <div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg></div>
+        <h3 data-i18n="f3.t">يقيّم الملفات المشبوهة</h3>
+        <p data-i18n="f3.b">التوقيع الرقمي، مكان التشغيل، الاسم، سطر الأوامر، والاتصال بالشبكة، مع شرح لسبب كل حكم.</p>
+      </article>
+      <article class="fcard rv">
+        <div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg></div>
+        <h3 data-i18n="f4.t">عزل قابل للتراجع</h3>
+        <p data-i18n="f4.b">يوقف العملية ويعطّل تشغيلها التلقائي وينقل الملف جانبًا. وبضغطة واحدة ترجع الأمور كما كانت.</p>
+      </article>
+      <article class="fcard rv">
+        <div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-zap"/></svg></div>
+        <h3 data-i18n="f7.t">خفيف وسريع</h3>
+        <p data-i18n="f7.b">ملف واحد نحو 340 KB، يفك نفسه في مجلد مؤقت مقفول للمدير فقط ويُحذف عند الإغلاق. الفحص يستهلك نحو 110 MB من الذاكرة في ذروته ويعمل بأولوية منخفضة، ويستغرق نحو دقيقة، وبدون أي تثبيت.</p>
+      </article>
+    </div>
+
+    <!-- hand the result over: share / copy summary / open report file -->
+    <div class="s-head rv" style="margin:4.5rem 0 2rem">
+      <span class="kicker" data-i18n="hand.k">أرسل النتيجة</span>
+      <h2 style="font-size:clamp(1.4rem,3vw,2rem)" data-i18n="hand.h">ثلاث طرق لتوصيل النتيجة لمن يساعدك</h2>
+    </div>
+    <div class="hand">
+      <article class="fcard share rv">
+        <div class="share-txt">
+          <div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></div>
+          <h3 data-i18n="share.t">شاركه مع مساعدك بضغطة</h3>
+          <p data-i18n="share.b">اختر اسم مستخدم دائمًا مرة واحدة فقط، وبدون أي أكواد. بعد الفحص اضغط «مشاركة» فيُرسل تقرير <b>منقّح</b> إلى مستودع GitHub <b>خاص</b> بمساعدك ليقرأه هناك.</p>
+          <ul class="promise">
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="share.p1">منقّح: يُحذف منه اسم مستخدم ويندوز واسم الجهاز والبريد والأسرار.</span></li>
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="share.p2">مستودع خاص بمساعدك فقط، لا يراه غيره.</span></li>
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="share.p3">لا يُرسل شيء حتى تضغط وتؤكد. والبرنامج لا يحمل أي مفتاح (token).</span></li>
+          </ul>
+          <a class="more" href="https://github.com/iiKurro/ram-doctor/blob/main/docs/sharing.md" rel="noopener"><span data-i18n="share.more">تفاصيل المشاركة</span><svg class="ic arr" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+        </div>
+        <div class="shots">
+          <figure class="win" style="margin:0">
+            <div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span data-i18n="shot.share">مشاركة التقرير</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+            <img src="assets/gui-share.png" loading="lazy" decoding="async" alt="نافذة مشاركة التقرير مع المساعد" data-i18n-attr="alt:img.share">
+          </figure>
+          <figure class="win" style="margin:0">
+            <div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span data-i18n="shot.profile">اختيار اسم المستخدم</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+            <img src="assets/gui-profile.png" loading="lazy" decoding="async" alt="نافذة اختيار اسم المستخدم لمرة واحدة" data-i18n-attr="alt:img.profile">
+          </figure>
+        </div>
+      </article>
+      <article class="fcard rv">
+        <div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg></div>
+        <h3 data-i18n="f5.t">نسخ ملخص جاهز للواتساب بضغطة</h3>
+        <p data-i18n="f5.b">ملخص قصير ومنقّح (بدون اسم المستخدم أو اسم الجهاز) تلصقه في أي محادثة ليفهم من يساعدك الوضع فورًا.</p>
+      </article>
+      <article class="fcard rv">
+        <div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg></div>
+        <h3 data-i18n="f6.t">افتح ملف التقرير لإرساله</h3>
+        <p data-i18n="f6.b">التقرير الكامل ملف HTML عربي واضح، فيه بصمة SHA-256 لكل ملف مشبوه للتحقق منها في VirusTotal. زر واحد يفتح مكانه لترسله.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== REPORT ====================== -->
+<section class="s alt" id="report" aria-labelledby="rep-h">
+  <div class="wrap rep">
+    <div class="rv">
+      <span class="kicker" data-i18n="rep.k">التقرير</span>
+      <h2 id="rep-h" data-i18n="rep.h">تقرير واحد يشرح كل شيء</h2>
+      <p data-i18n="rep.p">بعد الفحص يُحفظ تقرير بتصميم نظيف يعمل بدون إنترنت، تفتحه في المتصفح أو ترسله لمن يساعدك.</p>
+      <ul class="checks">
+        <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="rep.1">أين تذهب الذاكرة: برامج، نواة، مشتركة، وغير منسوبة</span></li>
+        <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="rep.2">أكبر المستهلكين وأسرعهم نموًا أثناء الفحص</span></li>
+        <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="rep.3">وسوم ذاكرة النواة والتعريف المرجّح</span></li>
+        <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="rep.4">الملفات المشبوهة بأسبابها وبصمة SHA-256</span></li>
+        <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="rep.5">خطوات مقترحة للإصلاح بلغة بسيطة</span></li>
+      </ul>
+    </div>
+    <figure class="win browser rv" style="margin:0">
+      <div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span class="addr mono">RAMDoctor-PC-20260101-120000.html</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+      <img class="img-light" src="assets/report-sample.png" width="1000" height="760" loading="lazy" decoding="async" alt="مثال على تقرير الفحص بالوضع الفاتح" data-i18n-attr="alt:img.rep.l">
+      <img class="img-dark" src="assets/report-sample-dark.png" width="1000" height="760" loading="lazy" decoding="async" alt="مثال على تقرير الفحص بالوضع الداكن" data-i18n-attr="alt:img.rep.d">
+    </figure>
+  </div>
+</section>
+
+<!-- ====================== PRIVACY / FOOTPRINT ====================== -->
+<section class="s" id="privacy" aria-labelledby="pr-h">
+  <div class="wrap">
+    <div class="s-head rv">
+      <span class="kicker" data-i18n="pr.k">الخصوصية والأثر</span>
+      <h2 id="pr-h" data-i18n="pr.h">ماذا يحفظ على جهازك؟ القليل جدًا</h2>
+      <p data-i18n="pr.p">لا نخفي شيئًا: هذه كل الملفات التي قد تتركها الأداة، وكل ما لا تفعله أبدًا.</p>
+    </div>
+    <div class="two">
+      <div class="box ok rv">
+        <h3><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg><span data-i18n="pr.save">ما يُحفظ</span></h3>
+        <ul class="rows">
+          <li><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg><div><b data-i18n="pr.s1.t">تقرير وخطة لكل فحص</b><span class="d" data-i18n="pr.s1.b">نحو 45 KB للفحص الواحد، ويُحتفظ بآخر 3 فحوص فقط. زر «امسح تقارير الأداة» يحذفها.</span><span class="pathtag mono">Desktop\RAM-Doctor-Reports</span></div></li>
+          <li><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg><div><b data-i18n="pr.s2.t">ملفات العزل (فقط إن استخدمت العزل)</b><span class="d" data-i18n="pr.s2.b">قابلة للاسترجاع، أو للحذف النهائي من النافذة نفسها.</span><span class="pathtag mono">C:\ProgramData\RAM-Doctor</span></div></li>
+          <li><svg class="ic" aria-hidden="true"><use href="#i-hist"/></svg><div><b data-i18n="pr.s3.t">نقطة استعادة واحدة قبل العزل</b><span class="d" data-i18n="pr.s3.b">إن كانت حماية النظام (System Protection) مفعّلة عندك.</span></div></li>
+          <li><svg class="ic" aria-hidden="true"><use href="#i-zap"/></svg><div><b data-i18n="pr.s4.t">مجلد مؤقت صغير أثناء التشغيل</b><span class="d" data-i18n="pr.s4.b">نحو 330 KB من السكربتات المقروءة في مجلد لا يكتب فيه إلا المدير، يُحذف عند إغلاق النافذة.</span><span class="pathtag mono">C:\ProgramData\RAM-Doctor-run\…</span></div></li>
+          <li><svg class="ic" aria-hidden="true"><use href="#i-user"/></svg><div><b data-i18n="pr.s5.t">اسم المستخدم الذي اخترته (فقط إن استخدمت زر المشاركة)</b><span class="d" data-i18n="pr.s5.b">ملف صغير يحفظ اسمك المستعار للمشاركة، ويُحذف بزر واحد من النافذة.</span><span class="pathtag mono">%APPDATA%\RAM-Doctor\profile.json</span></div></li>
+        </ul>
+      </div>
+      <div class="box no rv">
+        <h3><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg><span data-i18n="pr.never">ما لا يفعله أبدًا</span></h3>
+        <ul class="rows">
+          <li><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg><div><b data-i18n="pr.n1.t">لا تثبيت</b><span class="d" data-i18n="pr.n1.b">لا يضيف برنامجًا ولا خدمة ولا مهمة مجدولة ولا مفتاح تشغيل مع ويندوز.</span></div></li>
+          <li><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg><div><b data-i18n="pr.n2.t">الفحص بلا إنترنت وبلا إحصاءات</b><span class="d" data-i18n="pr.n2.b">لا يتصل بأي خادم أثناء الفحص ولا يرسل أي إحصاءات. الميزة الوحيدة التي تستخدم الشبكة هي زر «شاركه مع مساعدك»، وهي مطفأة حتى تضغطه وتؤكد.</span></div></li>
+          <li><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg><div><b data-i18n="pr.n3.t">لا حذف مفاجئ</b><span class="d" data-i18n="pr.n3.b">الفحص للقراءة فقط. والحذف النهائي أمر منفصل يطلب تأكيدك.</span></div></li>
+          <li><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg><div><b data-i18n="pr.n4.t">لا إخفاء</b><span class="d" data-i18n="pr.n4.b">الملف نص عادي: افتحه بالمفكرة واقرأ كل سطر قبل التشغيل.</span></div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== SAFETY ====================== -->
+<section class="s alt" id="safety" aria-labelledby="sf-h">
+  <div class="wrap">
+    <div class="s-head rv">
+      <span class="kicker" data-i18n="sf.k">الأمان</span>
+      <h2 id="sf-h" data-i18n="sf.h">مصمَّم ليكون حذرًا</h2>
+    </div>
+    <div class="safe">
+      <article class="fcard rv"><div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg></div><h3 data-i18n="sf.1.t">الفحص للقراءة فقط</h3><p data-i18n="sf.1.b">لا يوقف شيئًا ولا يغيّر شيئًا، ولا يستخدم الشبكة أثناء الفحص. أي إجراء يأتي بعد اختيارك أنت.</p></article>
+      <article class="fcard rv"><div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg></div><h3 data-i18n="sf.2.t">لا يمسّ ملفات ويندوز</h3><p data-i18n="sf.2.b">ملفات النظام والملفات الموقّعة من مايكروسوفت لا تُعزل أبدًا.</p></article>
+      <article class="fcard rv"><div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-hash"/></svg></div><h3 data-i18n="sf.3.t">يتحقق من بصمة الملف</h3><p data-i18n="sf.3.b">إن تغيّر الملف بين الفحص والعزل (SHA-256) يتوقف احتياطًا.</p></article>
+      <article class="fcard rv"><div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-hist"/></svg></div><h3 data-i18n="sf.4.t">نقطة استعادة قبل العزل</h3><p data-i18n="sf.4.b">تُنشأ تلقائيًا إن كانت حماية النظام مفعّلة.</p></article>
+      <article class="fcard rv"><div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg></div><h3 data-i18n="sf.5.t">تراجع بضغطة</h3><p data-i18n="sf.5.b">الملفات والخدمات والتشغيل التلقائي ترجع كما كانت تمامًا.</p></article>
+      <article class="fcard rv"><div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></div><h3 data-i18n="sf.6.t">الحذف النهائي صريح</h3><p data-i18n="sf.6.b">زر مستقل بتحذير واضح، ولا يحدث تلقائيًا أبدًا.</p></article>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== FAQ ====================== -->
+<section class="s" id="faq" aria-labelledby="faq-h">
+  <div class="wrap">
+    <div class="s-head rv">
+      <span class="kicker" data-i18n="faq.k">الأسئلة الشائعة</span>
+      <h2 id="faq-h" data-i18n="faq.h">أسئلة قبل أن تبدأ</h2>
+    </div>
+    <div class="acc rv" id="acc">
+      <div class="acc-item"><h3><button class="acc-trigger" id="q1" aria-expanded="false" aria-controls="a1" type="button"><span data-i18n="q1">هل سيظهر تحذير من ويندوز أو مضاد الفيروسات؟</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></h3><div class="acc-panel" id="a1" role="region" aria-labelledby="q1"><div><div class="acc-body" data-i18n="a1">ممكن. الملف نص عادي غير موقّع رقميًا، فقد تعرض ويندوز رسالة <b>Windows protected your PC</b>: اضغط <b>More info</b> ثم <b>Run anyway</b>. وبعض برامج الحماية تنبّه من أي ملف bat جديد. تقدر تفتح الملف بالمفكرة وتقرأه كاملًا، وتتحقق من بصمته SHA-256 في صفحة الإصدار.</div></div></div></div>
+      <div class="acc-item"><h3><button class="acc-trigger" id="q2" aria-expanded="false" aria-controls="a2" type="button"><span data-i18n="q2">لماذا يطلب صلاحيات المدير؟</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></h3><div class="acc-panel" id="a2" role="region" aria-labelledby="q2"><div><div class="acc-body" data-i18n="a2">لقراءة معلومات لا تظهر لبرنامج عادي: ذاكرة النواة، وعمليات النظام المحمية، وبقية المستخدمين. وهي لازمة أيضًا إن اخترت العزل. الفحص نفسه للقراءة فقط.</div></div></div></div>
+      <div class="acc-item"><h3><button class="acc-trigger" id="q3" aria-expanded="false" aria-controls="a3" type="button"><span data-i18n="q3">هل يحذف شيئًا من جهازي؟</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></h3><div class="acc-panel" id="a3" role="region" aria-labelledby="q3"><div><div class="acc-body" data-i18n="a3"><b>لا.</b> الفحص يقرأ فقط. والعزل ينقل الملف جانبًا ويمكن التراجع عنه. الحذف النهائي لا يحدث إلا بزر مستقل تضغطه أنت وتؤكده.</div></div></div></div>
+      <div class="acc-item"><h3><button class="acc-trigger" id="q8" aria-expanded="false" aria-controls="a8" type="button"><span data-i18n="q8">هل يرفع بياناتي؟</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></h3><div class="acc-panel" id="a8" role="region" aria-labelledby="q8"><div><div class="acc-body" data-i18n="a8"><b>الفحص نفسه لا.</b> لا يتصل بالشبكة ولا يرسل إحصاءات أو تتبّعًا. الميزة الوحيدة التي تستخدم الشبكة هي زر <b>«شاركه مع مساعدك»</b>: مطفأة حتى تضغطه وتؤكد الإرسال، وترسل تقريرًا <b>منقّحًا</b> (بدون اسم مستخدم ويندوز واسم الجهاز والبريد والأسرار) إلى مستودع GitHub <b>خاص</b> بمساعدك، ولا يحمل البرنامج أي مفتاح. إن لم تضغطه فلن يخرج شيء من جهازك. التفاصيل في <a href="https://github.com/iiKurro/ram-doctor/blob/main/docs/sharing.md" rel="noopener">توثيق المشاركة</a>.</div></div></div></div>
+      <div class="acc-item"><h3><button class="acc-trigger" id="q4" aria-expanded="false" aria-controls="a4" type="button"><span data-i18n="q4">الملف غير موقّع رقميًا، لماذا؟</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></h3><div class="acc-panel" id="a4" role="region" aria-labelledby="q4"><div><div class="acc-body" data-i18n="a4">شهادات التوقيع مدفوعة، والمشروع شخصي ومجاني. بدلًا من ذلك الكود كله مفتوح ومقروء، ويمكنك بناء الملف بنفسك من المستودع ومقارنة بصمته بالمنشور.</div></div></div></div>
+      <div class="acc-item"><h3><button class="acc-trigger" id="q5" aria-expanded="false" aria-controls="a5" type="button"><span data-i18n="q5">هل يغني عن مضاد الفيروسات؟</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></h3><div class="acc-panel" id="a5" role="region" aria-labelledby="q5"><div><div class="acc-body" data-i18n="a5"><b>لا.</b> هو أداة تشخيص لمشكلة الذاكرة، ويعتمد على مؤشرات وليس قواعد بيانات فيروسات. «مؤشر» لا يعني «فيروس»: راجع التقرير وتحقق من الملف في VirusTotal قبل أي عزل.</div></div></div></div>
+      <div class="acc-item"><h3><button class="acc-trigger" id="q6" aria-expanded="false" aria-controls="a6" type="button"><span data-i18n="q6">ماذا لو لم يجد شيئًا؟</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></h3><div class="acc-panel" id="a6" role="region" aria-labelledby="q6"><div><div class="acc-body" data-i18n="a6">شغّله والمشكلة موجودة (الذاكرة ممتلئة)، فالفحص يلتقط حالة اللحظة. جرّب «إعادة التشغيل» لا «إيقاف التشغيل»، وحدّث التعريفات، وراجع قسم الذاكرة غير المنسوبة في التقرير.</div></div></div></div>
+      <div class="acc-item"><h3><button class="acc-trigger" id="q7" aria-expanded="false" aria-controls="a7" type="button"><span data-i18n="q7">على أي ويندوز يعمل؟</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></h3><div class="acc-panel" id="a7" role="region" aria-labelledby="q7"><div><div class="acc-body" data-i18n="a7">ويندوز 10 و11 مع PowerShell 5.1 (موجود افتراضيًا). التصميم مضبوط على ويندوز 11، ويعمل بشكل سليم على 10.</div></div></div></div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <a class="brand" href="#top"><svg aria-hidden="true"><use href="#logo"/></svg><span>RAM Doctor</span></a>
+        <p data-i18n="ft.tag">أداة تشخيص ذاكرة مجانية ومفتوحة المصدر لويندوز.</p>
+      </div>
+      <div>
+        <h4 data-i18n="ft.proj">المشروع</h4>
+        <ul>
+          <li><a href="https://github.com/iiKurro/ram-doctor" rel="noopener" data-i18n="ft.repo">المستودع على GitHub</a></li>
+          <li><a href="https://github.com/iiKurro/ram-doctor/releases" rel="noopener" data-i18n="ft.rel">الإصدارات</a></li>
+          <li><a href="https://github.com/iiKurro/ram-doctor/issues" rel="noopener" data-i18n="ft.iss">المشاكل والاقتراحات</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4 data-i18n="ft.more">المزيد</h4>
+        <ul>
+          <li><a href="https://github.com/iiKurro/ram-doctor/blob/main/SECURITY.md" rel="noopener" data-i18n="ft.sec">سياسة الأمان</a></li>
+          <li><a href="https://github.com/iiKurro/ram-doctor/blob/main/LICENSE" rel="noopener" data-i18n="ft.lic">رخصة MIT</a></li>
+          <li><a href="https://github.com/iiKurro/ram-doctor/blob/main/README.md" rel="noopener" data-i18n="ft.doc">التوثيق (README)</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="legal">
+      <span>RAM Doctor v1.0.0 · © 2026 7san · MIT</span>
+      <span data-i18n="ft.credit">إلهام التصميم من مكوّنات 21st.dev: <a href="https://21st.dev/@scrollxui/components/download-with-columnlines" rel="noopener">scrollxui</a> و<a href="https://21st.dev/@bidyut10/components/download-button" rel="noopener">bidyut10</a> و<a href="https://21st.dev/@ln-dev7/components/how-it-works-09" rel="noopener">ln-dev7</a>.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+'use strict';
+var D=document, R=D.documentElement;
+function $$(s,r){return Array.prototype.slice.call((r||D).querySelectorAll(s))}
+function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+
+/* ---------------- i18n: the markup is Arabic; English lives here ---------------- */
+var EN={
+'skip':'Skip to content','nav.how':'How it works','nav.features':'Features','nav.report':'Report','nav.privacy':'Privacy','nav.faq':'FAQ','nav.star':'Star',
+'aria.gh':'Project on GitHub','aria.theme':'Toggle light/dark theme',
+'hero.badge':'Free · Open source · No install',
+'hero.h1':'RAM is full…<br>and Task Manager shows nothing?',
+'hero.sub':'Open one file and find out in a minute where your memory really goes: a driver leak, memory outside every process, or a hidden program. You get a clear report you can send to whoever is helping you.',
+'dl.idle':'Download the tool','dl.busy':'Downloading…','dl.done':'Downloaded — open the file',
+'hero.gh':'View on GitHub','hero.meta':'One file · about 340 KB · Windows 10 &amp; 11',
+'next.t':'Next step','next.b':'Open <span class="mono">RAM-Doctor.bat</span> from your Downloads folder. If Windows shows “Windows protected your PC”, click <b>More info</b> then <b>Run anyway</b>, then approve the permission prompt with “Yes”.',
+'trust.1':'No install','trust.2':'The scan works offline, no telemetry','trust.3':'Everything is reversible','trust.4':'Open source (MIT)',
+'how.k':'How it works','how.h':'Three steps, no fuss',
+'s1.t':'Download the file','s1.b':'Press the download button. One small file — no unzipping, no installer.',
+'s2.t':'Open it and approve the prompt','s2.b':'Double-click the file, then choose “Yes” in the Windows prompt. Admin rights are needed to read system memory.',
+'s3.t':'Press “Start scan”','s3.b':'Wait about a minute. The result appears in clear colours, and you can open the full report or isolate what deserves it.',
+'chip.done':'Download complete','chip.open':'Open file','uac.t':'User Account Control','uac.q':'Do you want to allow this app to make changes to your device?','uac.pub':'Verified publisher: Microsoft Windows','uac.yes':'Yes','uac.no':'No',
+'img.gui.l':'The RAM Doctor window, light theme','img.gui.d':'The RAM Doctor window, dark theme','how.cta':'Download the tool now',
+'act.k':'Inside','act.h':'One window, results in Arabic','act.p':'Designed to feel like Windows 11: it follows light/dark mode and your accent colour, with big, clear buttons.',
+'tab.1':'During the scan','tab.2':'A healthy PC','tab.3':'A driver leak',
+'img.progress':'The window during a scan, with the progress bar','img.clean':'Scan result for a healthy PC','img.kernel':'A result showing a kernel memory leak',
+'cap.1':'A clear progress bar and understandable steps. Keep the window open until the scan ends.','cap.2':'When it finds nothing it says so plainly, instead of scaring you for no reason.','cap.3':'A kernel-memory leak: the report names the pool tag and the likely driver to update.',
+'feat.k':'Features','feat.h':'Everything Task Manager doesn’t show',
+'f1.t':'Finds kernel memory leaks','f1.b':'When a faulty driver is the cause, no program shows it. The tool reads the non-paged pool and maps the pool tag to the likely driver, so you know what to update.',
+'f1.alt':'Example: 16 GB used, mostly by the kernel non-paged pool','leg.1':'Programs','leg.2':'Shared','leg.3':'Kernel (Non-paged)','leg.4':'Cached','leg.5':'Free','f1.cap':'Illustrative example (fake data) of a 16 GB machine.',
+'f2.t':'Hunts hidden processes','f2.b':'It asks the kernel about every process ID directly and compares with the system lists, catching what hides from Task Manager.',
+'f3.t':'Scores suspicious files','f3.b':'Digital signature, location, name, command line and network use — with a plain explanation behind every verdict.',
+'f4.t':'Reversible quarantine','f4.b':'It stops the process, disables auto-start and moves the file aside. One click puts everything back.',
+'hand.k':'Hand over the result','hand.h':'Three ways to get the result to whoever helps you',
+'share.t':'Share with your helper in one click','share.b':'Pick a permanent username once — no codes. After the scan press “Share” and a <b>redacted</b> report goes to your helper’s <b>private</b> GitHub repository, where they read it.',
+'share.p1':'Redacted: your Windows username, PC name, e-mail addresses and secrets are removed.','share.p2':'A private repository that only your helper can see.','share.p3':'Nothing is sent until you press the button and confirm. The program ships with no token.','share.more':'How sharing works',
+'shot.share':'Share the report','shot.profile':'Choose your username','img.share':'The share window for sending the report to your helper','img.profile':'The one-time username window',
+'after.al':'After the scan','after.1':'Scan','after.2':'Read the result','after.3':'Press “Share” or copy the summary',
+'pr.s5.t':'The username you chose (only if you use Share)','pr.s5.b':'A tiny file that remembers your sharing nickname. One button in the window deletes it.',
+'f5.t':'Copy a ready-to-paste summary in one click','f5.b':'A short redacted summary (no Windows username or PC name) that you paste into any chat, so whoever helps you understands the situation at once.',
+'f6.t':'Open the report file to send it','f6.b':'The full report is a clear Arabic HTML file with a SHA-256 for each suspicious file, ready to check on VirusTotal. One button opens its location so you can send it.',
+'f7.t':'Light and fast','f7.b':'One file of about 340 KB that unpacks into a locked temp folder and cleans up on exit. The scan peaks at about 110 MB of RAM, runs at low priority and takes about a minute, with no installation.',
+'rep.k':'Report','rep.h':'One report that explains everything','rep.p':'After the scan a clean report is saved. It works offline: open it in your browser or send it to whoever is helping you.',
+'rep.1':'Where memory goes: programs, kernel, shared, unaccounted','rep.2':'Biggest consumers and fastest growers during the scan','rep.3':'Kernel pool tags and the likely driver','rep.4':'Suspicious files with reasons and a SHA-256','rep.5':'Suggested fixes in plain language',
+'img.rep.l':'Sample scan report, light theme','img.rep.d':'Sample scan report, dark theme',
+'pr.k':'Privacy &amp; footprint','pr.h':'What does it save on your PC? Very little','pr.p':'Nothing hidden: these are all the files the tool may leave, and everything it never does.',
+'pr.save':'What it saves','pr.s1.t':'A report and a plan per scan','pr.s1.b':'About 45 KB per scan; only the newest 3 scans are kept. The “Clear tool reports” button removes them.',
+'pr.s2.t':'Quarantined files (only if you use quarantine)','pr.s2.b':'Restorable, or permanently deletable from the same window.',
+'pr.s3.t':'One restore point before isolating','pr.s3.b':'If System Protection is turned on for your PC.',
+'pr.s4.t':'A small temp folder while it runs','pr.s4.b':'About 330 KB of readable scripts in a folder only administrators can write to, deleted when you close the window.',
+'pr.never':'What it never does','pr.n1.t':'No install','pr.n1.b':'It adds no program, service, scheduled task or startup entry.',
+'pr.n2.t':'The scan is offline, no telemetry','pr.n2.b':'It contacts no server during the scan and sends no statistics. The only feature that uses the network is the “Share with your helper” button, which stays off until you press it and confirm.',
+'pr.n3.t':'No surprise deletion','pr.n3.b':'Scanning is read-only. Permanent deletion is a separate action that asks you to confirm.',
+'pr.n4.t':'No obfuscation','pr.n4.b':'The file is plain text: open it in Notepad and read every line before running it.',
+'sf.k':'Safety','sf.h':'Built to be careful',
+'sf.1.t':'Read-only scan','sf.1.b':'It stops nothing, changes nothing and does not use the network during the scan. Any action comes after your own choice.',
+'sf.2.t':'Never touches Windows files','sf.2.b':'System files and Microsoft-signed files are never quarantined.',
+'sf.3.t':'Re-checks the file hash','sf.3.b':'If a file changed between the scan and the quarantine (SHA-256), it stops as a precaution.',
+'sf.4.t':'Restore point first','sf.4.b':'Created automatically when System Protection is on.',
+'sf.5.t':'Undo in one click','sf.5.b':'Files, services and auto-start entries return exactly as they were.',
+'sf.6.t':'Explicit permanent delete','sf.6.b':'A separate button with a clear warning. It never happens automatically.',
+'faq.k':'FAQ','faq.h':'Questions before you start',
+'q1':'Will Windows or my antivirus warn me?','a1':'Possibly. The file is plain text and not code-signed, so Windows may show <b>Windows protected your PC</b>: click <b>More info</b> then <b>Run anyway</b>. Some security tools flag any new .bat file. You can open it in Notepad and read all of it, and check its SHA-256 on the release page.',
+'q2':'Why does it ask for administrator rights?','a2':'To read what an ordinary program cannot see: kernel memory, protected system processes and other users’ processes. It is also needed if you choose to quarantine. The scan itself is read-only.',
+'q3':'Does it delete anything from my PC?','a3':'<b>No.</b> Scanning only reads. Quarantine moves a file aside and can be undone. Permanent deletion only happens with a separate button that you press and confirm.',
+'q8':'Does it upload my data?','a8':'<b>The scan itself does not.</b> It never uses the network and sends no statistics or tracking. The only feature that uses the network is the <b>“Share with your helper”</b> button: it stays off until you press it and confirm, and it sends a <b>redacted</b> report (without your Windows username, PC name, e-mail addresses or secrets) to your helper’s <b>private</b> GitHub repository. The program ships with no token. If you never press it, nothing leaves your PC. Details: <a href="https://github.com/iiKurro/ram-doctor/blob/main/docs/sharing.md" rel="noopener">how sharing works</a>.',
+'q4':'Why isn’t the file digitally signed?','a4':'Code-signing certificates cost money and this is a free personal project. Instead the whole source is open and readable, and you can build the file yourself from the repository and compare its hash with the published one.',
+'q5':'Does it replace my antivirus?','a5':'<b>No.</b> It is a diagnostic for memory problems and relies on indicators, not a malware database. An “indicator” is not a “virus”: read the report and check the file on VirusTotal before isolating anything.',
+'q6':'What if it finds nothing?','a6':'Run it while the problem is happening (memory is full), because a scan captures one moment. Try “Restart” rather than “Shut down”, update your drivers, and read the “unaccounted memory” part of the report.',
+'q7':'Which Windows versions are supported?','a7':'Windows 10 and 11 with PowerShell 5.1 (built in). The design is tuned for Windows 11 and works fine on 10.',
+'ft.tag':'A free, open-source memory diagnostic for Windows.','ft.proj':'Project','ft.repo':'Repository on GitHub','ft.rel':'Releases','ft.iss':'Issues &amp; ideas','ft.more':'More','ft.sec':'Security policy','ft.lic':'MIT licence','ft.doc':'Documentation (README)',
+'ft.credit':'Design inspired by 21st.dev components by <a href="https://21st.dev/@scrollxui/components/download-with-columnlines" rel="noopener">scrollxui</a>, <a href="https://21st.dev/@bidyut10/components/download-button" rel="noopener">bidyut10</a> and <a href="https://21st.dev/@ln-dev7/components/how-it-works-09" rel="noopener">ln-dev7</a>.',
+'meta.title':'RAM Doctor — find out why your RAM is full | Windows memory diagnostic',
+'meta.desc':'A free, open-source single-file Windows tool that finds where memory goes when Task Manager shows nothing: driver leaks, memory outside processes, or a hidden program — with a clear report and a reversible quarantine.'
+};
+var AR_TITLE=D.title, metaDesc=D.querySelector('meta[name="description"]'), AR_DESC=metaDesc?metaDesc.getAttribute('content'):'';
+var langBtn=D.getElementById('langBtn');
+function setLang(l){
+  var en=l==='en';
+  R.lang=en?'en':'ar'; R.dir=en?'ltr':'rtl';
+  $$('[data-i18n]').forEach(function(el){
+    if(el._ar===undefined) el._ar=el.innerHTML;
+    var k=el.getAttribute('data-i18n');
+    el.innerHTML=(en&&EN[k]!==undefined)?EN[k]:el._ar;
+  });
+  $$('[data-i18n-attr]').forEach(function(el){
+    el.getAttribute('data-i18n-attr').split(';').forEach(function(p){
+      var kv=p.split(':'), a=kv[0], k=kv[1];
+      if(!el._at) el._at={};
+      if(el._at[a]===undefined) el._at[a]=el.getAttribute(a);
+      el.setAttribute(a,(en&&EN[k]!==undefined)?EN[k]:el._at[a]);
+    });
+  });
+  D.title=en?EN['meta.title']:AR_TITLE;
+  if(metaDesc) metaDesc.setAttribute('content',en?EN['meta.desc']:AR_DESC);
+  langBtn.textContent=en?'ع':'EN';
+  langBtn.setAttribute('aria-label',en?'العربية':'English');
+  langBtn.setAttribute('lang',en?'ar':'en');
+  store('rd-lang',l);
+  if(typeof fit==='function') fit();
+}
+langBtn.addEventListener('click',function(){setLang(R.lang==='en'?'ar':'en')});
+if(store('rd-lang')==='en') setLang('en');
+
+/* ---------------- theme ---------------- */
+function effectiveDark(){var t=R.getAttribute('data-theme');return t?t==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches}
+D.getElementById('themeBtn').addEventListener('click',function(){var n=effectiveDark()?'light':'dark';R.setAttribute('data-theme',n);store('rd-theme',n)});
+
+/* ---------------- download button (21st Download Button: idle -> downloading -> done) ---------------- */
+var dl=D.getElementById('dl'), live=D.getElementById('dlLive'), nextCard=D.getElementById('next'), phase='idle', timer=null;
+var lblBox=dl.querySelector('.key-lbl');
+function lbl(c){var e=dl.querySelector(c);return e?e.textContent:''}
+function fit(){ /* the key is as wide as the visible label, and glides when the label changes */
+  if(!dl||!lblBox) return;
+  var cur=dl.querySelector(phase==='idle'?'.l-idle':phase==='downloading'?'.l-busy':'.l-done');
+  if(cur&&lblBox) lblBox.style.width=Math.ceil(cur.scrollWidth)+'px';
+}
+function setPhase(p){
+  phase=p; dl.setAttribute('data-phase',p); dl.setAttribute('aria-busy',p==='downloading'?'true':'false'); fit();
+  live.textContent=p==='downloading'?lbl('.l-busy'):p==='done'?lbl('.l-done'):'';
+  $$('.key-lbl span',dl).forEach(function(s){s.setAttribute('aria-hidden','true')});
+  var cur=dl.querySelector(p==='idle'?'.l-idle':p==='downloading'?'.l-busy':'.l-done'); if(cur) cur.removeAttribute('aria-hidden');
+}
+dl.addEventListener('click',function(e){
+  if(phase!=='idle'){e.preventDefault();return}
+  setPhase('downloading'); nextCard.hidden=false;
+  clearTimeout(timer);
+  timer=setTimeout(function(){setPhase('done');timer=setTimeout(function(){setPhase('idle')},9000)},1400);
+});
+
+fit();
+if(D.fonts&&D.fonts.ready) D.fonts.ready.then(fit);
+window.addEventListener('load',fit);
+
+/* ---------------- tabs (segmented control) ---------------- */
+(function(){
+  var tabs=$$('[role="tab"]'); if(!tabs.length) return;
+  function sel(t){tabs.forEach(function(x){var on=x===t;x.setAttribute('aria-selected',on);x.tabIndex=on?0:-1;D.getElementById(x.getAttribute('aria-controls')).hidden=!on});t.focus()}
+  tabs.forEach(function(t,i){
+    t.addEventListener('click',function(){sel(t)});
+    t.addEventListener('keydown',function(e){
+      var rtl=R.dir==='rtl', n=null;
+      if(e.key==='ArrowRight') n=tabs[(i+(rtl?-1:1)+tabs.length)%tabs.length];
+      else if(e.key==='ArrowLeft') n=tabs[(i+(rtl?1:-1)+tabs.length)%tabs.length];
+      else if(e.key==='Home') n=tabs[0]; else if(e.key==='End') n=tabs[tabs.length-1];
+      if(n){e.preventDefault();sel(n)}
+    });
+  });
+})();
+
+/* ---------------- accordion ---------------- */
+(function(){
+  var items=$$('.acc-item');
+  items.forEach(function(it){
+    var b=it.querySelector('.acc-trigger'), p=it.querySelector('.acc-panel');
+    p.inert=true;
+    b.addEventListener('click',function(){
+      var open=!it.classList.contains('open');
+      items.forEach(function(o){o.classList.remove('open');o.querySelector('.acc-trigger').setAttribute('aria-expanded','false');o.querySelector('.acc-panel').inert=true});
+      if(open){it.classList.add('open');b.setAttribute('aria-expanded','true');p.inert=false}
+    });
+  });
+})();
+
+/* ---------------- reveal on scroll ---------------- */
+(function(){
+  var els=$$('.rv');
+  if(!('IntersectionObserver' in window)){els.forEach(function(e){e.classList.add('in')});return}
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{rootMargin:'0px 0px -8% 0px',threshold:.08});
+  els.forEach(function(e){io.observe(e)});
+})();
+})();
+</script>
+</body>
+</html>
