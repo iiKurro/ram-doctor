@@ -137,7 +137,8 @@ Check 'reports folder removed' (-not (Test-Path $ReportsDir))
 Check 'action row hidden' (-not $acts.Visible)
 
 Log2 '== leftovers in the GUI private TEMP'
-$left = @(Get-ChildItem $env:TEMP -Filter 'ramdoctor-*' -ErrorAction SilentlyContinue)
+$left = @(Get-ChildItem $env:TEMP -Filter 'ramdoctor-*' -Force -ErrorAction SilentlyContinue)
+if ($left.Count) { Log2 ('DIAG leftovers: ' + (($left | ForEach-Object { '{0} dir={1} len={2} items={3}' -f $_.Name, $_.PSIsContainer, $_.Length, @(Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue).Count }) -join ' ; ')) }
 Check ('no ramdoctor-* temp files left (found ' + $left.Count + ')') ($left.Count -eq 0)
 Log2 'DONE'
 $form.Close()
