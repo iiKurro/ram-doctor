@@ -87,6 +87,7 @@ Check 'hog alive before' ((Hog-State).Proc)
 $btnQ.PerformClick()
 Check 'quarantine finished' (Idle)
 $s = Hog-State
+if ($s.Proc -or $s.Exe) { Log2 ('DIAG quarantine output: ' + ((@($script:lastOutput -split "`r?`n") | Select-Object -Last 45) -join ' | ')) }
 Check 'hog process stopped' (-not $s.Proc)
 Check 'hog exe moved away' (-not $s.Exe)
 Check 'Run value removed' (-not $s.Run)
