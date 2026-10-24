@@ -1,0 +1,128 @@
+name: Release
+
+# Cut a release by pushing a tag that matches build/VERSION:
+#     git tag v1.0.0 && git push origin v1.0.0
+# or run this workflow manually and type the version. The release gets exactly two files:
+# RAM-Doctor.bat and SHA256SUMS.txt (nothing else is ever uploaded).
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, x.y.z (must equal build/VERSION)'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (version + full checks)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RAMDOC_PESTER_VERSION: '5.7.1'
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Work out the version and make sure it matches build/VERSION
+        id: v
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then VERSION="${REF_NAME#v}"; else VERSION="$INPUT_VERSION"; fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a valid version (expected x.y.z)"; exit 1
+          fi
+          FILE_VERSION=$(tr -d '\r\n ' < build/VERSION)
+          if [ "$VERSION" != "$FILE_VERSION" ]; then
+            echo "::error::release version $VERSION does not match build/VERSION ($FILE_VERSION). Bump build/VERSION first."; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: tests/Invoke-Checks.ps1
+        shell: powershell
+        run: |
+          & .\tests\Invoke-Checks.ps1 -InstallMissing -ResultsDir "$env:RUNNER_TEMP\results"
+          exit $LASTEXITCODE
+
+  release:
+    name: Build, attest and publish
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write       # create the release and upload its two files
+      id-token: write       # sign the build provenance attestation
+      attestations: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The release variant only: it reads no settings from the environment. -Verify fails the build if the file contains
+      # any RAMDOC_ hook or a script pass-through (tests\Invoke-Checks.ps1 also refuses a release.yml that asks for anything else).
+      - name: Build dist/RAM-Doctor.bat and SHA256SUMS.txt
+        shell: powershell
+        run: |
+          & .\build\Build-SingleFile.ps1 -Version $env:VERSION -Verify
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # Checks the file that is about to be published; it unpacks a separately built, test-only copy of the same payload.
+      - name: Smoke test the file that is about to be published
+        shell: powershell
+        run: |
+          & .\tests\Invoke-ScanSmoke.ps1 -SampleSeconds 5
+          exit $LASTEXITCODE
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/RAM-Doctor.bat
+            dist/SHA256SUMS.txt
+
+      - name: Create or update the GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          SHA256=$(cut -d' ' -f1 dist/SHA256SUMS.txt)
+
+          # release notes = our how-to-run / verify block + GitHub's generated change list
+          sed -e "s#{{VERSION}}#${VERSION}#g" -e "s#{{SHA256}}#${SHA256}#g" -e "s#{{REPO}}#${GITHUB_REPOSITORY}#g" \
+            build/release-notes.template.md > notes.md
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" --jq .body >> notes.md \
+            || echo "(automatic change list unavailable)" >> notes.md
+
+          PRE=""
+          case "$VERSION" in *-*) PRE="--prerelease" ;; esac
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/RAM-Doctor.bat dist/SHA256SUMS.txt --clobber
+            gh release edit "$TAG" --title "RAM Doctor ${VERSION}" --notes-file notes.md
+          else
+            # shellcheck disable=SC2086
+            gh release create "$TAG" dist/RAM-Doctor.bat dist/SHA256SUMS.txt \
+              --title "RAM Doctor ${VERSION}" --notes-file notes.md --target "$GITHUB_SHA" $PRE
+          fi
+          echo "Published https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"

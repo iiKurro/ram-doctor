@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # exact Pester version used everywhere in CI, so a new Pester release can never turn the build red by itself
+  RAMDOC_PESTER_VERSION: '5.7.1'
+
+jobs:
+  checks:
+    name: Checks (static gate, analyzer, Pester)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # shell: powershell = Windows PowerShell 5.1, the only host the product supports.
+      # The tests that need an administrator session run in the `elevated` job below, so they are not run twice.
+      - name: tests/Invoke-Checks.ps1
+        shell: powershell
+        run: |
+          & .\tests\Invoke-Checks.ps1 -InstallMissing -ExcludeTag Elevated -ResultsDir "$env:RUNNER_TEMP\results"
+          exit $LASTEXITCODE
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results
+          path: ${{ runner.temp }}/results
+          if-no-files-found: ignore
+          retention-days: 14
+
+  elevated:
+    name: Elevated tests (locked-down store, services, unpack folder)
+    runs-on: windows-latest        # GitHub-hosted Windows runners run as an administrator
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Invoke-ElevatedTests.ps1 refuses to run (exit 2) on a non-admin session and fails when too few tests really ran,
+      # so a silently skipped suite can never look green.
+      - name: tests/Invoke-ElevatedTests.ps1
+        shell: powershell
+        run: |
+          & .\tests\Invoke-ElevatedTests.ps1 -InstallMissing -ResultsDir "$env:RUNNER_TEMP\results-elevated"
+          exit $LASTEXITCODE
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results-elevated
+          path: ${{ runner.temp }}/results-elevated
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build:
+    name: Build single file and scan smoke test
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The release variant: no environment hooks at all. -Verify checks that (no RAMDOC_ text, no -TestScript pass-through),
+      # that its payload equals the test variant's, and that the test variant unpacks to exactly the sources.
+      - name: Build dist/RAM-Doctor.bat (release variant, verified)
+        shell: powershell
+        run: |
+          & .\build\Build-SingleFile.ps1 -Verify
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # The smoke test builds the test variant (Build-SingleFile.ps1 -DevHooks) into a temp folder itself - never into dist/ -
+      # and unpacks that one, because the release file cannot be driven headless.
+      - name: Smoke test (release file checks, then unpack the test variant and run a real read-only scan)
+        shell: powershell
+        run: |
+          & .\tests\Invoke-ScanSmoke.ps1 -SampleSeconds 5
+          exit $LASTEXITCODE
+
+      - name: Upload the single-file build (release variant only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: RAM-Doctor-single-file
+          path: |
+            dist/RAM-Doctor.bat
+            dist/SHA256SUMS.txt
+          retention-days: 14
+
+  worker:
+    name: Relay worker (Node 20)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax check (node --check)
+        run: |
+          set -euo pipefail
+          files=$(find server -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \) -not -path '*/node_modules/*' | sort)
+          if [ -z "$files" ]; then echo "::error::no JavaScript files found under server/"; exit 1; fi
+          for f in $files; do
+            echo "node --check $f"
+            node --check "$f"
+          done
+
+      # run from server/ with no path argument: works on every Node version (a directory argument only works on Node <= 20)
+      - name: Unit tests (node --test)
+        working-directory: server
+        run: node --test
+
+  workflows:
+    name: Lint workflows (actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: actionlint 1.7.7
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
+  gui-flow:
+    name: GUI flow (optional, needs a desktop)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # GitHub-hosted runners may not give WinForms a usable desktop; this job reports but never blocks a merge
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: tests/gui/Flow.Test.ps1
+        if: hashFiles('tests/gui/Flow.Test.ps1') != ''
+        shell: powershell
+        run: |
+          & .\tests\gui\Flow.Test.ps1
+          exit $LASTEXITCODE
