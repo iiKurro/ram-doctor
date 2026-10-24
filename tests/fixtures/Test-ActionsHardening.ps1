@@ -111,6 +111,29 @@ try {
     Check ((Get-FileHash -LiteralPath $q.File -Algorithm SHA256).Hash -ieq $q.Sha) 'restored file is byte-identical'
     Check ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name $runName -ErrorAction SilentlyContinue)) 'Run value is back'
     Check ([bool](Read-Man $q.Batch).restoredAt) 'batch is marked restored'
+
+    # ------------------------------------------------------------------ 8.3 short names (very common in %TEMP%)
+    Section 'short (8.3) paths such as C:\Users\NAME~1\...\Temp are accepted (regression: they were refused as "not a plain local drive path")'
+    $longDir = Join-Path $tmp 'a-folder-with-a-long-name'
+    New-Item -ItemType Directory -Force -Path $longDir | Out-Null
+    $longFile = Join-Path $longDir 'zq8wm1rt-short.exe'
+    [IO.File]::WriteAllBytes($longFile, [Text.Encoding]::ASCII.GetBytes('RAM Doctor short path test ' + [guid]::NewGuid()))
+    $shortFile = ''
+    try { $shortFile = (New-Object -ComObject Scripting.FileSystemObject).GetFile($longFile).ShortPath } catch { }
+    if (-not $shortFile -or $shortFile -ieq $longFile -or $shortFile -notmatch '~') {
+        Write-Host '  SKIP  8.3 short names are not generated on this volume' -ForegroundColor Yellow
+    } else {
+        $sha83 = (Get-FileHash -LiteralPath $longFile -Algorithm SHA256).Hash
+        $plan83 = New-PlanFile @((New-Suspect 1 $shortFile $sha83 @{}))
+        $o = Run-Actions @('-Mode', 'Quarantine', '-Plan', $plan83, '-Select', '1', '-NoRestorePoint')
+        Start-Sleep -Milliseconds 1100
+        Check ($o -match 'Done\. Quarantine batch') 'quarantine of a file given by its 8.3 name reports success'
+        Check (-not (Test-Path -LiteralPath $longFile)) 'the file was moved away'
+        $o = Run-Actions @('-Mode', 'Restore', '-Batch', (Latest-Batch).Name)
+        Check ($o -match 'Restore finished') 'restore works when the recorded original path is a short name'
+        Check (Test-Path -LiteralPath $longFile) 'the file is back'
+        Start-Sleep -Milliseconds 1100
+    }
     Remove-Item -LiteralPath $q.File -Force; Remove-ItemProperty -LiteralPath $runKey -Name $runName -ErrorAction SilentlyContinue
 
     # ------------------------------------------------------------------ forged manifests

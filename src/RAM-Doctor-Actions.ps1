@@ -105,7 +105,17 @@ function Test-LocalDrivePath([string]$p) {
     if ($p -match '(^|\\)\.\.?(\\|$)') { return $false }
     $full = Get-FullPathSafe $p
     if (-not $full) { return $false }
-    return ($full -ieq $p)
+    if ($full -ieq $p) { return $true }
+    # .NET expands 8.3 short names (C:\Users\NAME~1\...\Temp is how %TEMP% is very often spelled), so the
+    # normalised and the given path may differ ONLY in such segments - that is still a plain local path.
+    $sa = $full -split '\\'; $sb = $p -split '\\'
+    if ($sa.Count -ne $sb.Count) { return $false }
+    for ($i = 0; $i -lt $sa.Count; $i++) {
+        if ($sa[$i] -ieq $sb[$i]) { continue }
+        if ($sb[$i] -match '^[^~\\/:*?"<>|.]{1,6}~\d{1,6}(\.[^.~]{0,3})?$') { continue }
+        return $false
+    }
+    return $true
 }
 
 function Test-ProtectedPath([string]$p) {
@@ -566,6 +576,7 @@ foreach ($s in $chosen) {
     $exists = $false; $moveFile = $false; $skipAll = $false
     if ($path) {
         if (-not (Test-LocalDrivePath $path)) { Log "   refusing: '$path' is not a plain local drive path - skipping this item" 'Red'; continue }
+        $path = Get-FullPathSafe $path    # long form: 8.3 short names (VICTIM~1.EXE) are expanded so the REAL file name is recorded and restored
         $exists = (Test-Path -LiteralPath $path -PathType Leaf)
     }
     $moveFile = $exists -and -not $s.protectedFile
@@ -593,7 +604,7 @@ foreach ($s in $chosen) {
     }
     if ($moveFile) {   # also catch copies respawned after the scan
         foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
-            try { if ($proc.Path -and $proc.Path -ieq $path -and -not ($cands2 | Where-Object { $_.Id -eq $proc.Id })) { [void]$cands2.Add($proc) } } catch { }
+            try { if ($proc.Path -and ((Get-FullPathSafe $proc.Path) -ieq $path) -and -not ($cands2 | Where-Object { $_.Id -eq $proc.Id })) { [void]$cands2.Add($proc) } } catch { }
         }
     }
     foreach ($proc in $cands2) {
