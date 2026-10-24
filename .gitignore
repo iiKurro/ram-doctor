@@ -1,0 +1,6 @@
+dist/
+Reports/
+*.log
+*.tmp
+node_modules/
+
