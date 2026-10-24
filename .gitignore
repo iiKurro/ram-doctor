@@ -1,6 +1,49 @@
+# Build output (the single-file release is built by CI and attached to a GitHub Release)
 dist/
+
+# Runtime output of the tool
 Reports/
+RAM-Doctor-Reports/
+RAM-Doctor-run-*/
+*.quar
+
+# Logs and temporary files
 *.log
 *.tmp
-node_modules/
+*.bak
+*.out
+*.err
 
+# Local scratch space
+scratch/
+.scratch/
+
+# Secrets and relay local state: never commit these
+.dev.vars
+.env
+.env.*
+*.pem
+*.key
+.wrangler/
+
+# Tooling
+node_modules/
+.vscode/
+.idea/
+.vs/
+
+# Test artefacts
+TestResults/
+coverage/
+*.trx
+testResults.xml
+tests/results/
+
+# Site build
+docs/_site/
+.sass-cache/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

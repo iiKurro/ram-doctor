@@ -1,0 +1,39 @@
+# Normalise line endings in the repository, check out with the right ones on Windows.
+* text=auto
+
+# Windows scripts: CRLF in the working tree.
+# IMPORTANT: every .ps1 keeps its UTF-8 BOM (Windows PowerShell 5.1 reads BOM-less
+# files as ANSI and corrupts Arabic text). Git preserves the BOM; never strip it.
+# After editing this file run:  git add --renormalize .
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.cs    text eol=crlf
+
+# Everything else is LF.
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+*.svg   text eol=lf
+*.txt   text eol=lf
+LICENSE text eol=lf
+
+# Binary assets.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.woff2 binary
+*.zip   binary
+
+# Keep the repository language bar about the tool, not the website.
+docs/** linguist-documentation
+*.bat   linguist-language=Batchfile
