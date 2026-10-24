@@ -53,6 +53,8 @@ BeforeAll {
     }
 
     function Add-RunValue([string]$Name, [string]$Path) {
+        # a freshly created profile (e.g. a CI runner) may not have the Run key yet
+        if (-not (Test-Path -LiteralPath $script:RunKey)) { New-Item -Path $script:RunKey -Force | Out-Null }
         New-ItemProperty -LiteralPath $script:RunKey -Name $Name -Value ('"{0}"' -f $Path) -PropertyType String -Force | Out-Null
         $script:CleanRunValues.Add($Name)
     }

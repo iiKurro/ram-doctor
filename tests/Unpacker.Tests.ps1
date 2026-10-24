@@ -272,6 +272,8 @@ Describe 'Secure unpack folder (administrator session only)' -Tag 'Elevated' -Sk
         if ($script:RunParentExisted) { Set-ItResult -Skipped -Because 'ProgramData\RAM-Doctor-run existed before the tests; the test will not touch it'; return }
         $priv = New-TempDirectory 'ramdoc-bat-temp'
         try {
+            # an earlier test in this session created the (locked) parent; this test needs a plain, permissive one
+            if (Test-Path -LiteralPath $script:RunParent) { Remove-TreeForce -Path $script:RunParent }
             New-Item -ItemType Directory -Path $script:RunParent | Out-Null          # plain folder: inherits the permissive ProgramData ACL
             $r = Invoke-BatHeadless -BatPath $script:Bat -PrivateTemp $priv
             $r.ExitCode | Should -Be 1
