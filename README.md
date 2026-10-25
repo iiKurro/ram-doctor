@@ -24,8 +24,8 @@ hidden and suspicious processes, with a reversible clean-up.
 
 <table>
   <tr>
-    <td align="center"><img src="docs/assets/gui-light.png" alt="RAM Doctor, light theme" width="440"></td>
-    <td align="center"><img src="docs/assets/gui-dark.png" alt="RAM Doctor, dark theme" width="440"></td>
+    <td align="center"><img src="docs/assets/en/gui-light.png" alt="RAM Doctor, light theme" width="440"></td>
+    <td align="center"><img src="docs/assets/en/gui-dark.png" alt="RAM Doctor, dark theme" width="440"></td>
   </tr>
 </table>
 
@@ -59,9 +59,9 @@ give you and points you to the next tool when needed.
 
 <table>
   <tr>
-    <td align="center"><img src="docs/assets/gui-progress.png" alt="Scan in progress" width="300"><br><sub>Scan in progress</sub></td>
-    <td align="center"><img src="docs/assets/gui-kernel.png" alt="Kernel pool leak verdict" width="300"><br><sub>Kernel pool leak verdict</sub></td>
-    <td align="center"><img src="docs/assets/gui-clean.png" alt="Clean result" width="300"><br><sub>Clean result</sub></td>
+    <td align="center"><img src="docs/assets/en/gui-progress.png" alt="Scan in progress" width="300"><br><sub>Scan in progress</sub></td>
+    <td align="center"><img src="docs/assets/en/gui-kernel.png" alt="Kernel pool leak verdict" width="300"><br><sub>Kernel pool leak verdict</sub></td>
+    <td align="center"><img src="docs/assets/en/gui-clean.png" alt="Clean result" width="300"><br><sub>Clean result</sub></td>
   </tr>
 </table>
 
@@ -86,7 +86,7 @@ give you and points you to the next tool when needed.
 * **Reversible quarantine**: stop, disable, move aside; **Restore** brings
   everything back. Deleting for good (**Purge**) is a separate step.
 * **Windows 11 style window** that follows your light/dark theme, plus an
-  Arabic (RTL) HTML report.
+  HTML report, **in English or Arabic** (see [Languages](#languages)).
 * **One file, no install**: `RAM-Doctor.bat`, plain readable text. Nothing is
   left behind when you close it, apart from the small report you asked for.
 * **Easy to hand to a helper**: open the report's folder, copy a redacted
@@ -116,6 +116,19 @@ give you and points you to the next tool when needed.
 
 > Use **Restart**, not **Shut down**: with Fast Startup a shutdown does not
 > reset a leaking kernel.
+
+### Languages
+
+The window, the report and everything the scan writes come in **English
+(left-to-right)** and **Arabic (right-to-left)**. RAM Doctor opens in Arabic
+when the Windows display language is Arabic and in English otherwise; the
+**globe button** in the window header switches the open window at once (layout
+direction included) without restarting and without saving anything. The scan
+writes its report in the language that is active when you press **Start scan**.
+From the command line use `-Lang ar|en` (`src\RAM-Doctor-GUI.ps1`,
+`src\RAM-Doctor.ps1`, `src\RAM-Doctor-Share.ps1`). All texts live in one file,
+[`src/lib/Strings.ps1`](src/lib/Strings.ps1): adding a language is a table, not a
+rewrite.
 
 ## How it works
 
@@ -189,8 +202,8 @@ switch. How it works, and how helpers deploy their own:
 
 <table>
   <tr>
-    <td align="center"><img src="docs/assets/gui-share.png" alt="Share with my helper" width="440"><br><sub>Share with my helper</sub></td>
-    <td align="center"><img src="docs/assets/gui-profile.png" alt="Profile and delete my profile" width="440"><br><sub>Your profile, with a delete button</sub></td>
+    <td align="center"><img src="docs/assets/en/gui-share.png" alt="Share with my helper" width="440"><br><sub>Share with my helper</sub></td>
+    <td align="center"><img src="docs/assets/en/gui-profile.png" alt="Profile and delete my profile" width="440"><br><sub>Your profile, with a delete button</sub></td>
   </tr>
 </table>
 
@@ -315,7 +328,7 @@ and exact pool-tag attribution are the main gaps.
 Developed and tested on Windows 11. Windows 10 22H2 is expected to work but is
 less tested; Windows 11-only visual effects simply do not appear there. It needs
 Windows PowerShell 5.1, which ships with both. The window and the report are
-currently **Arabic (RTL)**; an English interface is on the roadmap.
+available in **English and Arabic** (see [Languages](#languages)).
 </details>
 
 <details>
@@ -361,7 +374,7 @@ ram-doctor/
 
 Ideas, not promises:
 
-* English interface and report (the UI is Arabic-first today).
+* More interface languages (the string table makes a new one a translation job).
 * Code signing of releases; a `winget` package.
 * A RAMMap-style memory-type breakdown (driver-locked, AWE, mapped file).
 * ETW-based pool allocation tracing to name the call stack of a leak.

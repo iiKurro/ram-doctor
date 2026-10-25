@@ -1,55 +1,73 @@
 ﻿<#
 .SYNOPSIS
-  Regenerates docs/assets/gui-*.png from SYNTHETIC data (host "DESKTOP-DEMO", user "Friend") - nothing personal, no real scan.
+  Regenerates the pictures used by the README and the website (docs/assets/gui-*.png, report-sample*.png) from SYNTHETIC data
+  (host "DESKTOP-DEMO", user "Friend") - nothing personal, no real scan. One run = one language.
 
 .DESCRIPTION
-  Launches the real GUI (src\RAM-Doctor-GUI.ps1) once per scenario with the developer switches -TestScript / -Theme / -Accent default,
-  loads a fake Plan-*.json, resizes the window to fit its content and saves a picture of the real window (Windows 11 title bar included).
-  Needs an interactive desktop (it uses CopyFromScreen). The pictures are taken at the screen's native scale.
+  GUI pictures: launches the real window (src\RAM-Doctor-GUI.ps1) once per scenario with the developer switches
+  -TestScript / -Theme / -Accent default / -Lang, loads a fake Plan-*.json, resizes the window to fit its content and saves a
+  picture of the real window (Windows 11 title bar included). Needs an interactive desktop (it uses CopyFromScreen); the
+  pictures are taken at the screen's native scale.
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File tests\gui\Make-Screenshots.ps1
+  Report pictures (report-sample, report-sample-dark): renders the demo report (tests\fixtures\Demo-ReportData.ps1) with the
+  real src\lib\Report.ps1 and photographs it with a headless Edge / Chrome (1280 x 1232). Skipped with a warning when neither
+  browser is installed.
+
+  -Lang ar   Arabic, right-to-left (the default); pictures go to docs\assets
+  -Lang en   English, left-to-right; pictures go to docs\assets\en
+  -Only      a subset, e.g. -Only gui-light,report-sample
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File tests\gui\Make-Screenshots.ps1 -Lang en
 #>
 [CmdletBinding()]
-param([string]$OutDir = '', [string]$Work = '', [string[]]$Only = @())
+param(
+    [string]$OutDir = '',
+    [string]$Work = '',
+    [string[]]$Only = @(),
+    [ValidateSet('ar', 'en')][string]$Lang = 'ar'
+)
 
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $gui = Join-Path $repo 'src\RAM-Doctor-GUI.ps1'
-if (-not $OutDir) { $OutDir = Join-Path $repo 'docs\assets' }
+if (-not $OutDir) { $OutDir = Join-Path $repo $(if ($Lang -eq 'en') { 'docs\assets\en' } else { 'docs\assets' }) }
 if (-not $Work) { $Work = Join-Path $env:TEMP ('ramdoctor-shots-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) }
 New-Item -ItemType Directory -Force -Path $OutDir, $Work | Out-Null
 $utf8 = New-Object System.Text.UTF8Encoding($true)
+. (Join-Path $repo 'src\lib\Strings.ps1')
+$demoUser = $(if ($Lang -eq 'en') { 'alex_92' } else { 'ahmed_92' })   # the user name typed into the "profile" picture
 
-# ---------------------------------------------------------------- synthetic plans (schema = what RAM-Doctor.ps1 writes)
+# ---------------------------------------------------------------- synthetic plans (schema = what RAM-Doctor.ps1 writes; texts from the same string table)
 function New-DemoPlan([string]$dir, [string]$scenario) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $stamp = '20260101-101500'
     $mem = [pscustomobject]@{ TotalGB = 15.9; UsedGB = 14.8; NonPagedGB = 0.9; PagedGB = 0.7 }
     $sus = @(); $obs = @()
+    $t = { param([string]$k) Get-Text $k @args -Lang $Lang }
     switch ($scenario) {
         'high' {
-            $v = [pscustomobject]@{ Level = 'high'; Headline = 'تم رصد مؤشرات تستحق التدقيق العاجل (قد تكون برمجية خبيثة)' }
+            $v = [pscustomobject]@{ Level = 'high'; Headline = (& $t 'verdict.urgent') }
             $obs = @(
-                [pscustomobject]@{ Level = 'high'; Title = 'ملفات عالية الخطورة (1)'; Body = '-' },
-                [pscustomobject]@{ Level = 'med'; Title = 'برنامج تتضخّم ذاكرته الآن'; Body = '-' },
-                [pscustomobject]@{ Level = 'info'; Title = 'ذاكرة التخزين المؤقت'; Body = '-' })
+                [pscustomobject]@{ Level = 'high'; Title = (& $t 'obs.high.t' 1); Body = '-' },
+                [pscustomobject]@{ Level = 'med'; Title = (& $t 'obs.grower.t'); Body = '-' },
+                [pscustomobject]@{ Level = 'info'; Title = (& $t 'obs.standby.t'); Body = '-' })
             $sus = @(
-                [pscustomobject]@{ id = 1; risk = 'High'; score = 11; name = 'svch0st.exe'; reasons = @('اسمه (svch0st.exe) يشبه عملية النظام svchost بفارق حرف واحد', 'يعمل من مجلد مؤقت/عام (Temp)') },
-                [pscustomobject]@{ id = 2; risk = 'Medium'; score = 6; name = 'updater_x64.exe'; reasons = @('الملف غير موقّع رقميًا', 'يعمل من مجلد بيانات المستخدم (AppData)') },
+                [pscustomobject]@{ id = 1; risk = 'High'; score = 11; name = 'svch0st.exe'; reasons = @((& $t 'sig.lookalike' 'svch0st.exe' 'svchost'), (& $t 'sig.zone.temp' 'Temp')) },
+                [pscustomobject]@{ id = 2; risk = 'Medium'; score = 6; name = 'updater_x64.exe'; reasons = @((& $t 'sig.unsigned'), (& $t 'sig.zone.data' 'AppData')) },
                 [pscustomobject]@{ id = 3; risk = 'Low'; score = 3; name = 'helper.exe'; reasons = @('-') })
         }
         'kernel' {
             $mem = [pscustomobject]@{ TotalGB = 15.9; UsedGB = 14.2; NonPagedGB = 6.4; PagedGB = 1.1 }
-            $v = [pscustomobject]@{ Level = 'med'; Headline = 'السبب الأرجح: تسرّب ذاكرة في تعريف (Driver) على مستوى النواة' }
+            $v = [pscustomobject]@{ Level = 'med'; Headline = (& $t 'verdict.driver') }
             $obs = @(
-                [pscustomobject]@{ Level = 'med'; Title = 'ذاكرة النواة (Non-paged pool) أعلى من المعتاد'; Body = '-' },
-                [pscustomobject]@{ Level = 'med'; Title = 'التشغيل السريع (Fast Startup) مفعّل والجهاز شغّال منذ مدة'; Body = '-' })
+                [pscustomobject]@{ Level = 'med'; Title = (& $t 'obs.npp.med.t'); Body = '-' },
+                [pscustomobject]@{ Level = 'med'; Title = (& $t 'obs.fast.t'); Body = '-' })
         }
         default {
-            $v = [pscustomobject]@{ Level = 'ok'; Headline = 'لا يوجد تسرّب أو مؤشر خبيث واضح في هذه اللحظة' }
-            $obs = @([pscustomobject]@{ Level = 'info'; Title = 'ذاكرة التخزين المؤقت'; Body = '-' })
+            $v = [pscustomobject]@{ Level = 'ok'; Headline = (& $t 'verdict.ok') }
+            $obs = @([pscustomobject]@{ Level = 'info'; Title = (& $t 'obs.standby.t'); Body = '-' })
         }
     }
-    $plan = [pscustomobject]@{ tool = 'RAM-Doctor'; version = '1.0.0'; host = 'DESKTOP-DEMO'; created = '2026-01-01 10:15:00'; isAdmin = $true
+    $plan = [pscustomobject]@{ tool = 'RAM-Doctor'; version = '1.0.0'; lang = $Lang; host = 'DESKTOP-DEMO'; created = '2026-01-01 10:15:00'; isAdmin = $true
         report = (Join-Path $dir "RAMDoctor-DESKTOP-DEMO-$stamp.html"); verdict = $v; observations = $obs; memory = $mem; suspects = $sus }
     [IO.File]::WriteAllText((Join-Path $dir "Plan-DESKTOP-DEMO-$stamp.json"), ($plan | ConvertTo-Json -Depth 6), $utf8)
     Set-Content -LiteralPath (Join-Path $dir "RAMDoctor-DESKTOP-DEMO-$stamp.html") -Value '<html></html>'
@@ -59,10 +77,21 @@ New-Item -ItemType Directory -Force -Path (Join-Path $Work 'empty') | Out-Null
 
 # ---------------------------------------------------------------- helpers injected into every test script (they run inside the GUI process)
 $common = @'
+# A window that is not the foreground window draws grey caption buttons; make sure the picture shows the active look.
+Add-Type -Namespace Shot -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool f); [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();'
+function Force-Foreground($f) {
+    for ($try = 0; $try -lt 12; $try++) {
+        $p = [uint32]0; $fg = [Shot.U]::GetForegroundWindow(); $t1 = [Shot.U]::GetWindowThreadProcessId($fg, [ref]$p); $t2 = [Shot.U]::GetCurrentThreadId()
+        [void][Shot.U]::AttachThreadInput($t2, $t1, $true); [void][Shot.U]::SetForegroundWindow($f.Handle); [void][Shot.U]::AttachThreadInput($t2, $t1, $false)
+        [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 250; [System.Windows.Forms.Application]::DoEvents()
+        if ([Shot.U]::GetForegroundWindow() -eq $f.Handle) { break }
+    }
+}
 function Fit-Window {
     $col.PerformLayout()
     $form.ClientSize = New-Object System.Drawing.Size(940, [math]::Min($col.Height + 4, [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 80))
     [System.Windows.Forms.Application]::DoEvents()
+    Force-Foreground $form
 }
 function Find-Fields($c) { foreach ($k in $c.Controls) { if ($k -is [Fluent.FField]) { $k }; Find-Fields $k } }
 function Dialog-Shot([scriptblock]$show, [string]$path) {
@@ -73,7 +102,8 @@ function Dialog-Shot([scriptblock]$show, [string]$path) {
         $script:dsTimer.Stop()
         $f = @([System.Windows.Forms.Application]::OpenForms | Where-Object { $_ -ne $form })[0]   # ActiveForm is null when the process is not in the foreground
         if ($f) {
-            $fields = @(Find-Fields $f); if ($fields.Count -gt 0) { $fields[0].Value = 'ahmed_92' }
+            $fields = @(Find-Fields $f); if ($fields.Count -gt 0) { $fields[0].Value = '%USER%' }
+            Force-Foreground $f
             Save-WindowShot $script:dsPath $f
             $f.Close()
         }
@@ -82,46 +112,46 @@ function Dialog-Shot([scriptblock]$show, [string]$path) {
     & $show
 }
 $script:OUT = '%OUT%'
+$script:DemoShare = [pscustomobject]@{ Configured = $true; Name = '%USER%'; UserId = 'a1b2c3d4e5'; Helper = (Get-Text 'gui.helper.demo'); EndpointConfigured = $true }
 '@
 
 $scenarios = @(
     @{ Name = 'gui-light'; Reports = 'high'; Theme = 'Light'; Extra = @(); Body = @'
 Load-Results (Get-LatestResult) $false
-Set-Status 'اكتمل الفحص. النتيجة أعلاه.' 100
+Set-Status 'gui.status.done' 100
 Fit-Window
 Save-WindowShot (Join-Path $script:OUT 'gui-light.png')
 '@ },
     @{ Name = 'gui-dark'; Reports = 'high'; Theme = 'Dark'; Extra = @(); Body = @'
 Load-Results (Get-LatestResult) $false
-Set-Status 'اكتمل الفحص. النتيجة أعلاه.' 100
+Set-Status 'gui.status.done' 100
 Fit-Window
 Save-WindowShot (Join-Path $script:OUT 'gui-dark.png')
 '@ },
     @{ Name = 'gui-progress'; Reports = 'empty'; Theme = 'Light'; Extra = @(); Body = @'
-$btnScan.Enabled = $false; $btnScan.Text = 'جارٍ الفحص ...'
+$btnScan.Enabled = $false; $btnScan.Text = Get-Text 'gui.btn.scanning'
 $bar.Value = 46
-Set-Status 'جارٍ فحص التعريفات ...' 46
-$info.Level = 'Info'; $info.Title = 'الفحص شغّال الآن'; $info.Message = 'نراقب الذاكرة والتعريفات والبرامج الشغّالة. لا تغلق النافذة، تنتهي خلال دقيقة تقريبًا.'
-[void]$info.FitHeight()
+Set-Status 'gui.step.8' 46
+Show-Info 'Info' 'gui.info.scanning.t' 'gui.info.scanning.m'
 Fit-Window
 Save-WindowShot (Join-Path $script:OUT 'gui-progress.png')
 '@ },
     @{ Name = 'gui-clean'; Reports = 'clean'; Theme = 'Light'; Extra = @(); Body = @'
 Load-Results (Get-LatestResult) $false
-Set-Status 'اكتمل الفحص. النتيجة أعلاه.' 100
+Set-Status 'gui.status.done' 100
 Fit-Window
 Save-WindowShot (Join-Path $script:OUT 'gui-clean.png')
 '@ },
     @{ Name = 'gui-kernel'; Reports = 'kernel'; Theme = 'Light'; Extra = @(); Body = @'
 Load-Results (Get-LatestResult) $false
-Set-Status 'اكتمل الفحص. النتيجة أعلاه.' 100
+Set-Status 'gui.status.done' 100
 Fit-Window
 Save-WindowShot (Join-Path $script:OUT 'gui-kernel.png')
 '@ },
     @{ Name = 'gui-more'; Reports = 'clean'; Theme = 'Light'; Extra = @('-ShareForceConfigured'); Body = @'
 Load-Results (Get-LatestResult) $false
-Set-Status 'اكتمل الفحص. النتيجة أعلاه.' 100
-$script:share = [pscustomobject]@{ Configured = $true; Name = 'ahmed_92'; UserId = 'a1b2c3d4e5'; Helper = 'مساعدي'; EndpointConfigured = $true }
+Set-Status 'gui.status.done' 100
+$script:share = $script:DemoShare
 Apply-ShareVisibility
 $exMore.Expanded = $true; Resize-Cards
 Fit-Window
@@ -129,7 +159,7 @@ Save-WindowShot (Join-Path $script:OUT 'gui-more.png')
 '@ },
     @{ Name = 'gui-share'; Reports = 'high'; Theme = 'Light'; Extra = @('-ShareForceConfigured'); Body = @'
 Load-Results (Get-LatestResult) $false
-$script:share = [pscustomobject]@{ Configured = $true; Name = 'ahmed_92'; UserId = 'a1b2c3d4e5'; Helper = 'مساعدي'; EndpointConfigured = $true }
+$script:share = $script:DemoShare
 Apply-ShareVisibility
 $pv = @{ Dir = $env:TEMP; Sizes = @{ 'summary.md' = '3'; 'report.html' = '31'; 'plan.json' = '14' } }
 Dialog-Shot { [void](Show-ShareDialog $pv) } (Join-Path $script:OUT 'gui-share.png')
@@ -140,18 +170,50 @@ Dialog-Shot { [void](Show-ProfileDialog) } (Join-Path $script:OUT 'gui-profile.p
 '@ }
 )
 
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 foreach ($s in $scenarios) {
     if ($Only.Count -gt 0 -and $Only -notcontains $s.Name) { continue }
-    Write-Host ("  {0} ..." -f $s.Name)
+    Write-Host ("  {0} ({1}) ..." -f $s.Name, $Lang)
+    # Park the mouse at the right edge of the PRIMARY screen first: the window opens on the screen that holds the pointer
+    # (CenterScreen), and a pointer resting over the title bar would pop up the Windows 11 snap-layout flyout into the picture.
+    $prim = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(($prim.Right - 3), [int]($prim.Top + $prim.Height / 2))
     $ts = Join-Path $Work ($s.Name + '.test.ps1')
-    $body = ($common.Replace('%OUT%', $OutDir)) + "`r`n" + $s.Body + "`r`n" + '$form.Close()' + "`r`n"
+    $body = ($common.Replace('%OUT%', $OutDir).Replace('%USER%', $demoUser)) + "`r`n" + $s.Body + "`r`n" + '$form.Close()' + "`r`n"
     [IO.File]::WriteAllText($ts, $body, $utf8)
     Remove-Item -LiteralPath ($ts + '.error.txt') -ErrorAction SilentlyContinue
     $guiArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"{0}"' -f $gui), '-ReportsDir', ('"{0}"' -f (Join-Path $Work $s.Reports)),
-        '-QuarantineDir', ('"{0}"' -f (Join-Path $Work 'store')), '-AllowNonAdmin', '-Theme', $s.Theme, '-Accent', 'default', '-TestScript', ('"{0}"' -f $ts)) + $s.Extra
+        '-QuarantineDir', ('"{0}"' -f (Join-Path $Work 'store')), '-AllowNonAdmin', '-Theme', $s.Theme, '-Accent', 'default', '-Lang', $Lang, '-TestScript', ('"{0}"' -f $ts)) + $s.Extra
     $p = Start-Process -FilePath powershell.exe -ArgumentList $guiArgs -PassThru
     if (-not $p.WaitForExit(90000)) { try { $p.Kill() } catch { }; Write-Warning "$($s.Name): GUI did not close in time" }
     if (Test-Path ($ts + '.error.txt')) { Write-Warning "$($s.Name): test script error"; Get-Content ($ts + '.error.txt') }
+}
+
+# ---------------------------------------------------------------- the report, photographed with a headless browser
+$reportShots = @(@{ Name = 'report-sample'; Theme = 'light' }, @{ Name = 'report-sample-dark'; Theme = 'dark' })
+$want = @($reportShots | Where-Object { $Only.Count -eq 0 -or $Only -contains $_.Name })
+if ($want.Count -gt 0) {
+    $browser = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $browser) { Write-Warning 'No Edge or Chrome found: the report pictures were skipped.' }
+    else {
+        . (Join-Path $repo 'src\lib\Report.ps1')
+        . (Join-Path $repo 'tests\fixtures\Demo-ReportData.ps1')
+        $html = New-RamReportHtml (Get-DemoReportData -Scenario leak -Lang $Lang)
+        $open = $(if ($Lang -eq 'en') { '<html lang="en" dir="ltr">' } else { '<html lang="ar" dir="rtl">' })
+        foreach ($r in $want) {
+            Write-Host ("  {0} ({1}) ..." -f $r.Name, $Lang)
+            $page = Join-Path $Work ($r.Name + '.html')
+            [IO.File]::WriteAllText($page, $html.Replace($open, $open.Replace('>', (' data-theme="{0}">' -f $r.Theme))), $utf8)
+            $png = Join-Path $OutDir ($r.Name + '.png')
+            Remove-Item -LiteralPath $png -ErrorAction SilentlyContinue
+            $bargs = @('--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--disable-extensions', ('--user-data-dir="{0}"' -f (Join-Path $Work 'browser')),
+                '--window-size=1280,1232', '--force-device-scale-factor=1', ('--screenshot="{0}"' -f $png), ('"{0}"' -f ([Uri]$page).AbsoluteUri))
+            $bp = Start-Process -FilePath $browser -ArgumentList $bargs -PassThru -WindowStyle Hidden
+            if (-not $bp.WaitForExit(60000)) { try { $bp.Kill() } catch { }; Write-Warning "$($r.Name): the browser did not finish in time" }
+            if (-not (Test-Path -LiteralPath $png)) { Write-Warning "$($r.Name): no picture was written" }
+        }
+    }
 }
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "Done. Pictures are in $OutDir"

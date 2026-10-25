@@ -46,7 +46,8 @@ flowchart TB
 | File | Role |
 | --- | --- |
 | `src/RAM-Doctor-GUI.ps1` | The window. It contains **no scanning logic**: it starts the scan and the actions as child `powershell.exe` processes, parses their timestamped progress lines for the progress bar, and reads the plan file to show results. It also provides the *report location* and *copy summary for sending* buttons and the optional *Share with my helper* flow (hidden when `share.config.json` has no endpoint). |
-| `src/lib/Fluent.cs` | Windows 11 style WinForms controls (cards, buttons, list, progress, info bar) compiled with `Add-Type`. |
+| `src/lib/Fluent.cs` | Windows 11 style WinForms controls (cards, buttons, list, progress, info bar) compiled with `Add-Type`. They draw correctly both right-to-left (Arabic) and left-to-right (English): every control reads its own `RightToLeft` when it paints. |
+| `src/lib/Strings.ps1` | The one string table: an `ar` and an `en` table with the same keys, and `Get-Text` / `Set-UiLang` / `Get-UiLang`. No other source file holds a user-facing literal (checked by `tests/Strings.Tests.ps1`). |
 | `src/RAM-Doctor.ps1` | The scan. Collects evidence, scores it, writes the report and the plan. Never modifies the system. |
 | `src/RAM-Doctor-Actions.ps1` | `Quarantine`, `Restore`, `Purge`, `List`. The only code that changes the system. |
 | `src/lib/Native.cs` | Read-only P/Invoke helpers (see below), compiled with `Add-Type` (C# 5). |
@@ -94,7 +95,7 @@ flowchart TB
 9. **Memory accounting and pool-tag mapping** (top tags to driver files).
 10. **Evidence**: Defender status and detections, Resource-Exhaustion events,
     Winlogon / IFEO / AppInit anomalies.
-11. **Observations and verdict**: rule-based, Arabic text.
+11. **Observations and verdict**: rule-based, text in the scan language (Arabic or English, see [Language](#language)).
 12. **Output**: report HTML, plan JSON, pruning of old scans.
 
 ## Output files
@@ -103,7 +104,7 @@ Default folder: `Desktop\RAM-Doctor-Reports` (override with `-OutDir`).
 
 | File | Content |
 | --- | --- |
-| `RAMDoctor-<HOST>-<yyyyMMdd-HHmmss>.html` | The report (Arabic, RTL, light and dark). About 30 KB. |
+| `RAMDoctor-<HOST>-<yyyyMMdd-HHmmss>.html` | The report (Arabic RTL or English LTR, light and dark). About 30 KB. |
 | `Plan-<HOST>-<yyyyMMdd-HHmmss>.json` | The plan: verdict, observations, memory summary, suspects with everything needed to act on them. About 15 KB. |
 | `RAMDoctor-<HOST>-<stamp>.json` | Full raw data. **Only** with `-KeepRawJson`. |
 
@@ -118,7 +119,7 @@ also what the optional upload bundle and the copied summary are derived from
 
 ```jsonc
 {
-  "tool": "RAM-Doctor", "version": "1.0", "host": "DESKTOP-DEMO",
+  "tool": "RAM-Doctor", "version": "1.0", "lang": "en", "host": "DESKTOP-DEMO",   // "lang" ar|en: language of every text below; absent in plans of older releases (= ar)
   "created": "2026-10-24 21:52:51", "isAdmin": true,
   "report": "C:\\Users\\Friend\\Desktop\\RAM-Doctor-Reports\\RAMDoctor-DESKTOP-DEMO-20261024-215251.html",
   "verdict": { "Level": "high|med|low|ok", "Headline": "..." },
@@ -206,10 +207,11 @@ WMI removals store the full definition but cannot be restored automatically.
 **Always available (manual, no network).** The report and plan are ordinary
 local files. The GUI offers two buttons:
 
-* *Report location* (Arabic label: مكان ملف التقرير) opens Explorer with the
+* *Report location* (Arabic: مكان ملف التقرير) opens Explorer with the
   report selected, so it can be attached to an e-mail or chat.
-* *Copy summary for sending* (نسخ ملخص للإرسال) puts a short **redacted**
-  plain-text summary on the clipboard, to paste into a chat.
+* *Copy summary to send* (Arabic: نسخ ملخص للإرسال) puts a short **redacted**
+  plain-text summary on the clipboard, to paste into a chat. Its labels are in the
+  window language.
 
 ## Optional: one-click Share with my helper
 
@@ -292,17 +294,49 @@ never uploaded by the release workflow), which honours `RAMDOC_NOELEVATE` and
 
 * **Windows PowerShell 5.1** and C# 5 (`Add-Type`).
 * Every `.ps1` is **UTF-8 with BOM**; `.bat` is ASCII + CRLF.
-* Console/log output is English ASCII; Arabic is for the GUI and report.
+* Console/log output is English ASCII; translated text is for the GUI, the report, the share messages and the copy-summary text.
 * Known 5.1 traps handled in the code: `.Count` on a single `PSCustomObject`,
   `$null | ForEach-Object` running once, `[math]::Max(0, big)`, case-insensitive
   variable/parameter names, `-File` + `[int[]]`.
 
+## Language
+
+Arabic (right-to-left) and English (left-to-right) are both first-class. Every
+sentence lives in `src/lib/Strings.ps1`; code calls `Get-Text 'key' args`.
+
+* **Choosing**: `-Lang ar|en` on `RAM-Doctor-GUI.ps1`, `RAM-Doctor.ps1` and
+  `RAM-Doctor-Share.ps1`; otherwise Arabic when the Windows UI language is Arabic
+  (`(Get-UICulture).TwoLetterISOLanguageName -eq 'ar'`) and English for anything
+  else. The window has a language button that switches the open window live
+  (`RightToLeft` + `RightToLeftLayout` of the form, every text re-applied, the
+  selection kept). Nothing is persisted: no profile entry, no settings file.
+* **The scan** writes its observations, verdict headline, suspect reasons and
+  the report in one language and records it as `lang` in the plan (the only
+  schema change: an added optional field; readers treat a missing one as Arabic).
+  The window starts the scan with its current language. A plan opened after a
+  language switch keeps the language it was written in; the window says so and
+  suggests a new scan.
+* **The report** (`lib/Report.ps1`) reads `$data.Lang`: `<html lang dir>`, the
+  texts, and the three labels of its one inline script. It keeps the inert-report
+  contract (marker right after the doctype, one tiny script, no inline handlers,
+  no external URLs except VirusTotal/GitHub links) in both languages;
+  `tests/fixtures/Test-ReportSafety.ps1` and `tests/Contract.Tests.ps1` (the
+  relay's validator) cover English and Arabic.
+* **Share**: the messages shown in the window (`RESULT: ERROR <code> <text>`) and the
+  labels of the chat summary follow `-Lang`; the upload bundle's `summary.md` stays
+  English-labelled, and wraps the (Arabic) scan sentences in a right-to-left block
+  only for Arabic plans (the relay keeps exactly `<div dir="rtl">`).
+* **Console and logs** are English ASCII in both languages.
+
 ## Extending
 
-* **New signal**: add a `& $add 'key' <points> '<reason>'` line in
+* **New text or language**: add the key to both tables of `lib/Strings.ps1`
+  (`tests/Strings.Tests.ps1` enforces the rest); a third language is a third table
+  plus `Resolve-UiLang`.
+* **New signal**: add a `& $add 'key' <points> (Get-Text 'sig.<name>')` line in
   `Get-Signals` (or a process-specific one in the rating loop), document it in
   [how-detection-works.md](how-detection-works.md), add a test.
 * **New autostart location**: add it to the inventory section as `Add-Item`
   with `Kind = 'Autorun'` and teach `RAM-Doctor-Actions.ps1` how to disable and
   restore it.
-* **Pool-tag description**: add it to `$KnownTags`.
+* **Pool-tag description**: add a `tag.<name>` text to `lib/Strings.ps1` and map the tag to it in `$KnownTagKeys`.

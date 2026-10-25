@@ -15,6 +15,8 @@
     Share          uploads the bundle (protocol v1) -> "RESULT: OK <url>" | "RESULT: ERROR <code> <message>"
     Health         GET /v1/health of the configured relay
   Progress lines look like "[hh:mm:ss] message"; results are the machine-readable lines above.
+  -Lang ar|en  language of the messages shown to the user (RESULT: ERROR ... text) and of the chat summary labels;
+               default: the Windows UI language (Arabic -> ar, otherwise en). The strings live in lib\Strings.ps1.
   Exit code: 0 = OK, 1 = error. Output is UTF-8. The invite code is never printed.
   The upload is DORMANT unless src\share.config.json (or -Endpoint) names a relay.
 #>
@@ -30,14 +32,17 @@ param(
     [string]$ConfigPath,
     [string]$PreviewDir,
     [switch]$DryRun,
-    [double]$BackoffSeconds = 2
+    [double]$BackoffSeconds = 2,
+    [ValidateSet('ar', 'en')][string]$Lang
 )
 
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
 $Root = $PSScriptRoot
 if (-not $Root) { $Root = (Get-Location).Path }
+. (Join-Path $Root 'lib\Strings.ps1')
 . (Join-Path $Root 'lib\Share.ps1')
+Set-UiLang $Lang
 if (-not $ConfigPath) { $ConfigPath = Join-Path $Root 'share.config.json' }
 if (-not $PreviewDir) { $PreviewDir = Join-Path $env:TEMP 'RAM-Doctor-share-preview' }
 
@@ -61,7 +66,7 @@ try {
         'Summary' {
             if (-not $PlanPath -or -not (Test-Path -LiteralPath $PlanPath)) { Fail-Simple (Get-ShareMessage 'no-plan') }
             Say 'Building short summary ...'
-            $text = New-ShareShortSummary -PlanPath $PlanPath -IncludeHostName:$IncludeHostName
+            $text = New-ShareShortSummary -PlanPath $PlanPath -IncludeHostName:$IncludeHostName -Lang $Lang
             New-Item -ItemType Directory -Force -Path $PreviewDir | Out-Null
             $out = Join-Path $PreviewDir 'summary.txt'
             [IO.File]::WriteAllText($out, $text, (New-Object System.Text.UTF8Encoding($true)))

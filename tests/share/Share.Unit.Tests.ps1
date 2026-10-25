@@ -331,6 +331,73 @@ Describe 'Short chat summary (offline)' -Tag 'Unit' {
     }
 }
 
+Describe 'Languages (Arabic and English)' -Tag 'Unit' {
+    BeforeAll {
+        $script:dir3 = Join-Path $TestDrive 'lang'; New-Item -ItemType Directory -Force -Path $script:dir3 | Out-Null
+        $script:enPlan = New-TestPlanFiles -Dir $script:dir3 -Lang en
+        $script:arPlan = New-TestPlanFiles -Dir $script:dir3 -Stamp '20260102-120000' -Lang ar
+        $script:legacy = New-TestPlanFiles -Dir $script:dir3 -Stamp '20260103-120000'
+    }
+    It 'the message <key> exists in both languages and is really translated' -ForEach @(
+        @{ key = 'not-configured' }, @{ key = 'insecure-endpoint' }, @{ key = 'no-profile' }, @{ key = 'no-plan' }, @{ key = 'bad-plan' },
+        @{ key = '400' }, @{ key = '401' }, @{ key = '401-nocode' }, @{ key = '413' }, @{ key = '429' }, @{ key = '5xx' }, @{ key = 'offline' },
+        @{ key = 'bad-response' }, @{ key = 'name-length' }, @{ key = 'name-chars' }, @{ key = 'code-invalid' }, @{ key = 'name-fixed' },
+        @{ key = 'code-unreadable' }, @{ key = 'profile-write' }
+    ) {
+        $ar = Get-ShareMessage $key -Lang ar
+        $en = Get-ShareMessage $key -Lang en
+        $ar | Should -Not -Be $key
+        $en | Should -Not -Be $key
+        $ar | Should -Match '[؀-ۿ]'
+        $en | Should -Not -Match '[؀-ۿ]'
+    }
+    It 'an unknown key comes back unchanged, in either language' {
+        Get-ShareMessage 'zzz-unknown' -Lang en | Should -Be 'zzz-unknown'
+        Get-ShareMessage 'zzz-unknown' -Lang ar | Should -Be 'zzz-unknown'
+    }
+    It 'messages follow the language chosen with Set-UiLang' {
+        $was = Get-UiLang
+        try {
+            Set-UiLang 'en'; (Test-ShareUsername 'a').Error | Should -Match '^The username must be 2 to 24'
+            Set-UiLang 'ar'; (Test-ShareUsername 'a').Error | Should -Match 'حرفين'
+        } finally { Set-UiLang $was }
+    }
+    It 'a plan decides the language of its own texts: lang field, -Lang override, Arabic for older plans' {
+        (New-ShareShortSummary -PlanPath $script:enPlan.Plan) | Should -Match '^RAM Doctor report'
+        (New-ShareShortSummary -PlanPath $script:arPlan.Plan) | Should -Match '^تقرير RAM Doctor'
+        (New-ShareShortSummary -PlanPath $script:legacy.Plan) | Should -Match '^تقرير RAM Doctor'
+        (New-ShareShortSummary -PlanPath $script:legacy.Plan -Lang en) | Should -Match '^RAM Doctor report'
+        (New-ShareShortSummary -PlanPath $script:enPlan.Plan -Lang ar) | Should -Match '^تقرير RAM Doctor'
+    }
+    It 'the English short summary has English labels only, keeps the redaction and the length cap' {
+        $t = New-ShareShortSummary -PlanPath $script:enPlan.Plan
+        $t | Should -Match 'Verdict: Most likely cause: a memory leak in a kernel-level driver'
+        $t | Should -Match 'Memory: 14\.2/15\.84 GB used \| Non-paged 9\.6 GB \| Paged 0\.8 GB \| Unattributed 0\.2 GB'
+        $t | Should -Match 'Top notes:'
+        $t | Should -Match 'Suspicious files \(2\):'
+        $t | Should -Match '\[High\] svch0st\.exe \(Unsigned\)'
+        $t | Should -Match ('RAM-Doctor ' + [regex]::Escape($script:ToolVersion) + ' \| Scan time: 2026-01-01 12:00:00')
+        $t | Should -Not -Match '[؀-ۿ]'
+        $t | Should -Not -Match 'Friend|abc123secret99|friend@example\.com|SECRET123XYZ|DESKTOP-DEMO'
+        $t.Length | Should -BeLessOrEqual 1500
+        (New-ShareShortSummary -PlanPath $script:enPlan.Plan -IncludeHostName) | Should -Match 'Computer: DESKTOP-DEMO'
+    }
+    It 'summary.md: Arabic plans keep the right-to-left blocks, English plans have none (the relay would show them as text)' {
+        $prof = [pscustomobject]@{ displayName = 'Friend'; userId = 'a1b2c3d4' }
+        $en = (New-ShareBundle -PlanPath $script:enPlan.Plan -Profile $prof).Files | Where-Object name -eq 'summary.md'
+        $en.content | Should -Not -Match 'dir="rtl"'
+        $en.content | Should -Match '\*\*Most likely cause'
+        $en.content | Should -Not -Match '[؀-ۿ]'
+        $ar = (New-ShareBundle -PlanPath $script:arPlan.Plan -Profile $prof).Files | Where-Object name -eq 'summary.md'
+        $ar.content | Should -Match '<div dir="rtl">'
+    }
+    It 'the language field survives the redaction into plan.json' {
+        $prof = [pscustomobject]@{ displayName = 'Friend'; userId = 'a1b2c3d4' }
+        $pj = ((New-ShareBundle -PlanPath $script:enPlan.Plan -Profile $prof).Files | Where-Object name -eq 'plan.json').content | ConvertFrom-Json
+        $pj.lang | Should -Be 'en'
+    }
+}
+
 Describe 'Request body' -Tag 'Unit' {
     It 'follows protocol v1 and omits "code" when none is stored' {
         $d = Join-Path $TestDrive 'req'; New-Item -ItemType Directory -Force -Path $d | Out-Null
