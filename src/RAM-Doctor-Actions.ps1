@@ -49,7 +49,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$ToolVersion = '1.1.2'
+$ToolVersion = '1.1.3'
 $Inv = [Globalization.CultureInfo]::InvariantCulture
 $Root = $PSScriptRoot
 if (-not $Root) { $Root = (Get-Location).Path }
