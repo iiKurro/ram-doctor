@@ -60,6 +60,8 @@ $QRoot = Join-Path $DataRoot 'Quarantine'
 $Stamp = (Get-Date).ToString('yyyyMMdd-HHmmss', $Inv)     # invariant: Arabic/Saudi cultures would otherwise give Hijri years
 $LogFile = Join-Path $DataRoot "actions-$Stamp.log"
 $Utf8Bom = New-Object System.Text.UTF8Encoding($true)
+. (Join-Path $Root 'lib\Store.ps1')    # crash-safe manifest files (.tmp + rename, .bak) and the store lock
+$ManifestSchema = 1                    # 1.0.x manifests have no schema field and are schema 1; a newer schema is refused
 $SelectIds = @($Select -split '[,;\s]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
 
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -296,105 +298,196 @@ function Test-BatchTrusted([string]$dir) {
     $fd = Join-Path $dir 'files'
     if ((Test-Path -LiteralPath $fd) -and (Test-IsReparse $fd)) { return $false }
     $mf = Join-Path $dir 'manifest.json'
-    if (Test-IsReparse $mf) { return $false }
-    if ($script:Hardened) { foreach ($p in @($dir, $mf)) { if ($TrustedOwners -notcontains (Get-OwnerSid $p)) { return $false } } }
+    $records = @(@($mf, "$mf.bak") | Where-Object { Test-Path -LiteralPath $_ })
+    foreach ($x in $records) { if (Test-IsReparse $x) { return $false } }
+    if ($script:Hardened) { foreach ($p in @($dir) + $records) { if ($TrustedOwners -notcontains (Get-OwnerSid $p)) { return $false } } }
     return $true
 }
 
+# The manifest is the undo record. Crash-safe: manifest.json.tmp is flushed and renamed into place and the previous
+# version stays as manifest.json.bak. Throws when it cannot be written (callers stop before changing anything else).
 function Save-Manifest($manifest, [string]$dir) {
-    [IO.File]::WriteAllText((Join-Path $dir 'manifest.json'), ($manifest | ConvertTo-Json -Depth 10), $Utf8Bom)
+    Write-JsonAtomic -Path (Join-Path $dir 'manifest.json') -Object $manifest -Schema $ManifestSchema -Depth 12
 }
+# Status Ok | Recovered (the .bak was used) | Missing | Damaged | TooNew, Data, Message (see lib\Store.ps1)
+function Read-ManifestState([string]$dir) {
+    return (Read-JsonSafe -Path (Join-Path $dir 'manifest.json') -MaxSchema $ManifestSchema -Validate {
+            param($m)
+            $p = $m.PSObject.Properties['entries']
+            ($null -ne $p) -and ($null -eq $p.Value -or $p.Value -is [array])
+        })
+}
+function Read-Manifest([string]$dir) {
+    $r = Read-ManifestState $dir
+    if ($r.Status -eq 'Ok' -or $r.Status -eq 'Recovered') { return $r.Data }
+    return $null
+}
+
+# Every batch folder, including those whose undo record is damaged or was never written (they still hold files).
 function Get-Batches {
     if (-not (Test-Path -LiteralPath $QRoot)) { return @() }
     $out = New-Object System.Collections.ArrayList
     foreach ($d in @(Get-ChildItem -LiteralPath $QRoot -Directory -Force -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
-        if (-not (Test-Path -LiteralPath (Join-Path $d.FullName 'manifest.json') -PathType Leaf)) { continue }
+        $mf = Join-Path $d.FullName 'manifest.json'
+        $looksLikeBatch = (Test-Path -LiteralPath $mf) -or (Test-Path -LiteralPath "$mf.bak") -or (Test-Path -LiteralPath (Join-Path $d.FullName 'files')) -or
+            @(Get-ChildItem -LiteralPath $d.FullName -Filter 'manifest.json*.damaged-*' -File -Force -ErrorAction SilentlyContinue).Count -gt 0
+        if (-not $looksLikeBatch) { continue }
         if (-not (Test-BatchTrusted $d.FullName)) { Log "ignoring untrusted batch folder '$($d.Name)' (reparse point or not owned by SYSTEM/Administrators)" 'Yellow'; continue }
         [void]$out.Add($d)
     }
     return @($out)
 }
-function Read-Manifest([string]$dir) {
-    try {
-        $m = Get-Content -LiteralPath (Join-Path $dir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($null -eq $m) { return $null }
-        return $m
-    } catch { return $null }
-}
 
-function Select-Batch {
-    $all = @(Get-Batches)
+# State: restorable | restored | purged | damaged (undo record unreadable) | orphan (no undo record) | toonew (newer schema)
+function Get-BatchInfo($d) {
+    $r = Read-ManifestState $d.FullName
+    $fd = Join-Path $d.FullName 'files'
+    $n = 0; $bytes = 0.0
+    if ((Test-Path -LiteralPath $fd) -and -not (Test-IsReparse $fd)) {
+        $fs = @(Get-ChildItem -LiteralPath $fd -File -Force -ErrorAction SilentlyContinue)
+        $n = $fs.Count; if ($n) { $bytes = [double](($fs | Measure-Object Length -Sum).Sum) }
+    }
+    $state = switch ($r.Status) { 'Missing' { 'orphan' } 'Damaged' { 'damaged' } 'TooNew' { 'toonew' } default { 'restorable' } }
+    $m = $r.Data; $seq = 0; $items = 0; $created = ''
+    if ($m) {
+        if ($m.purgedAt) { $state = 'purged' } elseif ($m.restoredAt) { $state = 'restored' }
+        $items = @(@($m.entries) | Where-Object { $null -ne $_ }).Count
+        $sv = 0; if ($m.PSObject.Properties['seq'] -and [int]::TryParse([string]$m.seq, [ref]$sv)) { $seq = $sv }
+        $created = [string]$m.created
+    }
+    [pscustomobject]@{ Name = $d.Name; Dir = $d.FullName; State = $state; Read = $r; Manifest = $m; Items = $items; Files = $n; Bytes = $bytes; Seq = $seq; Created = $created; CreationTime = $d.CreationTime }
+}
+# newest first: by sequence number (clock-independent; 1.0.x batches have none = 0), then by name
+function Get-BatchInfos { @(Get-Batches | ForEach-Object { Get-BatchInfo $_ } | Sort-Object @{ Expression = { $_.Seq }; Descending = $true }, @{ Expression = { $_.Name }; Descending = $true }) }
+
+function Select-Batch([string]$Purpose) {
+    $all = @(Get-BatchInfos)
     if ($all.Count -eq 0) { Log 'No quarantine batches found.' 'Yellow'; return $null }
     if ($Batch) { $m = $all | Where-Object { $_.Name -eq $Batch } | Select-Object -First 1; if (-not $m) { Log "Batch '$Batch' not found (or not trusted)." 'Red' }; return $m }
-    if ($all.Count -eq 1 -or $Yes) { return $all[0] }
-    for ($i = 0; $i -lt $all.Count; $i++) { $mm = Read-Manifest $all[$i].FullName; Write-Host ("  [{0}] {1}  ({2} item(s){3})" -f ($i + 1), $all[$i].Name, @($mm.entries).Count, $(if ($mm.purgedAt) { ', purged' } else { '' })) }
+    $pick = if ($Purpose -eq 'Restore') { @($all | Where-Object { $_.State -eq 'restorable' }) } else { @($all | Where-Object { $_.State -ne 'purged' }) }
+    if ($Purpose -eq 'Restore' -and $pick.Count -eq 0) { $pick = @($all | Where-Object { $_.State -eq 'restored' } | Select-Object -First 1) }   # "already restored" is a harmless no-op
+    if ($pick.Count -eq 0) { Log $(if ($Purpose -eq 'Restore') { 'No batch is left to restore.' } else { 'No batch is left to purge.' }) 'Yellow'; return $null }
+    if ($pick.Count -eq 1 -or $Yes) { return $pick[0] }
+    for ($i = 0; $i -lt $pick.Count; $i++) { Write-Host ("  [{0}] {1}  ({2} item(s), {3})" -f ($i + 1), $pick[$i].Name, $pick[$i].Items, $pick[$i].State) }
     $a = Read-Host 'Choose batch number (Enter = latest)'
-    if (-not $a) { return $all[0] }
-    $idx = 0; if ([int]::TryParse($a, [ref]$idx) -and $idx -ge 1 -and $idx -le $all.Count) { return $all[$idx - 1] }
+    if (-not $a) { return $pick[0] }
+    $idx = 0; if ([int]::TryParse($a, [ref]$idx) -and $idx -ge 1 -and $idx -le $pick.Count) { return $pick[$idx - 1] }
     return $null
 }
 
+# stored file name inside files\: NNN_[kind_]<leaf>.quar, short enough for MAX_PATH, never an existing name
+function Get-ShortHash([string]$s) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($s)) } finally { $sha.Dispose() }
+    return ((@($h[0..3]) | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+function Get-StoredPath([string]$filesDir, [int]$id, [string]$leaf, [string]$kind) {
+    $l = $leaf
+    if ($l.Length -gt 100) { $l = $l.Substring(0, 80) + '~' + (Get-ShortHash $leaf) }
+    $base = ('{0:D3}_' -f $id) + $(if ($kind) { $kind + '_' } else { '' }) + $l
+    $p = Join-Path $filesDir ($base + '.quar')
+    for ($n = 2; (Test-Path -LiteralPath $p) -and $n -lt 100; $n++) { $p = Join-Path $filesDir ('{0}-{1}.quar' -f $base, $n) }
+    return $p
+}
+
+# keep the newest $keep action logs of the store (the current one always)
+function Remove-OldLogs([int]$keep = 30) {
+    try {
+        $logs = @(Get-ChildItem -LiteralPath $DataRoot -Filter 'actions-*.log' -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^actions-\d{8}-\d{6}\.log$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | Sort-Object Name -Descending)
+        foreach ($f in @($logs | Select-Object -Skip $keep)) { if ($f.FullName -ne $LogFile) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue } }
+    } catch { }
+}
+
 # ------------------------------------------------------------------------------------------ hardened restore helpers
+# Each returns $true when the item is back (or there is nothing left to put back) and $false when it was refused or
+# failed (a red line says why). Only a batch whose every item returned $true is marked as restored.
 function Restore-StoredFile($op, [string]$batchDir) {
     $filesDir = Join-Path $batchDir 'files'
     $stored = [string]$op.stored
-    if (-not $stored -or -not (Test-DirectlyInside $stored $filesDir) -or ([IO.Path]::GetFileName($stored) -notmatch '^\d{3}_.+\.quar$')) {
-        Log "refusing to restore: stored file is not directly inside this batch's files folder ($stored)" 'Red'; return
-    }
-    if (-not (Test-Path -LiteralPath $stored -PathType Leaf)) { Log "   stored file missing: $stored" 'Yellow'; return }
-    if (Test-IsReparse $stored) { Log "refusing to restore: stored file is a reparse point ($stored)" 'Red'; return }
     $want = if ($op.storedSha256) { [string]$op.storedSha256 } elseif ($op.sha256) { [string]$op.sha256 } else { '' }
-    if (-not $want) { Log "refusing to restore: no SHA-256 was recorded for $([IO.Path]::GetFileName($stored))" 'Red'; return }
-    $have = Get-Sha256 $stored
-    if (-not $have -or $have -ine $want) { Log "refusing to restore: stored file does not match the SHA-256 recorded at quarantine time ($([IO.Path]::GetFileName($stored)))" 'Red'; return }
     $dst = [string]$op.original
-    if (-not (Test-LocalDrivePath $dst)) { Log "refusing to restore: destination is not a plain local drive path ($dst)" 'Red'; return }
-    if ($op.type -eq 'MoveStartupFile' -and $dst -notmatch $StartupRegex) { Log "refusing to restore: startup shortcut destination is not a Startup folder ($dst)" 'Red'; return }
-    if (Test-ProtectedPath $dst) { Log "refusing to restore: destination is in a protected location ($dst)" 'Red'; return }
-    if (-not (Test-AncestorsSafe $dst)) { Log "refusing to restore: destination path passes through a junction/symlink ($dst)" 'Red'; return }
+    if (-not $stored -or -not (Test-DirectlyInside $stored $filesDir) -or ([IO.Path]::GetFileName($stored) -notmatch '^\d{3,}_.+\.quar$')) {
+        Log "refusing to restore: stored file is not directly inside this batch's files folder ($stored)" 'Red'; return $false
+    }
+    if (-not (Test-Path -LiteralPath $stored -PathType Leaf)) {
+        # an earlier restore was interrupted after moving it back, or the quarantine was interrupted before moving it
+        if ($want -and (Test-LocalDrivePath $dst) -and (Test-Path -LiteralPath $dst -PathType Leaf) -and ((Get-Sha256 $dst) -ieq $want)) {
+            Log "   file is already in its original place: $dst" 'Green'; return $true
+        }
+        Log "   the quarantined copy is missing ($stored): it was deleted outside RAM Doctor (for example by an antivirus) and cannot be restored" 'Red'; return $false
+    }
+    if (Test-IsReparse $stored) { Log "refusing to restore: stored file is a reparse point ($stored)" 'Red'; return $false }
+    if (-not $want) { Log "refusing to restore: no SHA-256 was recorded for $([IO.Path]::GetFileName($stored))" 'Red'; return $false }
+    $have = Get-Sha256 $stored
+    if (-not $have -or $have -ine $want) { Log "refusing to restore: stored file does not match the SHA-256 recorded at quarantine time ($([IO.Path]::GetFileName($stored)))" 'Red'; return $false }
+    if (-not (Test-LocalDrivePath $dst)) { Log "refusing to restore: destination is not a plain local drive path ($dst)" 'Red'; return $false }
+    if ($op.type -eq 'MoveStartupFile' -and $dst -notmatch $StartupRegex) { Log "refusing to restore: startup shortcut destination is not a Startup folder ($dst)" 'Red'; return $false }
+    if (Test-ProtectedPath $dst) { Log "refusing to restore: destination is in a protected location ($dst)" 'Red'; return $false }
+    if (-not (Test-AncestorsSafe $dst)) { Log "refusing to restore: destination path passes through a junction/symlink ($dst)" 'Red'; return $false }
     $final = Get-FreeName $dst
-    if (-not $final) { Log "refusing to restore: could not find a free file name next to $dst" 'Red'; return }
+    if (-not $final) { Log "refusing to restore: could not find a free file name next to $dst" 'Red'; return $false }
     if ($final -ne $dst) { Log "   original path is occupied (never overwritten), restoring as $final" 'Yellow' }
-    try { [void][IO.Directory]::CreateDirectory((Split-Path -Parent $final)) } catch { Log "could not create folder for $final" 'Red'; return }
-    if (Move-NoOverwrite $stored $final) { Log "   file restored: $final" 'Green' } else { Log "   could not restore $final" 'Red' }
+    try { [void][IO.Directory]::CreateDirectory((Split-Path -Parent $final)) } catch { Log "could not create folder for $final" 'Red'; return $false }
+    if (Move-NoOverwrite $stored $final) { Log "   file restored: $final" 'Green'; return $true }
+    Log "   could not restore $final" 'Red'; return $false
 }
 
 function Restore-StartType($op) {
     $name = [string]$op.name
-    if (-not (Test-SafeServiceName $name)) { Log "refusing to restore start type: unsafe service/driver name '$name'" 'Red'; return }
-    if (-not (Get-StartCode $name)) { Log "   $name no longer exists; nothing to restore" 'Yellow'; return }
+    if (-not (Test-SafeServiceName $name)) { Log "refusing to restore start type: unsafe service/driver name '$name'" 'Red'; return $false }
+    if (-not (Get-StartCode $name)) { Log "   $name no longer exists; nothing to restore" 'Yellow'; return $true }
     $ps = -1; $pd = -1
-    if (-not [int]::TryParse([string]$op.prevStart, [ref]$ps) -or @(2, 3, 4) -notcontains $ps) { Log "refusing to restore start type of ${name}: value '$($op.prevStart)' is not allowed" 'Red'; return }
+    if (-not [int]::TryParse([string]$op.prevStart, [ref]$ps) -or @(2, 3, 4) -notcontains $ps) { Log "refusing to restore start type of ${name}: value '$($op.prevStart)' is not allowed" 'Red'; return $false }
     if (-not [int]::TryParse([string]$op.prevDelayed, [ref]$pd) -or @(0, 1) -notcontains $pd) { $pd = 0 }
-    if (Set-StartCode $name $ps $pd) { Log "   $($op.type) undone: $name start=$ps" 'Green' } else { Log "   failed to restore start type of $name" 'Red' }
+    if (Set-StartCode $name $ps $pd) { Log "   $($op.type) undone: $name start=$ps" 'Green'; return $true }
+    Log "   failed to restore start type of $name" 'Red'; return $false
 }
 
 function Restore-Task($op) {
     $tp = [string]$op.taskPath; $tn = [string]$op.taskName
-    if (-not (Test-SafeTaskPath $tp) -or -not (Test-SafeTaskName $tn)) { Log "refusing to re-enable task: unsafe name '$tp$tn'" 'Red'; return }
+    if (-not (Test-SafeTaskPath $tp) -or -not (Test-SafeTaskName $tn)) { Log "refusing to re-enable task: unsafe name '$tp$tn'" 'Red'; return $false }
     try {
         $t = @(Get-ScheduledTask -TaskPath $tp -TaskName $tn -ErrorAction Stop)
-        if ($t.Count -ne 1) { Log "refusing to re-enable task '$tp$tn': it does not match exactly one task" 'Red'; return }
-        if ($t[0].State -ne 'Disabled') { Log "   task '$tn' is not disabled; left as is" 'Yellow'; return }
+        if ($t.Count -ne 1) { Log "refusing to re-enable task '$tp$tn': it does not match exactly one task" 'Red'; return $false }
+        if ($t[0].State -ne 'Disabled') { Log "   task '$tn' is not disabled; left as is" 'Yellow'; return $true }
         Enable-ScheduledTask -InputObject $t[0] -ErrorAction Stop | Out-Null
-        Log "   task re-enabled: $tn" 'Green'
-    } catch { Log "task restore failed: $($_.Exception.Message)" 'Red' }
+        Log "   task re-enabled: $tn" 'Green'; return $true
+    } catch { Log "task restore failed: $($_.Exception.Message)" 'Red'; return $false }
 }
 
 function Restore-RunValue($op) {
     $loc = [string]$op.location; $name = [string]$op.name; $kind = [string]$op.kind
-    if ($loc -notmatch $RunLocRegex) { Log "refusing to restore Run value: '$loc' is not a known Run key" 'Red'; return }
-    if (@('String', 'ExpandString') -notcontains $kind) { Log "refusing to restore Run value '$name': kind '$kind' is not allowed" 'Red'; return }
-    if (-not $name -or $name.Length -gt 255 -or $name -match '[\x00-\x1f]') { Log 'refusing to restore Run value: unsafe value name' 'Red'; return }
+    if ($loc -notmatch $RunLocRegex) { Log "refusing to restore Run value: '$loc' is not a known Run key" 'Red'; return $false }
+    if (@('String', 'ExpandString') -notcontains $kind) { Log "refusing to restore Run value '$name': kind '$kind' is not allowed" 'Red'; return $false }
+    if (-not $name -or $name.Length -gt 255 -or $name -match '[\x00-\x1f]') { Log 'refusing to restore Run value: unsafe value name' 'Red'; return $false }
     try {
         $key = Open-RegKey $loc $true
-        if (-not $key) { Log "could not open $loc" 'Red'; return }
+        if (-not $key) { Log "could not open $loc" 'Red'; return $false }
         try {
-            if ($null -ne $key.GetValue($name)) { Log "   Run value '$name' already exists; not overwritten" 'Yellow'; return }
+            if ($null -ne $key.GetValue($name)) { Log "   Run value '$name' already exists; not overwritten" 'Yellow'; return $true }
             $key.SetValue($name, [string]$op.value, [Microsoft.Win32.RegistryValueKind]$kind)
-            Log "   Run value restored: $name" 'Green'
+            Log "   Run value restored: $name" 'Green'; return $true
         } finally { $key.Close() }
-    } catch { Log "Run value restore failed: $($_.Exception.Message)" 'Red' }
+    } catch { Log "Run value restore failed: $($_.Exception.Message)" 'Red'; return $false }
+}
+
+# Undoes one recorded operation. 'pending' = the quarantine stopped right around it (the change may or may not have
+# happened); every helper above copes with both cases.
+function Undo-Op($op, [string]$batchDir) {
+    switch ([string]$op.type) {
+        'QuarantineFile' { return (Restore-StoredFile $op $batchDir) }
+        'MoveStartupFile' { return (Restore-StoredFile $op $batchDir) }
+        'DisableService' { return (Restore-StartType $op) }
+        'DisableDriver' { return (Restore-StartType $op) }
+        'DisableTask' { return (Restore-Task $op) }
+        'RemoveRunValue' { return (Restore-RunValue $op) }
+        'RemoveWmi' { Log "   WMI subscription '$($op.name)' cannot be auto-restored; its original definition is saved in manifest.json" 'Yellow'; return $true }
+        'StopProcess' { return $true }
+    }
+    # a newer version wrote an operation this one does not know: never claim it was undone
+    Log "   unknown operation type '$($op.type)' (written by a newer version of RAM Doctor?) - not restored" 'Red'
+    return $false
 }
 
 # deletes the quarantined files of one batch; never follows junctions/symlinks
@@ -412,86 +505,131 @@ function Remove-BatchFiles([string]$batchDir) {
 
 if ($LoadFunctionsOnly) { return }
 
-# ================================================================================ start
+# ================================================================ start
+# Machine-readable last line for the window:  RESULT: OK [...] | PARTIAL <n> | FAILED <reason> | BUSY | NONE
 if (-not $IsAdmin -and -not $AllowNonAdmin) { Write-Host 'This needs administrator rights. Run RAM-Doctor.bat (it asks for administrator rights automatically).' -ForegroundColor Red; exit 1 }
 if (-not $IsAdmin) { Write-Host 'WARNING: not elevated - service/driver/system-wide changes will fail (testing mode).' -ForegroundColor Yellow }
-if (-not (Initialize-StoreRoot)) { Write-Host 'The quarantine store could not be secured, so nothing was done.' -ForegroundColor Red; exit 1 }
+if ($Mode -eq 'List' -and -not (Test-Path -LiteralPath $DataRoot)) { Write-Host 'No quarantine batches.'; exit 0 }   # listing never creates the store
+# One action at a time per store: a second window, a double click or a scripted run must not work on the same batches.
+# The lock is held until this script ends (Windows releases it if the process dies).
+if ($Mode -ne 'List') {
+    $script:StoreLock = Enter-StoreLock -Name (Get-StoreLockName -Prefix 'store' -Path $DataRoot) -TimeoutMs 2000
+    if ($script:StoreLock.Status -eq 'Busy') {
+        Write-Host 'Another RAM Doctor action is already running on this quarantine store. Wait until it has finished, then try again.' -ForegroundColor Red
+        Write-Host 'RESULT: BUSY'; exit 4
+    }
+    if (-not $script:StoreLock.Guarded) { Write-Host "WARNING: running without the store lock ($($script:StoreLock.Message))" -ForegroundColor Yellow }
+}
+if (-not (Initialize-StoreRoot)) { Write-Host 'The quarantine store could not be secured, so nothing was done.' -ForegroundColor Red; Write-Host 'RESULT: FAILED store'; exit 1 }
+if ($Mode -ne 'List') { Remove-OldLogs }
 
 # ================================================================ LIST
 if ($Mode -eq 'List') {
-    $all = @(Get-Batches)
+    $all = @(Get-BatchInfos)
     if ($all.Count -eq 0) { Write-Host 'No quarantine batches.'; exit 0 }
     foreach ($b in $all) {
-        $mm = Read-Manifest $b.FullName
-        if (-not $mm) { Write-Host ("{0}   (unreadable manifest)" -f $b.Name); continue }
-        Write-Host ("{0}   {1} item(s)   {2}" -f $b.Name, @($mm.entries).Count, $(if ($mm.purgedAt) { "PURGED $($mm.purgedAt)" } else { 'restorable' }))
-        foreach ($e in @($mm.entries)) { Write-Host ("    #{0} {1}  [{2}]" -f $e.id, $e.name, $e.risk) }
+        $label = switch ($b.State) {
+            'restorable' { 'restorable' }
+            'restored' { "restored $($b.Manifest.restoredAt)" }
+            'purged' { "PURGED $($b.Manifest.purgedAt)" }
+            'damaged' { 'DAMAGED undo record: cannot be restored; its files can still be purged' }
+            'orphan' { 'NO undo record (the quarantine was interrupted): cannot be restored; its files can still be purged' }
+            'toonew' { 'written by a newer version of RAM Doctor: use that version' }
+        }
+        if ($b.Read.Status -eq 'Recovered') { $label += ' (undo record recovered from its backup copy)' }
+        Write-Host ("{0}   {1} item(s), {2} file(s)   {3}" -f $b.Name, $b.Items, $b.Files, $label)
+        if ($b.Manifest) { foreach ($e in @($b.Manifest.entries)) { if ($e) { Write-Host ("    #{0} {1}  [{2}]" -f $e.id, $e.name, $e.risk) } } }
+        # machine-readable (ASCII only: names, states and numbers) for the window
+        Write-Host ('BATCH_JSON: ' + ([ordered]@{ name = $b.Name; state = $b.State; items = $b.Items; files = $b.Files; bytes = [long]$b.Bytes; seq = $b.Seq; created = $b.Created } | ConvertTo-Json -Compress))
     }
     exit 0
 }
 
 # ================================================================ RESTORE
 if ($Mode -eq 'Restore') {
-    $b = Select-Batch
-    if (-not $b) { exit 1 }
-    $mm = Read-Manifest $b.FullName
-    if (-not $mm) { Log "refusing to restore: manifest of $($b.Name) is unreadable" 'Red'; exit 1 }
-    if ($mm.purgedAt) { Log 'This batch was purged; nothing left to restore.' 'Yellow'; exit 1 }
-    if ($mm.restoredAt) { Log "This batch was already restored on $($mm.restoredAt)." 'Yellow'; exit 0 }
+    $b = Select-Batch 'Restore'
+    if (-not $b) { Write-Host 'RESULT: FAILED none'; exit 1 }
+    $rs = $b.Read
+    $filesHint = Join-Path $b.Dir 'files'
+    switch ($rs.Status) {
+        'TooNew' { Log "refusing to restore $($b.Name): $($rs.Message) Use that version of RAM Doctor." 'Red'; Write-Host 'RESULT: FAILED toonew'; exit 1 }
+        'Damaged' { Log "refusing to restore $($b.Name): its undo record is damaged ($($rs.Message)). The quarantined files stay in $filesHint." 'Red'; Write-Host 'RESULT: FAILED damaged'; exit 1 }
+        'Missing' { Log "refusing to restore $($b.Name): it has no undo record (the quarantine was interrupted). Its files stay in $filesHint and can only be purged." 'Red'; Write-Host 'RESULT: FAILED orphan'; exit 1 }
+        'Recovered' { Log "the undo record of $($b.Name) was damaged; using its backup copy ($($rs.Message))" 'Yellow' }
+    }
+    $mm = $rs.Data
+    if ($mm.purgedAt) { Log 'This batch was purged; nothing left to restore.' 'Yellow'; Write-Host 'RESULT: FAILED purged'; exit 1 }
+    if ($mm.restoredAt) { Log "This batch was already restored on $($mm.restoredAt)." 'Yellow'; Write-Host 'RESULT: OK already'; exit 0 }
     Log "Restoring batch $($b.Name) ..." 'Cyan'
+    $failed = 0
     foreach ($e in @($mm.entries)) {
+        if (-not $e) { continue }
         Log "-- #$($e.id) $($e.name)"
         $rev = @($e.ops); [array]::Reverse($rev)   # undo in the opposite order of how it was done
         foreach ($op in $rev) {
-            if ($op.status -ne 'done') { continue }
-            switch ([string]$op.type) {
-                'QuarantineFile' { Restore-StoredFile $op $b.FullName }
-                'MoveStartupFile' { Restore-StoredFile $op $b.FullName }
-                'DisableService' { Restore-StartType $op }
-                'DisableDriver' { Restore-StartType $op }
-                'DisableTask' { Restore-Task $op }
-                'RemoveRunValue' { Restore-RunValue $op }
-                'RemoveWmi' { Log "   WMI subscription '$($op.name)' cannot be auto-restored; its original definition is saved in manifest.json" 'Yellow' }
-                'StopProcess' { }
-                default { Log "   ignoring unknown operation type '$($op.type)'" 'Yellow' }
-            }
+            if (-not $op) { continue }
+            if (@('done', 'pending') -notcontains [string]$op.status) { continue }
+            if ($op.PSObject.Properties['undoneAt'] -and $op.undoneAt) { continue }   # put back by an earlier (partial) restore
+            if (Undo-Op $op $b.Dir) {
+                $op | Add-Member -NotePropertyName undoneAt -NotePropertyValue (IsoDate (Get-Date)) -Force
+                if (@('StopProcess', 'RemoveWmi') -notcontains [string]$op.type) {
+                    try { Save-Manifest $mm $b.Dir } catch { Log "   could not update the undo record: $(Get-StoreErrorText $_)" 'Yellow' }
+                }
+            } else { $failed++ }
         }
     }
-    if ($script:RedCount -eq 0) {   # fully restored: remember it so the batch is not offered for restore again
+    if ($failed -eq 0) {   # fully restored: remember it so the batch is not offered for restore again
         $mm | Add-Member -NotePropertyName restoredAt -NotePropertyValue (IsoDate (Get-Date)) -Force
-        Save-Manifest $mm $b.FullName
+        try { Save-Manifest $mm $b.Dir } catch { Log "could not mark the batch as restored: $(Get-StoreErrorText $_)" 'Yellow' }
+        Log 'Restore finished. A reboot may be needed for service/driver changes.' 'Cyan'
+        Write-Host 'RESULT: OK'; exit 0
     }
-    Log 'Restore finished. A reboot may be needed for service/driver changes.' 'Cyan'
-    exit 0
+    try { Save-Manifest $mm $b.Dir } catch { }
+    Log ("Restore INCOMPLETE: {0} item(s) could not be put back (see the red lines above). The batch stays restorable: run Restore again once the cause is fixed; items that are already back are not touched again." -f $failed) 'Red'
+    Write-Host "RESULT: PARTIAL $failed"; exit 2
 }
 
 # ================================================================ PURGE
 if ($Mode -eq 'Purge') {
     $targets = @()
-    if ($OlderThanDays -ge 0) { $targets = @(Get-Batches | Where-Object { ((Get-Date) - $_.CreationTime).TotalDays -ge $OlderThanDays }) }
-    else { $one = Select-Batch; if ($one) { $targets = @($one) } }
-    if ($targets.Count -eq 0) { Log 'Nothing to purge.'; exit 0 }
-    $totalBytes = 0; $count = 0
-    foreach ($t in $targets) {
-        $fd = Join-Path $t.FullName 'files'
-        if ((Test-Path -LiteralPath $fd) -and -not (Test-IsReparse $fd)) { $fs = @(Get-ChildItem -LiteralPath $fd -File -Force -ErrorAction SilentlyContinue); $count += $fs.Count; $totalBytes += ($fs | Measure-Object Length -Sum).Sum }
+    if ($OlderThanDays -ge 0) {
+        $now = Get-Date
+        foreach ($i in @(Get-BatchInfos)) {
+            if ($i.State -eq 'purged') { continue }
+            if ($i.State -eq 'toonew') { Log "skipping $($i.Name): it was written by a newer version of RAM Doctor; purge it with that version" 'Yellow'; continue }
+            $age = ($now - $i.CreationTime).TotalDays
+            if ($age -lt -0.05) {   # dated in the future: the PC clock was wrong when it was made, so its real age is unknown
+                if ($OlderThanDays -eq 0) { $targets += $i } else { Log "skipping $($i.Name): its date lies in the future (the PC clock was wrong); purge it by name with -Batch $($i.Name)" 'Yellow' }
+                continue
+            }
+            if ($age -ge $OlderThanDays) { $targets += $i }
+        }
     }
+    else { $one = Select-Batch 'Purge'; if ($one) { $targets = @($one) } }
+    if ($targets.Count -eq 0) { Log 'Nothing to purge.'; Write-Host 'RESULT: NONE'; exit 0 }
+    $totalBytes = 0.0; $count = 0
+    foreach ($t in $targets) { $count += $t.Files; $totalBytes += $t.Bytes }
     Write-Host ("About to PERMANENTLY delete {0} quarantined file(s), {1} MB, from {2} batch(es). This cannot be undone." -f $count, [math]::Round($totalBytes / 1MB, 1), $targets.Count) -ForegroundColor Red
-    if (-not $Yes) { if ((Read-Host "Type DELETE to confirm") -cne 'DELETE') { Log 'Cancelled.'; exit 0 } }
+    if (-not $Yes) { if ((Read-Host "Type DELETE to confirm") -cne 'DELETE') { Log 'Cancelled.'; Write-Host 'RESULT: NONE'; exit 0 } }
+    $okN = 0; $badN = 0
     foreach ($t in $targets) {
+        if ($t.State -eq 'toonew') { Log "refusing to purge $($t.Name): it was written by a newer version of RAM Doctor" 'Red'; $badN++; continue }
         $before = $script:RedCount
-        Remove-BatchFiles $t.FullName
-        $mm = Read-Manifest $t.FullName
-        if (-not $mm) { Log "refusing to update the manifest of $($t.Name): unreadable" 'Red'; continue }
+        Remove-BatchFiles $t.Dir
+        $mm = $t.Manifest
+        if (-not $mm) {   # damaged or never written: keep a small record that says what happened
+            $mm = [pscustomobject]@{ batch = $t.Name; version = $ToolVersion; created = (IsoDate $t.CreationTime); host = $env:COMPUTERNAME; plan = ''; entries = @(); note = "the undo record was $($t.State) when this batch was purged" }
+        }
         if ($script:RedCount -eq $before) {
             $mm | Add-Member -NotePropertyName purgedAt -NotePropertyValue (IsoDate (Get-Date)) -Force
-            Save-Manifest $mm $t.FullName
-            Log "Purged batch $($t.Name)" 'Green'
-        } else { Log "Batch $($t.Name) was NOT fully purged (see messages above)" 'Yellow' }
+            try { Save-Manifest $mm $t.Dir; Log "Purged batch $($t.Name)" 'Green' }
+            catch { Log "Purged the files of $($t.Name), but could not mark it as purged: $(Get-StoreErrorText $_)" 'Yellow' }
+            $okN++
+        } else { Log "Batch $($t.Name) was NOT fully purged (see messages above)" 'Yellow'; $badN++ }
     }
-    exit 0
+    if ($badN -eq 0) { Write-Host "RESULT: OK $okN"; exit 0 }
+    Write-Host "RESULT: PARTIAL $badN"; exit 2
 }
-
 # ================================================================ QUARANTINE
 # ---- locate and validate the plan (user-writable input: see SECURITY MODEL above)
 if (-not $Plan) {
@@ -503,9 +641,12 @@ if (-not $Plan) {
 }
 Log "Using plan: $Plan"
 try { $planData = Get-Content -LiteralPath $Plan -Raw -Encoding UTF8 | ConvertFrom-Json }   # (not $plan: PowerShell variables are case-insensitive and $Plan is the typed [string] parameter)
-catch { Log "refusing to use the plan: it is not valid JSON ($($_.Exception.Message))" 'Red'; exit 1 }
-if (-not $planData -or -not $planData.suspects) { Log 'The plan has no suspects. Nothing to do.' 'Yellow'; exit 0 }
-if ($planData.host -ne $env:COMPUTERNAME) { Log "Plan belongs to '$($planData.host)', this PC is '$($env:COMPUTERNAME)'. Refusing." 'Red'; exit 1 }
+catch { Log "refusing to use the plan: it is not valid JSON ($($_.Exception.Message))" 'Red'; Write-Host 'RESULT: FAILED plan'; exit 1 }
+if ($planData -and $planData.PSObject.Properties['schema'] -and ([string]$planData.schema -notmatch '^\d{1,6}$' -or [int]$planData.schema -gt 1)) {
+    Log "refusing to use the plan: it was written by a newer version of RAM Doctor (schema $($planData.schema))" 'Red'; Write-Host 'RESULT: FAILED plan'; exit 1
+}
+if (-not $planData -or -not $planData.suspects) { Log 'The plan has no suspects. Nothing to do.' 'Yellow'; Write-Host 'RESULT: NONE'; exit 0 }
+if ($planData.host -ne $env:COMPUTERNAME) { Log "Plan belongs to '$($planData.host)', this PC is '$($env:COMPUTERNAME)'. Refusing." 'Red'; Write-Host 'RESULT: FAILED host'; exit 1 }
 $ageH = 0; try { $ageH = ((Get-Date) - [datetime]$planData.created).TotalHours } catch { }
 if ($ageH -gt 24) { Log ("Plan is {0:N0} h old; every item is re-verified live before anything is touched." -f $ageH) 'Yellow' }
 
@@ -559,181 +700,267 @@ if (-not $NoRestorePoint) {
 }
 
 $batchName = $Stamp; $bn = 2
-while (Test-Path -LiteralPath (Join-Path $QRoot $batchName)) { $batchName = "$Stamp-$bn"; $bn++ }    # two runs in the same second must not share a batch
+while (Test-Path -LiteralPath (Join-Path $QRoot $batchName)) { $batchName = "$Stamp-$bn"; $bn++ }    # two runs in the same second must not share a batch (the store lock is held)
 $batchDir = Join-Path $QRoot $batchName
 $filesDir = Join-Path $batchDir 'files'
+$seq = 1 + [int](@(@(Get-BatchInfos) | ForEach-Object { $_.Seq }) + @(0) | Measure-Object -Maximum).Maximum   # "undo last" must not depend on the clock
 [void][IO.Directory]::CreateDirectory($filesDir)
-$manifest = [pscustomobject]@{ batch = $batchName; version = $ToolVersion; created = (IsoDate (Get-Date)); host = $env:COMPUTERNAME; plan = $Plan; entries = @() }
+$manifest = [pscustomobject]@{ batch = $batchName; version = $ToolVersion; created = (IsoDate (Get-Date)); host = $env:COMPUTERNAME; plan = $Plan; seq = $seq; entries = @() }
 $entries = New-Object System.Collections.ArrayList
 
-foreach ($s in $chosen) {
-    Log "=== #$($s.id) $($s.name) [$($s.risk)] ===" 'Cyan'
-    $ops = New-Object System.Collections.ArrayList
-    function AddOp([hashtable]$h) { [void]$ops.Add([pscustomobject]$h) }
-
-    # ---- 0) validate + re-verify the target live (never trust the plan)
-    $path = [string]$s.path
-    $exists = $false; $moveFile = $false; $skipAll = $false
-    if ($path) {
-        if (-not (Test-LocalDrivePath $path)) { Log "   refusing: '$path' is not a plain local drive path - skipping this item" 'Red'; continue }
-        $path = Get-FullPathSafe $path    # long form: 8.3 short names (VICTIM~1.EXE) are expanded so the REAL file name is recorded and restored
-        $exists = (Test-Path -LiteralPath $path -PathType Leaf)
-    }
-    $moveFile = $exists -and -not $s.protectedFile
-    if ($exists) {
-        $curHash = Get-Sha256 $path
-        if ($moveFile -and -not $s.sha256) { Log '   refusing: the plan has no SHA-256 for this file, so it cannot be verified - skipping this item. Re-run the scan.' 'Red'; $skipAll = $true }
-        elseif ($s.sha256 -and $curHash -and $curHash -ine $s.sha256) { Log '   file changed since the scan (hash mismatch) - skipping this item for safety. Re-run the scan.' 'Red'; $skipAll = $true }
-        if ($moveFile -and (Test-ProtectedPath $path)) { Log '   path is in a protected location - file will NOT be moved.' 'Yellow'; $moveFile = $false }
-        if ($moveFile -and (Test-MicrosoftSigned $path)) { Log '   file is Microsoft-signed - file will NOT be moved.' 'Yellow'; $moveFile = $false }
-        if ($moveFile -and (Test-IsReparse $path)) { Log '   file is a link (reparse point) - file will NOT be moved.' 'Yellow'; $moveFile = $false }
-    }
-    if ($skipAll) { continue }
-
-    # ---- 1) stop processes (PID + start-time guard against PID reuse; never the critical Windows processes)
-    $toKill = New-Object System.Collections.Generic.List[int]
-    $cands2 = New-Object System.Collections.ArrayList
-    foreach ($p in @($s.procs)) {
-        $procId = 0
-        if (-not [int]::TryParse([string]$p.pid, [ref]$procId) -or $procId -le 4) { continue }
-        $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
-        if (-not $proc) { continue }
-        $okStart = $true
-        if ($p.start) { try { $okStart = [math]::Abs(($proc.StartTime - [datetime]$p.start).TotalSeconds) -le 3 } catch { $okStart = $false } }
-        if ($okStart) { [void]$cands2.Add($proc) }
-    }
-    if ($moveFile) {   # also catch copies respawned after the scan
-        foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
-            try { if ($proc.Path -and ((Get-FullPathSafe $proc.Path) -ieq $path) -and -not ($cands2 | Where-Object { $_.Id -eq $proc.Id })) { [void]$cands2.Add($proc) } } catch { }
-        }
-    }
-    foreach ($proc in $cands2) {
-        $pname = $proc.ProcessName.ToLowerInvariant(); $ppath = ''
-        try { $ppath = [string]$proc.Path } catch { }
-        if ($CriticalProcNames -contains $pname -and (-not $ppath -or $ppath.ToLowerInvariant().StartsWith($WinDirL + '\'))) {
-            Log "   refusing to stop critical Windows process $($proc.ProcessName) (PID $($proc.Id))" 'Yellow'; continue
-        }
-        if (-not $toKill.Contains($proc.Id)) { $toKill.Add($proc.Id) }
-    }
-    foreach ($procId in $toKill) {
-        try {
-            Stop-Process -Id $procId -Force -ErrorAction Stop
-            Wait-Process -Id $procId -Timeout 5 -ErrorAction SilentlyContinue   # let the kernel finish tearing it down before we touch its file
-            Log "   stopped process $procId" 'Green'; AddOp @{ type = 'StopProcess'; pid = $procId; status = 'done' }
-        }
-        catch { Log "   could not stop process ${procId}: $($_.Exception.Message)" 'Red'; AddOp @{ type = 'StopProcess'; pid = $procId; status = 'failed'; note = $_.Exception.Message } }
-    }
-
-    # ---- 2) services (plain names only: Stop-Service/sc.exe would treat '*' or '\\host' specially)
-    foreach ($sv in @($s.services)) {
-        $sn = [string]$sv.name
-        if (-not (Test-SafeServiceName $sn)) { Log "   refusing: unsafe service name '$sn'" 'Red'; continue }
-        if ($EssentialServices -contains $sn) { Log "   refusing to disable essential Windows service $sn" 'Yellow'; continue }
-        $code = Get-StartCode $sn
-        if (-not $code) { Log "   service $sn not found" 'Yellow'; continue }
-        try { Stop-Service -Name $sn -Force -ErrorAction SilentlyContinue } catch { }
-        if (Set-StartCode $sn 4 0) { Log "   service disabled: $sn" 'Green'; AddOp @{ type = 'DisableService'; name = $sn; prevStart = $code.Start; prevDelayed = $code.Delayed; status = 'done' } }
-        else { Log "   failed to disable service $sn" 'Red'; AddOp @{ type = 'DisableService'; name = $sn; status = 'failed' } }
-    }
-
-    # ---- 3) drivers: only 3rd-party, non-boot, non-Microsoft
-    foreach ($dv in @($s.drivers)) {
-        $dn = [string]$dv.name
-        if (-not (Test-SafeServiceName $dn)) { Log "   refusing: unsafe driver name '$dn'" 'Red'; continue }
-        $code = Get-StartCode $dn
-        if (-not $code) { continue }
-        if ($code.Start -le 1) { Log "   driver $dn is boot/system-start: refusing to disable (could stop Windows booting)" 'Yellow'; continue }
-        if ($path -and ((Test-ProtectedPath $path) -or (Test-MicrosoftSigned $path))) { Log "   driver $dn is a Windows/Microsoft driver: refusing" 'Yellow'; continue }
-        if (Set-StartCode $dn 4 0) { Log "   driver disabled (takes effect at next boot): $dn" 'Green'; AddOp @{ type = 'DisableDriver'; name = $dn; prevStart = $code.Start; prevDelayed = $code.Delayed; status = 'done' } }
-        else { Log "   failed to disable driver $dn" 'Red' }
-    }
-
-    # ---- 4) scheduled tasks (exact match only)
-    foreach ($t in @($s.tasks)) {
-        $tp = [string]$t.taskPath; $tn = [string]$t.taskName
-        if (-not (Test-SafeTaskPath $tp) -or -not (Test-SafeTaskName $tn)) { Log "   refusing: unsafe task name '$tp$tn'" 'Red'; continue }
-        try {
-            $found = @(Get-ScheduledTask -TaskPath $tp -TaskName $tn -ErrorAction Stop)
-            if ($found.Count -ne 1) { Log "   refusing: '$tp$tn' does not match exactly one task" 'Red'; continue }
-            Disable-ScheduledTask -InputObject $found[0] -ErrorAction Stop | Out-Null
-            Log "   task disabled: $tp$tn" 'Green'; AddOp @{ type = 'DisableTask'; taskPath = $tp; taskName = $tn; status = 'done' }
-        } catch { Log "   could not disable task ${tn}: $($_.Exception.Message)" 'Red' }
-    }
-
-    # ---- 5) startup entries (only the known Run keys / Startup folders)
-    foreach ($r in @($s.autoruns)) {
-        if ($r.via -eq 'Registry') {
-            $loc = [string]$r.location; $rn = [string]$r.name
-            if ($loc -notmatch $RunLocRegex) { Log "   refusing: '$loc' is not a known Run key" 'Red'; continue }
-            try {
-                $key = Open-RegKey $loc $true
-                if (-not $key) { Log "   could not open $loc" 'Red'; continue }
-                try {
-                    $curExp = $key.GetValue($rn)
-                    if ($null -eq $curExp) { Log "   Run value '$rn' not found" 'Yellow'; continue }
-                    if ([string]$curExp -ne [string]$r.value) { Log "   Run value '$rn' changed since the scan - left alone" 'Yellow'; continue }
-                    $kind = $key.GetValueKind($rn).ToString()
-                    if (@('String', 'ExpandString') -notcontains $kind) { Log "   Run value '$rn' has an unexpected type ($kind) - left alone" 'Yellow'; continue }
-                    $raw = $key.GetValue($rn, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-                    $key.DeleteValue($rn)
-                    Log "   startup value removed: $rn" 'Green'
-                    AddOp @{ type = 'RemoveRunValue'; location = $loc; name = $rn; value = [string]$raw; kind = $kind; status = 'done' }
-                } finally { $key.Close() }
-            } catch { Log "   could not remove Run value '${rn}': $($_.Exception.Message)" 'Red' }
-        } elseif ($r.via -eq 'StartupFolder' -and $r.file) {
-            $sf = [string]$r.file
-            if (-not (Test-LocalDrivePath $sf) -or $sf -notmatch $StartupRegex) { Log "   refusing: '$sf' is not a file in a Startup folder" 'Red'; continue }
-            if (-not (Test-Path -LiteralPath $sf -PathType Leaf) -or (Test-IsReparse $sf)) { continue }
-            $stored = Join-Path $filesDir ('{0:D3}_startup_{1}.quar' -f [int]$s.id, (Split-Path $sf -Leaf))
-            $sha = Get-Sha256 $sf
-            if (Move-NoOverwrite $sf $stored) { Log "   startup shortcut moved: $sf" 'Green'; AddOp @{ type = 'MoveStartupFile'; original = $sf; stored = $stored; storedSha256 = $sha; status = 'done' } }
-            else { Log "   could not move startup file $sf" 'Red' }
-        }
-    }
-
-    # ---- 6) WMI subscriptions (definition saved so a human can recreate it)
-    foreach ($w in @($s.wmi)) {
-        $wc = [string]$w.class
-        if ($WmiConsumerClasses -notcontains $wc) { Log "   refusing: '$wc' is not a WMI event-consumer class" 'Red'; continue }
-        try {
-            $ns = 'root\subscription'
-            $cons = @(Get-CimInstance -Namespace $ns -ClassName $wc -ErrorAction Stop | Where-Object { $_.Name -eq [string]$w.name })
-            $saved = $cons | ForEach-Object { $h = @{}; foreach ($pp in $_.CimInstanceProperties) { $h[$pp.Name] = [string]$pp.Value }; $h }
-            foreach ($bnd in @(Get-CimInstance -Namespace $ns -ClassName __FilterToConsumerBinding -ErrorAction SilentlyContinue | Where-Object { $_.Consumer.Name -eq [string]$w.name })) { Remove-CimInstance -InputObject $bnd -ErrorAction SilentlyContinue }
-            foreach ($c in $cons) { Remove-CimInstance -InputObject $c -ErrorAction Stop }
-            Log "   WMI consumer removed: $($w.name)" 'Green'
-            AddOp @{ type = 'RemoveWmi'; class = $wc; name = [string]$w.name; definition = $saved; status = 'done' }
-        } catch { Log "   could not remove WMI consumer $($w.name): $($_.Exception.Message)" 'Red' }
-    }
-
-    # ---- 7) finally the file itself
-    if ($moveFile) {
-        $stored = Join-Path $filesDir ('{0:D3}_{1}.quar' -f [int]$s.id, (Split-Path $path -Leaf))
-        if (Move-NoOverwrite $path $stored) {
-            $storedSha = Get-Sha256 $stored
-            Log "   file quarantined -> $stored" 'Green'
-            AddOp @{ type = 'QuarantineFile'; original = $path; stored = $stored; sha256 = $s.sha256; storedSha256 = $storedSha; status = 'done' }
-        } else {
-            Log '   file is still locked and could not be moved (try again after a reboot, or in Safe Mode).' 'Red'
-            AddOp @{ type = 'QuarantineFile'; original = $path; status = 'failed'; note = 'locked' }
-        }
-    }
-
-    [void]$entries.Add([pscustomobject]@{ id = $s.id; name = $s.name; risk = $s.risk; path = $path; sha256 = $s.sha256; ops = @($ops) })
-    $manifest.entries = @($entries)
-    Save-Manifest $manifest $batchDir
+function Remove-EmptyBatch {
+    foreach ($n in 'manifest.json', 'manifest.json.bak', 'manifest.json.tmp') { Remove-Item -LiteralPath (Join-Path $batchDir $n) -Force -ErrorAction SilentlyContinue }
+    try { [IO.Directory]::Delete($filesDir) } catch { }
+    try { [IO.Directory]::Delete($batchDir) } catch { }
 }
 
-$manifest.entries = @($entries)
-if ($entries.Count -eq 0) {
-    # nothing was done: do not leave an empty batch behind
-    try { [IO.Directory]::Delete($filesDir); Remove-Item -LiteralPath (Join-Path $batchDir 'manifest.json') -Force -ErrorAction SilentlyContinue; [IO.Directory]::Delete($batchDir) } catch { }
+# The undo record is written BEFORE anything is changed and then after every step ("write-ahead"): each change is first
+# recorded as "pending" with everything needed to undo it, then marked "done" or "failed". If the PC loses power, the disk
+# fills up or the script is killed, Restore still knows about every change that may have happened.
+try { Save-Manifest $manifest $batchDir }
+catch {
+    Log "refusing to start: the undo record could not be written ($(Get-StoreErrorText $_)). Nothing was changed." 'Red'
+    Remove-EmptyBatch
+    Write-Host 'RESULT: FAILED nosave'; exit 1
+}
+$script:curEntry = $null; $script:curOps = $null; $script:curSuspect = $null; $script:curPath = ''; $script:savedOps = 0
+function Save-Progress {
+    if ($script:curEntry) { $script:curEntry.ops = @($script:curOps) }
+    $manifest.entries = @($entries)
+    try { Save-Manifest $manifest $batchDir } catch { throw ('UNDO-RECORD: ' + (Get-StoreErrorText $_)) }
+}
+function Use-Entry {
+    if ($script:curEntry) { return }
+    $sx = $script:curSuspect
+    $script:curEntry = [pscustomobject]@{ id = $sx.id; name = $sx.name; risk = $sx.risk; path = $script:curPath; sha256 = $sx.sha256; ops = @() }
+    [void]$entries.Add($script:curEntry)
+}
+# records a step before it is taken; throws (UNDO-RECORD) when that is impossible, so the step is never taken unrecorded
+function Begin-Op([hashtable]$h) {
+    Use-Entry
+    $h['status'] = 'pending'
+    $op = [pscustomobject]$h
+    [void]$script:curOps.Add($op)
+    Save-Progress
+    $script:savedOps++
+    return $op
+}
+function Complete-Op($op, [string]$status, [hashtable]$more = @{}) {
+    $op.status = $status
+    foreach ($k in $more.Keys) { $op | Add-Member -NotePropertyName $k -NotePropertyValue $more[$k] -Force }
+    Save-Progress
+}
+# a step that needs no undo data (stopping a process) is recorded after it happened
+function Add-Op([hashtable]$h) { Use-Entry; [void]$script:curOps.Add([pscustomobject]$h); Save-Progress; $script:savedOps++ }
+function Test-UndoRecordError($err) { return ([string]$err.Exception.Message).StartsWith('UNDO-RECORD:') }
+
+$aborted = $false
+foreach ($s in $chosen) {
+    $script:curSuspect = $s; $script:curEntry = $null; $script:curOps = New-Object System.Collections.ArrayList; $script:curPath = ''
+    try {
+        Log "=== #$($s.id) $($s.name) [$($s.risk)] ===" 'Cyan'
+
+        # ---- 0) validate + re-verify the target live (never trust the plan)
+        $path = [string]$s.path
+        $exists = $false; $moveFile = $false; $skipAll = $false; $curHash = ''
+        if ($path) {
+            if (-not (Test-LocalDrivePath $path)) { Log "   refusing: '$path' is not a plain local drive path - skipping this item" 'Red'; continue }
+            $path = Get-FullPathSafe $path    # long form: 8.3 short names (VICTIM~1.EXE) are expanded so the REAL file name is recorded and restored
+            $exists = (Test-Path -LiteralPath $path -PathType Leaf)
+        }
+        $script:curPath = $path
+        $moveFile = $exists -and -not $s.protectedFile
+        if ($exists) {
+            $curHash = Get-Sha256 $path
+            if ($moveFile -and -not $s.sha256) { Log '   refusing: the plan has no SHA-256 for this file, so it cannot be verified - skipping this item. Re-run the scan.' 'Red'; $skipAll = $true }
+            elseif ($s.sha256 -and $curHash -and $curHash -ine $s.sha256) { Log '   file changed since the scan (hash mismatch) - skipping this item for safety. Re-run the scan.' 'Red'; $skipAll = $true }
+            if ($moveFile -and (Test-ProtectedPath $path)) { Log '   path is in a protected location - file will NOT be moved.' 'Yellow'; $moveFile = $false }
+            if ($moveFile -and (Test-MicrosoftSigned $path)) { Log '   file is Microsoft-signed - file will NOT be moved.' 'Yellow'; $moveFile = $false }
+            if ($moveFile -and (Test-IsReparse $path)) { Log '   file is a link (reparse point) - file will NOT be moved.' 'Yellow'; $moveFile = $false }
+        }
+        if ($skipAll) { continue }
+
+        # ---- 1) stop processes (PID + start-time guard against PID reuse; never the critical Windows processes)
+        $toKill = New-Object System.Collections.Generic.List[int]
+        $cands2 = New-Object System.Collections.ArrayList
+        foreach ($p in @($s.procs)) {
+            $procId = 0
+            if (-not [int]::TryParse([string]$p.pid, [ref]$procId) -or $procId -le 4) { continue }
+            $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+            if (-not $proc) { continue }
+            $okStart = $true
+            if ($p.start) { try { $okStart = [math]::Abs(($proc.StartTime - [datetime]$p.start).TotalSeconds) -le 3 } catch { $okStart = $false } }
+            if ($okStart) { [void]$cands2.Add($proc) }
+        }
+        if ($moveFile) {   # also catch copies respawned after the scan
+            foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
+                try { if ($proc.Path -and ((Get-FullPathSafe $proc.Path) -ieq $path) -and -not ($cands2 | Where-Object { $_.Id -eq $proc.Id })) { [void]$cands2.Add($proc) } } catch { }
+            }
+        }
+        foreach ($proc in $cands2) {
+            $pname = $proc.ProcessName.ToLowerInvariant(); $ppath = ''
+            try { $ppath = [string]$proc.Path } catch { }
+            if ($CriticalProcNames -contains $pname -and (-not $ppath -or $ppath.ToLowerInvariant().StartsWith($WinDirL + '\'))) {
+                Log "   refusing to stop critical Windows process $($proc.ProcessName) (PID $($proc.Id))" 'Yellow'; continue
+            }
+            if (-not $toKill.Contains($proc.Id)) { $toKill.Add($proc.Id) }
+        }
+        foreach ($procId in $toKill) {
+            $stopped = $false; $why = ''
+            try {
+                Stop-Process -Id $procId -Force -ErrorAction Stop
+                Wait-Process -Id $procId -Timeout 5 -ErrorAction SilentlyContinue   # let the kernel finish tearing it down before we touch its file
+                $stopped = $true
+            }
+            catch { $why = $_.Exception.Message }
+            if ($stopped) { Log "   stopped process $procId" 'Green'; Add-Op @{ type = 'StopProcess'; pid = $procId; status = 'done' } }
+            else { Log "   could not stop process ${procId}: $why" 'Red'; Add-Op @{ type = 'StopProcess'; pid = $procId; status = 'failed'; note = $why } }
+        }
+
+        # ---- 2) services (plain names only: Stop-Service/sc.exe would treat '*' or '\\host' specially)
+        foreach ($sv in @($s.services)) {
+            $sn = [string]$sv.name
+            if (-not (Test-SafeServiceName $sn)) { Log "   refusing: unsafe service name '$sn'" 'Red'; continue }
+            if ($EssentialServices -contains $sn) { Log "   refusing to disable essential Windows service $sn" 'Yellow'; continue }
+            $code = Get-StartCode $sn
+            if (-not $code) { Log "   service $sn not found" 'Yellow'; continue }
+            $op = Begin-Op @{ type = 'DisableService'; name = $sn; prevStart = $code.Start; prevDelayed = $code.Delayed }
+            try { Stop-Service -Name $sn -Force -ErrorAction SilentlyContinue } catch { }
+            if (Set-StartCode $sn 4 0) { Log "   service disabled: $sn" 'Green'; Complete-Op $op 'done' }
+            else { Log "   failed to disable service $sn" 'Red'; Complete-Op $op 'failed' }
+        }
+
+        # ---- 3) drivers: only 3rd-party, non-boot, non-Microsoft
+        foreach ($dv in @($s.drivers)) {
+            $dn = [string]$dv.name
+            if (-not (Test-SafeServiceName $dn)) { Log "   refusing: unsafe driver name '$dn'" 'Red'; continue }
+            $code = Get-StartCode $dn
+            if (-not $code) { continue }
+            if ($code.Start -le 1) { Log "   driver $dn is boot/system-start: refusing to disable (could stop Windows booting)" 'Yellow'; continue }
+            if ($path -and ((Test-ProtectedPath $path) -or (Test-MicrosoftSigned $path))) { Log "   driver $dn is a Windows/Microsoft driver: refusing" 'Yellow'; continue }
+            $op = Begin-Op @{ type = 'DisableDriver'; name = $dn; prevStart = $code.Start; prevDelayed = $code.Delayed }
+            if (Set-StartCode $dn 4 0) { Log "   driver disabled (takes effect at next boot): $dn" 'Green'; Complete-Op $op 'done' }
+            else { Log "   failed to disable driver $dn" 'Red'; Complete-Op $op 'failed' }
+        }
+
+        # ---- 4) scheduled tasks (exact match only)
+        foreach ($t in @($s.tasks)) {
+            $tp = [string]$t.taskPath; $tn = [string]$t.taskName
+            if (-not (Test-SafeTaskPath $tp) -or -not (Test-SafeTaskName $tn)) { Log "   refusing: unsafe task name '$tp$tn'" 'Red'; continue }
+            $op = $null
+            try {
+                $found = @(Get-ScheduledTask -TaskPath $tp -TaskName $tn -ErrorAction Stop)
+                if ($found.Count -ne 1) { Log "   refusing: '$tp$tn' does not match exactly one task" 'Red'; continue }
+                $op = Begin-Op @{ type = 'DisableTask'; taskPath = $tp; taskName = $tn }
+                Disable-ScheduledTask -InputObject $found[0] -ErrorAction Stop | Out-Null
+                Log "   task disabled: $tp$tn" 'Green'; Complete-Op $op 'done'
+            } catch {
+                if (Test-UndoRecordError $_) { throw }
+                Log "   could not disable task ${tn}: $($_.Exception.Message)" 'Red'
+                if ($op -and $op.status -eq 'pending') { Complete-Op $op 'failed' }
+            }
+        }
+
+        # ---- 5) startup entries (only the known Run keys / Startup folders)
+        foreach ($r in @($s.autoruns)) {
+            if ($r.via -eq 'Registry') {
+                $loc = [string]$r.location; $rn = [string]$r.name
+                if ($loc -notmatch $RunLocRegex) { Log "   refusing: '$loc' is not a known Run key" 'Red'; continue }
+                $op = $null
+                try {
+                    $key = Open-RegKey $loc $true
+                    if (-not $key) { Log "   could not open $loc" 'Red'; continue }
+                    try {
+                        $curExp = $key.GetValue($rn)
+                        if ($null -eq $curExp) { Log "   Run value '$rn' not found" 'Yellow'; continue }
+                        if ([string]$curExp -ne [string]$r.value) { Log "   Run value '$rn' changed since the scan - left alone" 'Yellow'; continue }
+                        $kind = $key.GetValueKind($rn).ToString()
+                        if (@('String', 'ExpandString') -notcontains $kind) { Log "   Run value '$rn' has an unexpected type ($kind) - left alone" 'Yellow'; continue }
+                        $raw = $key.GetValue($rn, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                        $op = Begin-Op @{ type = 'RemoveRunValue'; location = $loc; name = $rn; value = [string]$raw; kind = $kind }
+                        $key.DeleteValue($rn)
+                        Log "   startup value removed: $rn" 'Green'
+                        Complete-Op $op 'done'
+                    } finally { $key.Close() }
+                } catch {
+                    if (Test-UndoRecordError $_) { throw }
+                    Log "   could not remove Run value '${rn}': $($_.Exception.Message)" 'Red'
+                    if ($op -and $op.status -eq 'pending') { Complete-Op $op 'failed' }
+                }
+            } elseif ($r.via -eq 'StartupFolder' -and $r.file) {
+                $sf = [string]$r.file
+                if (-not (Test-LocalDrivePath $sf) -or $sf -notmatch $StartupRegex) { Log "   refusing: '$sf' is not a file in a Startup folder" 'Red'; continue }
+                if (-not (Test-Path -LiteralPath $sf -PathType Leaf) -or (Test-IsReparse $sf)) { continue }
+                $stored = Get-StoredPath $filesDir ([int]$s.id) (Split-Path $sf -Leaf) 'startup'
+                $sha = Get-Sha256 $sf
+                $op = Begin-Op @{ type = 'MoveStartupFile'; original = $sf; stored = $stored; storedSha256 = $sha }
+                if (Move-NoOverwrite $sf $stored) { Log "   startup shortcut moved: $sf" 'Green'; Complete-Op $op 'done' }
+                else { Log "   could not move startup file $sf" 'Red'; Complete-Op $op 'failed' }
+            }
+        }
+
+        # ---- 6) WMI subscriptions (definition saved so a human can recreate it)
+        foreach ($w in @($s.wmi)) {
+            $wc = [string]$w.class
+            if ($WmiConsumerClasses -notcontains $wc) { Log "   refusing: '$wc' is not a WMI event-consumer class" 'Red'; continue }
+            $op = $null
+            try {
+                $ns = 'root\subscription'
+                $cons = @(Get-CimInstance -Namespace $ns -ClassName $wc -ErrorAction Stop | Where-Object { $_.Name -eq [string]$w.name })
+                $saved = @($cons | ForEach-Object { $h = @{}; foreach ($pp in $_.CimInstanceProperties) { $h[$pp.Name] = [string]$pp.Value }; $h })
+                $op = Begin-Op @{ type = 'RemoveWmi'; class = $wc; name = [string]$w.name; definition = $saved }
+                foreach ($bnd in @(Get-CimInstance -Namespace $ns -ClassName __FilterToConsumerBinding -ErrorAction SilentlyContinue | Where-Object { $_.Consumer.Name -eq [string]$w.name })) { Remove-CimInstance -InputObject $bnd -ErrorAction SilentlyContinue }
+                foreach ($c in $cons) { Remove-CimInstance -InputObject $c -ErrorAction Stop }
+                Log "   WMI consumer removed: $($w.name)" 'Green'
+                Complete-Op $op 'done'
+            } catch {
+                if (Test-UndoRecordError $_) { throw }
+                Log "   could not remove WMI consumer $($w.name): $($_.Exception.Message)" 'Red'
+                if ($op -and $op.status -eq 'pending') { Complete-Op $op 'failed' }
+            }
+        }
+
+        # ---- 7) finally the file itself
+        if ($moveFile) {
+            $stored = Get-StoredPath $filesDir ([int]$s.id) (Split-Path $path -Leaf) ''
+            $op = Begin-Op @{ type = 'QuarantineFile'; original = $path; stored = $stored; sha256 = $s.sha256; storedSha256 = $curHash }
+            if (Move-NoOverwrite $path $stored) {
+                $storedSha = Get-Sha256 $stored
+                Log "   file quarantined -> $stored" 'Green'
+                Complete-Op $op 'done' @{ storedSha256 = $storedSha }
+            } else {
+                Log '   file is still locked and could not be moved (try again after a reboot, or in Safe Mode).' 'Red'
+                Complete-Op $op 'failed' @{ note = 'locked' }
+            }
+        }
+
+        if (-not $script:curEntry) { Use-Entry; Save-Progress }   # every processed item is listed, also when nothing had to change
+    }
+    catch {
+        if (Test-UndoRecordError $_) {
+            Log ("   STOPPED: the undo record could not be saved ({0}). Every change made so far is recorded and can be restored; nothing else was changed." -f ([string]$_.Exception.Message).Substring('UNDO-RECORD: '.Length)) 'Red'
+        } else { Log "   STOPPED after an unexpected error: $($_.Exception.Message)" 'Red' }
+        $aborted = $true
+        break
+    }
+}
+
+if ($entries.Count -eq 0 -or ($aborted -and $script:savedOps -eq 0)) {
+    # nothing was changed: do not leave an empty batch behind
+    Remove-EmptyBatch
     Write-Host ''
+    if ($aborted) { Log 'Nothing was changed.' 'Red'; Write-Host 'RESULT: FAILED nosave'; exit 1 }
     Log 'No item was changed.' 'Yellow'
+    Write-Host 'RESULT: NONE'
     exit 0
 }
-Save-Manifest $manifest $batchDir
+if (-not $aborted) { try { Save-Progress } catch { Log "could not save the final undo record: $($_.Exception.Message)" 'Yellow' } }
 Write-Host ''
+if ($aborted) {
+    Log "Quarantine STOPPED early. What was done is recorded in batch $batchDir and can be undone with Restore." 'Red'
+    Write-Host "RESULT: FAILED nosave $batchName"; exit 1
+}
 Log "Done. Quarantine batch: $batchDir" 'Cyan'
 Log 'Restart the PC, then scan again to confirm the memory problem is gone.' 'Cyan'
 Log 'Undo: Restore (in the app).      Delete for good: Purge (in the app).' 'Cyan'
+Write-Host "RESULT: OK $batchName"

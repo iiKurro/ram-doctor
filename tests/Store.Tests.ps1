@@ -336,3 +336,85 @@ Describe 'Use-StoreLock' {
         $r.Value | Should -Be 'caller-name|caller-script|caller-m|caller-res'
     }
 }
+
+Describe 'Write-TextAtomic, Enter-StoreLock / Exit-StoreLock, Get-StoreLockName' {
+    BeforeAll {
+        # runs a script in a second thread of this process (a mutex is re-entrant for its own thread) and returns its output
+        function Invoke-OtherThread([scriptblock]$Code, [object[]]$ArgumentList = @()) {
+            $ps = [powershell]::Create()
+            try {
+                [void]$ps.AddScript(". '$($script:StoreLib)'").AddStatement().AddScript($Code)
+                foreach ($a in $ArgumentList) { [void]$ps.AddArgument($a) }
+                return @($ps.Invoke())
+            } finally { $ps.Dispose() }
+        }
+    }
+
+    It 'Write-TextAtomic writes UTF-8 with BOM, keeps the previous version as .bak and leaves no .tmp' {
+        $dir = New-CaseDir 'text'
+        $file = Join-Path $dir 'تقرير.html'
+        Write-TextAtomic -Path $file -Text '<p>واحد</p>'
+        Write-TextAtomic -Path $file -Text '<p>two</p>'
+        [IO.File]::ReadAllText($file) | Should -Be '<p>two</p>'
+        [IO.File]::ReadAllText("$file.bak") | Should -Be '<p>واحد</p>'
+        $b = [IO.File]::ReadAllBytes($file)
+        ('{0:X2}{1:X2}{2:X2}' -f $b[0], $b[1], $b[2]) | Should -Be 'EFBBBF'
+        Test-Path -LiteralPath "$file.tmp" | Should -BeFalse
+        { Write-TextAtomic -Path (Join-Path $dir 'missing\x.html') -Text 'x' } | Should -Throw '*does not exist*'
+    }
+
+    It 'Enter-StoreLock holds the lock until Exit-StoreLock (another thread gets Busy meanwhile)' {
+        $name = 'test-' + [guid]::NewGuid().ToString('N')
+        $h = Enter-StoreLock -Name $name -TimeoutMs 0 -TrustedOwners @()
+        try {
+            $h.Status | Should -Be 'Ok'
+            $h.Guarded | Should -BeTrue
+            (Invoke-OtherThread { param($n) (Enter-StoreLock -Name $n -TimeoutMs 100 -TrustedOwners @()).Status } @($name)) | Should -Be 'Busy'
+        }
+        finally { Exit-StoreLock $h }
+        Exit-StoreLock $h                                        # a second release is harmless
+        (Invoke-OtherThread { param($n) $x = Enter-StoreLock -Name $n -TimeoutMs 100 -TrustedOwners @(); Exit-StoreLock $x; $x.Status } @($name)) | Should -Be 'Ok'
+    }
+
+    It 'Get-StoreLockName gives one name per folder (case-insensitive) that a mutex accepts' {
+        $a = Get-StoreLockName -Prefix 'store' -Path 'C:\ProgramData\RAM-Doctor'
+        $a | Should -Match '^store-[0-9a-f]{16}$'
+        Get-StoreLockName -Prefix 'store' -Path 'c:\programdata\ram-doctor\' | Should -Be $a
+        Get-StoreLockName -Prefix 'store' -Path 'C:\Other' | Should -Not -Be $a
+    }
+}
+
+Describe 'New-StorePrivateDir and Remove-StorePrivateDir' {
+    It 'creates a fresh folder with a random name every time' {
+        $parent = New-CaseDir 'private'
+        $a = New-StorePrivateDir -Parent $parent -Prefix 'RAM-Doctor-share-'
+        $b = New-StorePrivateDir -Parent $parent -Prefix 'RAM-Doctor-share-'
+        $a | Should -Not -Be $b
+        [IO.Path]::GetFileName($a) | Should -Match '^RAM-Doctor-share-[0-9a-f]{32}$'
+        Test-Path -LiteralPath $a -PathType Container | Should -BeTrue
+        ((Get-Item -LiteralPath $a).Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Be 0
+        Remove-StorePrivateDir $a | Should -BeTrue
+        Remove-StorePrivateDir $b | Should -BeTrue
+        @(Get-Names $parent).Count | Should -Be 0
+    }
+
+    It 'removes the files of the folder but never follows a junction inside it, nor a junction in its place' {
+        $parent = New-CaseDir 'private-junction'
+        $victim = Join-Path $parent 'victim'
+        [void][IO.Directory]::CreateDirectory($victim)
+        [IO.File]::WriteAllText((Join-Path $victim 'precious.txt'), 'keep me')
+        $dir = New-StorePrivateDir -Parent $parent -Prefix 'p-'
+        [IO.File]::WriteAllText((Join-Path $dir 'summary.md'), 'x')
+        $null = cmd.exe /c mklink /J "$dir\link" "$victim"
+        Test-Path -LiteralPath (Join-Path $dir 'link\precious.txt') | Should -BeTrue -Because 'the junction must exist for this test to mean anything'
+        Remove-StorePrivateDir $dir | Should -BeTrue
+        Test-Path -LiteralPath $dir | Should -BeFalse
+        [IO.File]::ReadAllText((Join-Path $victim 'precious.txt')) | Should -Be 'keep me'
+
+        $swap = Join-Path $parent 'p-swapped'
+        $null = cmd.exe /c mklink /J "$swap" "$victim"
+        Remove-StorePrivateDir $swap | Should -BeTrue
+        Test-Path -LiteralPath $swap | Should -BeFalse
+        [IO.File]::ReadAllText((Join-Path $victim 'precious.txt')) | Should -Be 'keep me' -Because 'a junction in place of the folder is removed as a link'
+    }
+}
