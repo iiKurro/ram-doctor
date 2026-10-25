@@ -7,7 +7,8 @@
 #  TopProcesses, ByProgram, TopGrowers, PoolNonPaged, PoolPaged, PoolGrowing, PoolAvailable,
 #  Suspects, Drivers3p, Hidden, Defender, Exhaustion, Warnings, ItemCounts).
 #
-#  Design: Windows 11 / Fluent look, Arabic RTL first (English technical terms stay LTR),
+#  Design: Windows 11 / Fluent look, Arabic RTL or English LTR (the language of the scan: $data.Lang,
+#  every text comes from lib\Strings.ps1; English technical terms stay LTR inside Arabic prose),
 #  light + dark (follows the system, plus a toggle), responsive down to a phone, and a clean
 #  print stylesheet (A4).
 #
@@ -26,6 +27,9 @@
 # ==========================================================================================
 
 $script:RI = [System.Globalization.CultureInfo]::InvariantCulture
+# the report texts live in lib\Strings.ps1 (loaded here when the caller has not done it already)
+if (-not (Get-Command Get-Text -CommandType Function -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Strings.ps1') }
+$script:RptLang = 'ar'   # language of the report being built (set by New-RamReportHtml from $data.Lang)
 
 # HTML-encode + defuse anything that could turn into a link/script scheme (the report must stay inert:
 # the only real URLs in it are the VirusTotal links built from a validated SHA-256).
@@ -39,6 +43,8 @@ function E($s) {
 # in its own <bdi dir=ltr>, so punctuation and numbers keep the right order inside Arabic sentences.
 function Rich($s) {
     $text = [string]$s
+    # an English report is already left-to-right: plain escaping, no isolation needed
+    if ($script:RptLang -eq 'en') { return (E $text) }
     # a Latin run may contain ':' (IP:port, drive letters, URLs) - E() still defuses schemes inside each run
     # words are joined by a space, or by a space + operator ("Working Sets − Non-paged", "A = B", "A / B") so a whole
     # Latin phrase/formula stays ONE left-to-right run
@@ -65,17 +71,17 @@ function Pill([string]$kind, [string]$text, [string]$icon = '') {
     "<span class='pill p-$kind'>$i$(E $text)</span>"
 }
 
-function TrustAr([string]$t) {
+function TrustText([string]$t) {
     switch ($t) {
-        'OS' { 'ويندوز (موقّع)' }
-        'MS' { 'مايكروسوفت (موقّع)' }
-        'Signed' { 'موقّع من جهة أخرى' }
-        'Unsigned' { 'غير موقّع' }
-        'Tampered' { 'توقيع تالف' }
-        'Untrusted' { 'توقيع غير موثوق' }
-        'Script' { 'ملف سكربت' }
-        'Missing' { 'الملف غير موجود' }
-        default { 'غير معروف' }
+        'OS' { Get-Text 'trust.os' }
+        'MS' { Get-Text 'trust.ms' }
+        'Signed' { Get-Text 'trust.signed' }
+        'Unsigned' { Get-Text 'trust.unsigned' }
+        'Tampered' { Get-Text 'trust.tampered' }
+        'Untrusted' { Get-Text 'trust.untrusted' }
+        'Script' { Get-Text 'trust.script' }
+        'Missing' { Get-Text 'trust.missing' }
+        default { Get-Text 'trust.unknown' }
     }
 }
 # trust -> pill kind
@@ -88,8 +94,8 @@ function TrustClass([string]$t) {
         default { 'mute' }
     }
 }
-function LevelAr([string]$l) {
-    switch ($l) { 'high' { 'عالٍ' } 'med' { 'متوسط' } 'low' { 'منخفض' } 'ok' { 'سليم' } default { 'معلومة' } }
+function LevelText([string]$l) {
+    switch ($l) { 'high' { Get-Text 'level.high' } 'med' { Get-Text 'level.med' } 'low' { Get-Text 'level.low' } 'ok' { Get-Text 'level.ok' } default { Get-Text 'level.info' } }
 }
 # observation level -> pill kind
 function LvKind([string]$l) {
@@ -102,7 +108,7 @@ function RiskKey([string]$r) { switch ($r) { 'High' { 'high' } 'Medium' { 'med' 
 
 function TrustPill([string]$t, [string]$publisher = '') {
     $p = if ($publisher) { " <span class='muted'><bdi dir='ltr'>$(E $publisher)</bdi></span>" } else { '' }
-    "$(Pill (TrustClass $t) (TrustAr $t))$p"
+    "$(Pill (TrustClass $t) (TrustText $t))$p"
 }
 
 # status colour of a KPI tile from a value and (warn, bad) thresholds
@@ -331,11 +337,12 @@ $script:ReportSprite = @'
 
 # The ONLY script in the report: theme toggle, print button, copy buttons, open-all-details on print.
 # Arrow functions + addEventListener only. No network / navigation / eval-like APIs (see contract above).
+# The three @@...@@ words are replaced by the translated labels (JS-escaped) when the report is built.
 $script:ReportJs = @'
 (()=>{
 const r=document.documentElement,b=document.getElementById('themeBtn');
 const cur=()=>r.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
-const paint=()=>{if(!b)return;const d=cur()==='dark';b.setAttribute('aria-label',d?'وضع فاتح':'وضع داكن');b.title=b.getAttribute('aria-label')};
+const paint=()=>{if(!b)return;const d=cur()==='dark';b.setAttribute('aria-label',d?'@@LIGHT@@':'@@DARK@@');b.title=b.getAttribute('aria-label')};
 try{const s=localStorage.getItem('rd-theme');if(s)r.setAttribute('data-theme',s)}catch(e){}
 if(b){b.addEventListener('click',()=>{const n=cur()==='dark'?'light':'dark';r.setAttribute('data-theme',n);try{localStorage.setItem('rd-theme',n)}catch(e){}paint()});paint()}
 const p=document.getElementById('printBtn');if(p)p.addEventListener('click',()=>window.print());
@@ -343,13 +350,25 @@ let was=[];
 addEventListener('beforeprint',()=>{was=[...document.querySelectorAll('details')].map(d=>[d,d.open]);was.forEach(x=>{x[0].open=true})});
 addEventListener('afterprint',()=>{was.forEach(x=>{x[0].open=x[1]})});
 document.addEventListener('click',e=>{const t=e.target.closest&&e.target.closest('[data-copy]');if(!t)return;e.preventDefault();e.stopPropagation();
-const o=t.textContent;navigator.clipboard.writeText(t.getAttribute('data-copy')).then(()=>{t.textContent='تم النسخ';setTimeout(()=>{t.textContent=o},1400)},()=>{})});
+const o=t.textContent;navigator.clipboard.writeText(t.getAttribute('data-copy')).then(()=>{t.textContent='@@COPIED@@';setTimeout(()=>{t.textContent=o},1400)},()=>{})});
 })();
 '@
 
 # ------------------------------------------------------------------------------------------
+# a string for the inline script: no quote, backslash or "<" can break out of it
+function JsStr([string]$s) { $s.Replace('\', '\\').Replace("'", "\'").Replace('<', '<') }
+
+# The report is written in the language of the scan ($data.Lang); data from before the language switch has none = Arabic.
 function New-RamReportHtml($d) {
+    $prev = $script:UiLang
+    $script:RptLang = $(if ($d.PSObject.Properties['Lang'] -and $d.Lang) { Resolve-UiLang ([string]$d.Lang) } else { 'ar' })
+    $script:UiLang = $script:RptLang
+    try { return (New-RamReportBody $d) } finally { $script:UiLang = $prev }
+}
+
+function New-RamReportBody($d) {
     $sb = New-Object System.Text.StringBuilder(131072)
+    $dir = $(if ($script:RptLang -eq 'en') { 'ltr' } else { 'rtl' })
     $script:rptLines = 0
     $script:rptTrim = [bool]('RamDoc.Native' -as [type])   # the scan loads the native helper; the tests render without it
     # every few hundred lines drop the garbage created by the helper calls (and hand idle pages back to the OS),
@@ -369,47 +388,47 @@ function New-RamReportHtml($d) {
     # ---------------------------------------------------------------- head
     L '<!doctype html>'
     L "<!-- ram-doctor-report v$($d.Version) -->"
-    L '<html lang="ar" dir="rtl"><head><meta charset="utf-8">'
+    L "<html lang=""$($script:RptLang)"" dir=""$dir""><head><meta charset=""utf-8"">"
     L '<meta name="viewport" content="width=device-width, initial-scale=1">'
     L '<meta name="color-scheme" content="light dark">'
     L "<meta name=""generator"" content=""RAM Doctor $(E $d.Version)"">"
-    L '<title>تقرير فاحص الذاكرة - RAM Doctor</title>'
+    L "<title>$(E (Get-Text 'rpt.title'))</title>"
     L "<style>:root{$light}@media (prefers-color-scheme:dark){:root:not([data-theme=""light""]){$dark}}:root[data-theme=""dark""]{$dark}"
     L $css
     L '</style></head><body>'
     L $script:ReportSprite
-    L '<a class="skip" href="#main">تخطَّ إلى المحتوى</a>'
+    L "<a class=""skip"" href=""#main"">$(Get-Text 'rpt.skip')</a>"
 
     # ---------------------------------------------------------------- app bar + toc
     L '<header class="appbar"><div class="wrap">'
     L "<div class='logo'>$(Ic 'shield')</div>"
-    L "<div class='ttl'><h1>تقرير فاحص الذاكرة</h1><p>RAM Doctor <bdi dir='ltr'>v$(E $d.Version)</bdi> &middot; <bdi dir='ltr'>$(E $d.Created)</bdi></p></div>"
-    L "<div class='tools'><button class='btn btn-icon' id='themeBtn' type='button' aria-label='وضع داكن'><span class='ic-moon'>$(Ic 'moon')</span><span class='ic-sun'>$(Ic 'sun')</span></button><button class='btn' id='printBtn' type='button'>$(Ic 'print')<span>$(Rich 'طباعة أو حفظ PDF')</span></button></div>"
+    L "<div class='ttl'><h1>$(Get-Text 'rpt.h1')</h1><p>RAM Doctor <bdi dir='ltr'>v$(E $d.Version)</bdi> &middot; <bdi dir='ltr'>$(E $d.Created)</bdi></p></div>"
+    L "<div class='tools'><button class='btn btn-icon' id='themeBtn' type='button' aria-label='$(Get-Text 'rpt.theme.dark')'><span class='ic-moon'>$(Ic 'moon')</span><span class='ic-sun'>$(Ic 'sun')</span></button><button class='btn' id='printBtn' type='button'>$(Ic 'print')<span>$(Rich (Get-Text 'rpt.print'))</span></button></div>"
     L '</div></header>'
-    $toc = "<a href='#overview'>نظرة عامة</a><a href='#memory'>الذاكرة</a><a href='#consumers'>المستهلكون</a><a href='#pool'>ذاكرة النواة</a><a href='#suspects'>الملفات المشبوهة</a><a href='#hidden'>العمليات المخفية</a><a href='#drivers'>التعريفات</a><a href='#evidence'>أدلة إضافية</a><a href='#next'>الخطوات</a>"
-    L "<nav class='toc' aria-label='أقسام التقرير'><div class='wrap'>$toc</div></nav>"
+    $toc = "<a href='#overview'>$(Get-Text 'rpt.nav.overview')</a><a href='#memory'>$(Get-Text 'rpt.nav.memory')</a><a href='#consumers'>$(Get-Text 'rpt.nav.consumers')</a><a href='#pool'>$(Get-Text 'rpt.nav.pool')</a><a href='#suspects'>$(Get-Text 'rpt.nav.suspects')</a><a href='#hidden'>$(Get-Text 'rpt.nav.hidden')</a><a href='#drivers'>$(Get-Text 'rpt.nav.drivers')</a><a href='#evidence'>$(Get-Text 'rpt.nav.evidence')</a><a href='#next'>$(Get-Text 'rpt.nav.next')</a>"
+    L "<nav class='toc' aria-label='$(Get-Text 'rpt.nav.label')'><div class='wrap'>$toc</div></nav>"
     L '<main id="main" class="wrap">'
 
     # ---------------------------------------------------------------- overview: meta + hero
-    $adminChip = if ($s.IsAdmin) { "<span class='chip'>$(Ic 'check') صلاحيات المدير: <b>نعم</b></span>" } else { "<span class='chip' style='color:var(--warn)'>$(Ic 'warn') صلاحيات المدير: <b>لا (النتائج ناقصة)</b></span>" }
-    L "<div class='meta' aria-label='معلومات الجهاز'>"
-    L "<span class='chip'>$(Ic 'chip') الجهاز: <b>$(Bidi $s.Host)</b></span><span class='chip'>المستخدم: <b>$(Bidi $s.User)</b></span>"
-    L "<span class='chip'>$(E $s.OS)</span><span class='chip'>مدة التشغيل: <b>$(Bidi $s.Uptime)</b></span>$adminChip"
-    L "<span class='chip'>المعالج: $(Bidi $s.Cpu)</span>"
-    if ($s.Gpus) { L "<span class='chip'>الشاشة: $(Bidi $s.Gpus)</span>" }
+    $adminChip = if ($s.IsAdmin) { "<span class='chip'>$(Ic 'check') $(Get-Text 'rpt.chip.admin') <b>$(Get-Text 'rpt.chip.admin.yes')</b></span>" } else { "<span class='chip' style='color:var(--warn)'>$(Ic 'warn') $(Get-Text 'rpt.chip.admin') <b>$(Get-Text 'rpt.chip.admin.no')</b></span>" }
+    L "<div class='meta' aria-label='$(Get-Text 'rpt.meta.label')'>"
+    L "<span class='chip'>$(Ic 'chip') $(Get-Text 'rpt.chip.host') <b>$(Bidi $s.Host)</b></span><span class='chip'>$(Get-Text 'rpt.chip.user') <b>$(Bidi $s.User)</b></span>"
+    L "<span class='chip'>$(E $s.OS)</span><span class='chip'>$(Get-Text 'rpt.chip.uptime') <b>$(Bidi $s.Uptime)</b></span>$adminChip"
+    L "<span class='chip'>$(Get-Text 'rpt.chip.cpu') $(Bidi $s.Cpu)</span>"
+    if ($s.Gpus) { L "<span class='chip'>$(Get-Text 'rpt.chip.gpu') $(Bidi $s.Gpus)</span>" }
     L '</div>'
 
     $vk = LvKind $d.Verdict.Level
     $heroIcon = switch ($vk) { 'ok' { 'check-circle' } 'info' { 'info' } 'warn' { 'warn' } default { 'error' } }
     L "<section id='overview' class='hero hero-$vk' aria-labelledby='t-overview'>"
     L "<div class='hero-ic'>$(Ic $heroIcon)</div><div class='hero-body'>"
-    L "<p class='eyebrow'>الخلاصة</p><h2 id='t-overview'>$(Rich $d.Verdict.Headline)</h2>"
+    L "<p class='eyebrow'>$(Get-Text 'rpt.eyebrow')</p><h2 id='t-overview'>$(Rich $d.Verdict.Headline)</h2>"
     $top = @($d.Observations | Where-Object { $_.Level -ne 'info' } | Select-Object -First 5)
     if ($top.Count -eq 0) {
-        L "<p class='muted' style='margin:0'>لم يتجاوز أي مقياس الحدود المعتادة. إن كانت المشكلة موجودة فعلًا فأعد الفحص وهي ظاهرة (والذاكرة ممتلئة)، لأن الفحص يلتقط حالة اللحظة فقط.</p>"
+        L "<p class='muted' style='margin:0'>$(Get-Text 'rpt.hero.none')</p>"
     } else {
         L "<ul class='obs'>"
-        foreach ($o in $top) { L "<li>$(Pill (LvKind $o.Level) (LevelAr $o.Level) (LvIcon $o.Level))<b>$(Rich $o.Title)</b><span class='b'>$(Rich $o.Body)</span></li>" }
+        foreach ($o in $top) { L "<li>$(Pill (LvKind $o.Level) (LevelText $o.Level) (LvIcon $o.Level))<b>$(Rich $o.Title)</b><span class='b'>$(Rich $o.Body)</span></li>" }
         L '</ul>'
     }
     $sus = @($d.Suspects)
@@ -418,12 +437,12 @@ function New-RamReportHtml($d) {
     $nLow = @($sus | Where-Object { $_.risk -eq 'Low' }).Count
     $hid = @($d.Hidden)
     $nLive = @($hid | Where-Object { $_.Live }).Count
-    $pHigh = Pill $(if ($nHigh) { 'bad' } else { 'mute' }) "عالية الخطورة: $nHigh"
-    $pMed = Pill $(if ($nMed) { 'warn' } else { 'mute' }) "متوسطة: $nMed"
-    $pLow = Pill 'mute' "منخفضة: $nLow"
-    $pLive = Pill $(if ($nLive) { 'bad' } else { 'ok' }) "عمليات مخفية حيّة: $nLive"
+    $pHigh = Pill $(if ($nHigh) { 'bad' } else { 'mute' }) (Get-Text 'rpt.pill.high' $nHigh)
+    $pMed = Pill $(if ($nMed) { 'warn' } else { 'mute' }) (Get-Text 'rpt.pill.med' $nMed)
+    $pLow = Pill 'mute' (Get-Text 'rpt.pill.low' $nLow)
+    $pLive = Pill $(if ($nLive) { 'bad' } else { 'ok' }) (Get-Text 'rpt.pill.live' $nLive)
     L "<div class='summary'>$pHigh $pMed $pLow $pLive</div>"
-    L "<p class='fine'>$(Ic 'info') هذه مؤشرات تقنية وليست حكمًا قطعيًا. لم يُحذف أو يُعدَّل أي شيء على الجهاز أثناء الفحص.</p>"
+    L "<p class='fine'>$(Ic 'info') $(Get-Text 'rpt.fine')</p>"
     L '</div></section>'
 
     # ---------------------------------------------------------------- KPI tiles
@@ -434,137 +453,137 @@ function New-RamReportHtml($d) {
     $unaBad = [math]::Max(4.0, 0.2 * $total); $unaWarn = [math]::Max(2.0, 0.1 * $total)
     $usedSt = if ($usedPct -ge 92) { 'bad' } elseif ($usedPct -ge 80) { 'warn' } else { 'ok' }
     $comSt = if ($commitPct -ge 90) { 'bad' } elseif ($commitPct -ge 75) { 'warn' } else { 'ok' }
-    L "<div class='kpis' role='list' aria-label='مؤشرات الذاكرة الرئيسية'>"
-    L (Kpi 'المستخدم فعليًا' (Val $used 'GB') "من أصل $(Val $total 'GB') · <bdi dir='ltr'>$(Fx $usedPct '0')%</bdi>" $usedSt $usedPct)
-    L (Kpi 'Non-paged pool' (Val $npp 'GB') (Rich 'ذاكرة النواة الثابتة · الطبيعي أقل من 1 GB تقريبًا') (KStatus $npp $nppWarn $nppBad) (100 * $npp / $nppBad))
-    L (Kpi 'Paged pool' (Val $pgd 'GB') (Rich 'ذاكرة النواة القابلة للترحيل · الطبيعي أقل من 1.5 GB تقريبًا') (KStatus $pgd $nppWarn $nppBad) (100 * $pgd / $nppBad))
-    L (Kpi 'غير منسوبة لعملية' (Val $una 'GB') (Rich 'خارج أي Working Set وخارج مجمّع النواة') (KStatus $una $unaWarn $unaBad) (100 * $una / $unaBad))
-    L (Kpi 'Committed' (Val $m.CommittedGB 'GB') "الحد: $(Val $m.CommitLimitGB 'GB') · <bdi dir='ltr'>$(Fx $commitPct '0')%</bdi>" $comSt $commitPct)
+    L "<div class='kpis' role='list' aria-label='$(Get-Text 'rpt.kpi.label')'>"
+    L (Kpi (Get-Text 'rpt.kpi.used') (Val $used 'GB') (Get-Text 'rpt.kpi.used.sub' (Val $total 'GB') "<bdi dir='ltr'>$(Fx $usedPct '0')%</bdi>") $usedSt $usedPct)
+    L (Kpi 'Non-paged pool' (Val $npp 'GB') (Rich (Get-Text 'rpt.kpi.npp.sub')) (KStatus $npp $nppWarn $nppBad) (100 * $npp / $nppBad))
+    L (Kpi 'Paged pool' (Val $pgd 'GB') (Rich (Get-Text 'rpt.kpi.paged.sub')) (KStatus $pgd $nppWarn $nppBad) (100 * $pgd / $nppBad))
+    L (Kpi (Get-Text 'rpt.kpi.unacc') (Val $una 'GB') (Rich (Get-Text 'rpt.kpi.unacc.sub')) (KStatus $una $unaWarn $unaBad) (100 * $una / $unaBad))
+    L (Kpi 'Committed' (Val $m.CommittedGB 'GB') (Get-Text 'rpt.kpi.commit.sub' (Val $m.CommitLimitGB 'GB') "<bdi dir='ltr'>$(Fx $commitPct '0')%</bdi>") $comSt $commitPct)
     L '</div>'
 
     # ---------------------------------------------------------------- memory map
-    L "<section id='memory' class='blk' aria-labelledby='t-memory'><h2 class='sec' id='t-memory'>$(Ic 'layers')أين تذهب الذاكرة؟</h2><div class='card'>"
+    L "<section id='memory' class='blk' aria-labelledby='t-memory'><h2 class='sec' id='t-memory'>$(Ic 'layers')$(Get-Text 'rpt.mem.h')</h2><div class='card'>"
     $segs = @(
-        @{ n = 'عمليات (ذاكرة خاصة)'; v = [double]$m.ProcPrivateGB; c = 's1' },
-        @{ n = 'ذاكرة مشتركة داخل العمليات'; v = [double]$m.ProcSharedGB; c = 's2' },
-        @{ n = 'نواة: Non-paged pool'; v = [double]$m.NonPagedGB; c = 's3' },
-        @{ n = 'Modified (بانتظار الكتابة للقرص)'; v = [double]$m.ModifiedGB; c = 's4' },
-        @{ n = 'غير منسوبة لأي عملية'; v = [double]$m.UnaccountedGB; c = 's5' },
-        @{ n = 'Standby (مخزَّنة وقابلة للتحرير)'; v = [double]$m.StandbyGB; c = 's6' },
-        @{ n = 'حرة'; v = [double]$m.FreeGB; c = 's7' }
+        @{ n = (Get-Text 'rpt.seg.proc'); v = [double]$m.ProcPrivateGB; c = 's1' },
+        @{ n = (Get-Text 'rpt.seg.shared'); v = [double]$m.ProcSharedGB; c = 's2' },
+        @{ n = (Get-Text 'rpt.seg.npp'); v = [double]$m.NonPagedGB; c = 's3' },
+        @{ n = (Get-Text 'rpt.seg.modified'); v = [double]$m.ModifiedGB; c = 's4' },
+        @{ n = (Get-Text 'rpt.seg.unacc'); v = [double]$m.UnaccountedGB; c = 's5' },
+        @{ n = (Get-Text 'rpt.seg.standby'); v = [double]$m.StandbyGB; c = 's6' },
+        @{ n = (Get-Text 'rpt.seg.free'); v = [double]$m.FreeGB; c = 's7' }
     )
     $sum = ($segs | ForEach-Object { $_.v } | Measure-Object -Sum).Sum
     if (-not $sum -or $sum -le 0) { $sum = 1 }
-    L "<div class='stack' role='img' aria-label='توزيع الذاكرة'>"
+    L "<div class='stack' role='img' aria-label='$(Get-Text 'rpt.mem.stack')'>"
     foreach ($g in $segs) { $w = Fx (100 * $g.v / $sum) '0.##'; L "<i class='$($g.c)' style='flex:0 0 $w%' title='$(E $g.n): $(Fx $g.v) GB'></i>" }
     L '</div><ul class="legend">'
     foreach ($g in $segs) { L "<li><span class='sw $($g.c)'></span><span class='n'>$(Rich $g.n)</span><span class='v'>$(Val $g.v 'GB')</span><span class='p'><bdi dir='ltr'>$(Fx (100 * $g.v / $sum) '0.#')%</bdi></span></li>" }
     L '</ul>'
-    L "<p class='note'>$(Rich 'التقسيم تقريبي: قد تتكرر «الذاكرة المشتركة» بين عدة عمليات. وذاكرة Standby ليست مشكلة لأن ويندوز يحرّرها فورًا عند الحاجة.')</p>"
-    L "<p class='note' style='margin-bottom:4px'>$(Rich 'طريقة حساب «غير المنسوبة»:')</p><div class='formula'>Unaccounted = Used − Σ Working Sets − Non-paged − Modified</div>"
-    L "<h3>النمو خلال فترة الفحص ($(Bidi ([string]$m.WindowSec + ' s')))</h3>"
-    L "<div class='grow'><div><span>Non-paged</span>$(Signed-Delta $m.NonPagedGrowthMB)</div><div><span>Paged</span>$(Signed-Delta $m.PagedGrowthMB)</div><div><span>Committed</span>$(Signed-Delta $m.CommitGrowthMB)</div><div><span>المستخدم</span>$(Signed-Delta $m.UsedGrowthMB)</div></div>"
+    L "<p class='note'>$(Rich (Get-Text 'rpt.mem.note1'))</p>"
+    L "<p class='note' style='margin-bottom:4px'>$(Rich (Get-Text 'rpt.mem.note2'))</p><div class='formula'>Unaccounted = Used − Σ Working Sets − Non-paged − Modified</div>"
+    L "<h3>$(Get-Text 'rpt.grow.h' (Bidi ([string]$m.WindowSec + ' s')))</h3>"
+    L "<div class='grow'><div><span>Non-paged</span>$(Signed-Delta $m.NonPagedGrowthMB)</div><div><span>Paged</span>$(Signed-Delta $m.PagedGrowthMB)</div><div><span>Committed</span>$(Signed-Delta $m.CommitGrowthMB)</div><div><span>$(Get-Text 'rpt.grow.used')</span>$(Signed-Delta $m.UsedGrowthMB)</div></div>"
     L '</div></section>'
 
     # ---------------------------------------------------------------- all observations
     $obsAll = @($d.Observations | Where-Object { $top -notcontains $_ })   # the hero already lists the main ones
     if ($obsAll.Count -gt 0) {
-        L "<section class='blk' aria-labelledby='t-obs'><h2 class='sec' id='t-obs'>$(Ic 'list')ملاحظات إضافية</h2><div class='card'><ul class='obs'>"
-        foreach ($o in $obsAll) { L "<li>$(Pill (LvKind $o.Level) (LevelAr $o.Level) (LvIcon $o.Level))<b>$(Rich $o.Title)</b><span class='b'>$(Rich $o.Body)</span></li>" }
+        L "<section class='blk' aria-labelledby='t-obs'><h2 class='sec' id='t-obs'>$(Ic 'list')$(Get-Text 'rpt.obs.more')</h2><div class='card'><ul class='obs'>"
+        foreach ($o in $obsAll) { L "<li>$(Pill (LvKind $o.Level) (LevelText $o.Level) (LvIcon $o.Level))<b>$(Rich $o.Title)</b><span class='b'>$(Rich $o.Body)</span></li>" }
         L '</ul></div></section>'
     }
 
     # ---------------------------------------------------------------- consumers
-    L "<section id='consumers' class='blk' aria-labelledby='t-cons'><h2 class='sec' id='t-cons'>$(Ic 'chip')أكبر المستهلكين</h2>"
-    L "<p class='lead'>مجمّعة حسب البرنامج (مدير المهام لا يجمع دائمًا عمليات البرنامج الواحد). الذاكرة الخاصة = ما يستهلكه البرنامج فعلًا بدون الاشتراك مع غيره.</p>"
+    L "<section id='consumers' class='blk' aria-labelledby='t-cons'><h2 class='sec' id='t-cons'>$(Ic 'chip')$(Get-Text 'rpt.cons.h')</h2>"
+    L "<p class='lead'>$(Get-Text 'rpt.cons.lead')</p>"
     $byProg = @($d.ByProgram)
     $maxPriv = ($byProg | ForEach-Object { [double]$_.privMB } | Measure-Object -Maximum).Maximum; if (-not $maxPriv -or $maxPriv -le 0) { $maxPriv = 1 }
-    L "<div class='tw'><table><thead><tr><th>البرنامج</th><th class='num'>العمليات</th><th>ذاكرة خاصة (MB)</th><th class='num'>Commit (MB)</th><th>التوقيع</th></tr></thead><tbody>"
+    L "<div class='tw'><table><thead><tr><th>$(Get-Text 'rpt.th.program')</th><th class='num'>$(Get-Text 'rpt.th.processes')</th><th>$(Get-Text 'rpt.th.private')</th><th class='num'>Commit (MB)</th><th>$(Get-Text 'rpt.th.signature')</th></tr></thead><tbody>"
     foreach ($p in $byProg) {
         $w = Fx (100 * [double]$p.privMB / $maxPriv) '0.#'
         L "<tr><td class='mono'>$(E $p.name)</td><td class='num'>$($p.count)</td><td class='bcell'><span class='bg' style='width:$w%'></span><span>$(Bidi ([string]$p.privMB))</span></td><td class='num'>$($p.commitMB)</td><td>$(TrustPill $p.trust $p.publisher)</td></tr>"
     }
     L '</tbody></table></div>'
-    L "<details class='group' style='margin-top:12px'><summary>أكبر 15 عملية بالتفصيل $(Chev)</summary><div class='sus-body'>"
-    L "<div class='tw'><table><thead><tr><th class='num'>PID</th><th>العملية</th><th class='num'>خاصة MB</th><th class='num'>Working Set MB</th><th class='num'>Commit MB</th><th class='num'>Handles</th><th class='num'>نمو MB</th><th>التوقيع</th></tr></thead><tbody>"
+    L "<details class='group' style='margin-top:12px'><summary>$(Get-Text 'rpt.top15')$(Chev)</summary><div class='sus-body'>"
+    L "<div class='tw'><table><thead><tr><th class='num'>PID</th><th>$(Get-Text 'rpt.th.process')</th><th class='num'>$(Get-Text 'rpt.th.privmb')</th><th class='num'>Working Set MB</th><th class='num'>Commit MB</th><th class='num'>Handles</th><th class='num'>$(Get-Text 'rpt.th.growthmb')</th><th>$(Get-Text 'rpt.th.signature')</th></tr></thead><tbody>"
     foreach ($p in @($d.TopProcesses)) { L "<tr><td class='num'>$($p.pid)</td><td class='mono' title='$(E $p.path)'>$(E $p.name)</td><td class='num'>$($p.privMB)</td><td class='num'>$($p.wsMB)</td><td class='num'>$($p.commitMB)</td><td class='num'>$($p.handles)</td><td class='num'>$($p.growthMB)</td><td>$(TrustPill $p.trust)</td></tr>" }
     L '</tbody></table></div></div></details>'
     $gr = @($d.TopGrowers)
     if ($gr.Count -gt 0) {
-        L "<h3>الأسرع نموًا أثناء الفحص</h3><div class='tw'><table><thead><tr><th class='num'>PID</th><th>العملية</th><th class='num'>النمو MB</th><th class='num'>Commit MB</th><th>التوقيع</th></tr></thead><tbody>"
+        L "<h3>$(Get-Text 'rpt.growers.h')</h3><div class='tw'><table><thead><tr><th class='num'>PID</th><th>$(Get-Text 'rpt.th.process')</th><th class='num'>$(Get-Text 'rpt.th.growth2')</th><th class='num'>Commit MB</th><th>$(Get-Text 'rpt.th.signature')</th></tr></thead><tbody>"
         foreach ($p in $gr) { L "<tr><td class='num'>$($p.pid)</td><td class='mono'>$(E $p.name)</td><td class='num'>$(Signed-Delta $p.growthMB)</td><td class='num'>$($p.commitMB)</td><td>$(TrustPill $p.trust)</td></tr>" }
         L '</tbody></table></div>'
     }
     L '</section>'
 
     # ---------------------------------------------------------------- pool tags
-    L "<section id='pool' class='blk' aria-labelledby='t-pool'><h2 class='sec' id='t-pool'>$(Ic 'driver')ذاكرة النواة: الوسوم (Pool tags)</h2>"
+    L "<section id='pool' class='blk' aria-labelledby='t-pool'><h2 class='sec' id='t-pool'>$(Ic 'driver')$(Get-Text 'rpt.pool.h')</h2>"
     if (-not $d.PoolAvailable) {
-        L "<div class='card'><div class='callout' style='margin:0'>$(Ic 'info')<div>تعذّرت قراءة جدول الوسوم (يحتاج صلاحيات المدير). شغّل الأداة كمدير لتحديد التعريف المسؤول عن ذاكرة النواة.</div></div></div>"
+        L "<div class='card'><div class='callout' style='margin:0'>$(Ic 'info')<div>$(Get-Text 'rpt.pool.unavailable')</div></div></div>"
     } else {
-        L "<p class='lead'>كل جزء من ذاكرة النواة يحمل وسمًا من 4 أحرف يضعه التعريف الذي حجزه. الربط بالملف يتم بالبحث عن الوسم داخل ملفات التعريفات الشغّالة، لذلك هو <b>ترجيح</b> وليس يقينًا (قد يتطابق الوسم مع أكثر من ملف).</p>"
+        L "<p class='lead'>$(Get-Text 'rpt.pool.lead')</p>"
         $tagTable = {
             param($rows, $title)
             $rows = @($rows)
-            if ($rows.Count -eq 0) { L "<h3>$title</h3><p class='muted' style='margin:0'>لا توجد بيانات لهذا الجدول.</p>"; return }
+            if ($rows.Count -eq 0) { L "<h3>$title</h3><p class='muted' style='margin:0'>$(Get-Text 'rpt.pool.nodata')</p>"; return }
             $mx = ($rows | ForEach-Object { [double]$_.mb } | Measure-Object -Maximum).Maximum; if (-not $mx -or $mx -le 0) { $mx = 1 }
-            L "<h3>$title</h3><div class='tw'><table><thead><tr><th>الوسم</th><th>الحجم (MB)</th><th class='num'>النمو MB</th><th>الجهة المحتملة</th></tr></thead><tbody>"
+            L "<h3>$title</h3><div class='tw'><table><thead><tr><th>$(Get-Text 'rpt.th.tag')</th><th>$(Get-Text 'rpt.th.size')</th><th class='num'>$(Get-Text 'rpt.th.growth2')</th><th>$(Get-Text 'rpt.th.owner')</th></tr></thead><tbody>"
             foreach ($r in $rows) {
                 if ($r.known) { $who = "<span class='muted'>$(Rich $r.known)</span>" }
-                elseif ($r.tooGeneric) { $who = "<span class='muted'>الوسم عام ويظهر في ملفات كثيرة - لا يمكن الجزم</span>" }
+                elseif ($r.tooGeneric) { $who = "<span class='muted'>$(Get-Text 'rpt.pool.generic')</span>" }
                 elseif (@($r.candidates).Count -gt 0) {
-                    $who = "<div class='chips'>" + ((@($r.candidates) | ForEach-Object { "<span class='chipf'><bdi dir='ltr'>$(E $_.file)</bdi> $(Pill (TrustClass $_.trust) (TrustAr $_.trust))$(if ($_.publisher) { ' <span class=''muted''>' + (E $_.publisher) + '</span>' })</span>" }) -join '') + '</div>'
-                } else { $who = "<span class='muted'>غير معروف</span>" }
+                    $who = "<div class='chips'>" + ((@($r.candidates) | ForEach-Object { "<span class='chipf'><bdi dir='ltr'>$(E $_.file)</bdi> $(Pill (TrustClass $_.trust) (TrustText $_.trust))$(if ($_.publisher) { ' <span class=''muted''>' + (E $_.publisher) + '</span>' })</span>" }) -join '') + '</div>'
+                } else { $who = "<span class='muted'>$(Get-Text 'rpt.unknown')</span>" }
                 $w = Fx (100 * [double]$r.mb / $mx) '0.#'
                 L "<tr><td class='mono'>$(E $r.tag)</td><td class='bcell'><span class='bg' style='width:$w%'></span><span>$(Bidi ([string]$r.mb))</span></td><td class='num'>$(Signed-Delta $r.deltaMB)</td><td>$who</td></tr>"
             }
             L '</tbody></table></div>'
         }
-        & $tagTable $d.PoolNonPaged 'أكبر وسوم Non-paged'
-        & $tagTable $d.PoolPaged 'أكبر وسوم Paged'
-        if (@($d.PoolGrowing).Count -gt 0) { & $tagTable $d.PoolGrowing 'الوسوم الأسرع نموًا أثناء الفحص (التسرّب النشط)' }
+        & $tagTable $d.PoolNonPaged (Get-Text 'rpt.pool.t.non')
+        & $tagTable $d.PoolPaged (Get-Text 'rpt.pool.t.paged')
+        if (@($d.PoolGrowing).Count -gt 0) { & $tagTable $d.PoolGrowing (Get-Text 'rpt.pool.t.grow') }
     }
     L '</section>'
 
     # ---------------------------------------------------------------- suspects
-    L "<section id='suspects' class='blk' aria-labelledby='t-sus'><h2 class='sec' id='t-sus'>$(Ic 'bug')الملفات المشبوهة</h2>"
+    L "<section id='suspects' class='blk' aria-labelledby='t-sus'><h2 class='sec' id='t-sus'>$(Ic 'bug')$(Get-Text 'rpt.sus.h')</h2>"
     if ($sus.Count -eq 0) {
         $ic = $d.ItemCounts
-        L "<div class='card'><div class='empty'>$(Ic 'check-circle')<div>لم يُرصد أي ملف يصل مجموع مؤشراته للحد الأدنى.<br><span class='muted'>فُحص: $($ic.Processes) عملية · $($ic.Services) خدمة · $($ic.Tasks) مهمة مجدولة · $($ic.Autoruns) عنصر تشغيل تلقائي · $($ic.Drivers) تعريف.</span></div></div></div>"
+        L "<div class='card'><div class='empty'>$(Ic 'check-circle')<div>$(Get-Text 'rpt.sus.none')<br><span class='muted'>$(Get-Text 'rpt.sus.scanned' $ic.Processes $ic.Services $ic.Tasks $ic.Autoruns $ic.Drivers)</span></div></div></div>"
     } else {
-        L "<p class='lead'>الرقم # هو رقم العنصر في خطوة العزل. لا يُنفَّذ أي شيء إلا بعد اختيارك وتأكيدك، والعزل لا يحذف (يمكن التراجع عنه).</p>"
+        L "<p class='lead'>$(Get-Text 'rpt.sus.lead')</p>"
         $card = {
             param($x)
             $rk = RiskKey $x.risk
             $kind = LvKind $rk
             $sc = Fx ([math]::Min(100, 100 * [double]$x.score / 12)) '0'
             $openAttr = if ($rk -ne 'low') { ' open' } else { '' }
-            L "<details class='sus r-$rk'$openAttr><summary>$(Pill $kind (LevelAr $rk) (LvIcon $rk))<span class='muted'>#$($x.id)</span><span class='sus-name'>$(E $x.name)</span><span class='score' title='نقاط الخطر'><span class='meter'><i style='width:$sc%'></i></span><bdi dir='ltr'>$($x.score)</bdi></span>$(Chev)</summary><div class='sus-body'>"
-            L "<dl class='kv'><dt>المسار</dt><dd><span class='mono'>$(E $x.path)</span> <button type='button' class='btn sm' data-copy='$(E $x.path)'>نسخ</button></dd>"
-            L "<dt>التوقيع</dt><dd>$(TrustPill $x.trust $x.publisher)</dd>"
-            if ($x.company -or $x.description) { L "<dt>الوصف</dt><dd><bdi dir='ltr'>$(E $x.company) $(E $x.description)</bdi></dd>" }
-            if ($x.fileExists) { L "<dt>الحجم / التاريخ</dt><dd><bdi dir='ltr'>$(Fx ([double]$x.sizeBytes / 1KB) '0') KB &middot; $(E $x.created)</bdi></dd>" }
-            if ($x.sha256 -match '^[0-9A-Fa-f]{64}$') { L "<dt>SHA-256</dt><dd><span class='mono'>$(E $x.sha256)</span> <button type='button' class='btn sm' data-copy='$(E $x.sha256)'>نسخ</button> <a class='btn sm' href='https://www.virustotal.com/gui/file/$($x.sha256.ToLowerInvariant())' target='_blank' rel='noopener noreferrer'>فحص في VirusTotal $(Ic 'ext')</a></dd>" }
+            L "<details class='sus r-$rk'$openAttr><summary>$(Pill $kind (LevelText $rk) (LvIcon $rk))<span class='muted'>#$($x.id)</span><span class='sus-name'>$(E $x.name)</span><span class='score' title='$(Get-Text 'rpt.sus.score')'><span class='meter'><i style='width:$sc%'></i></span><bdi dir='ltr'>$($x.score)</bdi></span>$(Chev)</summary><div class='sus-body'>"
+            L "<dl class='kv'><dt>$(Get-Text 'rpt.sus.path')</dt><dd><span class='mono'>$(E $x.path)</span> <button type='button' class='btn sm' data-copy='$(E $x.path)'>$(Get-Text 'rpt.sus.copy')</button></dd>"
+            L "<dt>$(Get-Text 'rpt.sus.sig')</dt><dd>$(TrustPill $x.trust $x.publisher)</dd>"
+            if ($x.company -or $x.description) { L "<dt>$(Get-Text 'rpt.sus.desc')</dt><dd><bdi dir='ltr'>$(E $x.company) $(E $x.description)</bdi></dd>" }
+            if ($x.fileExists) { L "<dt>$(Get-Text 'rpt.sus.sizedate')</dt><dd><bdi dir='ltr'>$(Fx ([double]$x.sizeBytes / 1KB) '0') KB &middot; $(E $x.created)</bdi></dd>" }
+            if ($x.sha256 -match '^[0-9A-Fa-f]{64}$') { L "<dt>SHA-256</dt><dd><span class='mono'>$(E $x.sha256)</span> <button type='button' class='btn sm' data-copy='$(E $x.sha256)'>$(Get-Text 'rpt.sus.copy')</button> <a class='btn sm' href='https://www.virustotal.com/gui/file/$($x.sha256.ToLowerInvariant())' target='_blank' rel='noopener noreferrer'>$(Get-Text 'rpt.sus.vt')$(Ic 'ext')</a></dd>" }
             elseif ($x.sha256) { L "<dt>SHA-256</dt><dd><span class='mono'>$(E $x.sha256)</span></dd>" }
             L '</dl>'
-            if ($x.protectedFile) { L "<div class='callout'>$(Ic 'shield')<div>الملف نفسه تابع لويندوز/مايكروسوفت: <b>لن يُعزل أبدًا</b>. الإجراء الممكن هو إيقاف هذه العملية أو إلغاء هذا الأمر من التشغيل التلقائي فقط.</div></div>" }
-            L '<h3>لماذا هو مشبوه؟</h3><ul class="why">'
+            if ($x.protectedFile) { L "<div class='callout'>$(Ic 'shield')<div>$(Get-Text 'rpt.sus.protected')</div></div>" }
+            L "<h3>$(Get-Text 'rpt.sus.why')</h3><ul class=""why"">"
             foreach ($r in @($x.reasons)) { L "<li>$(Ic 'warn')<span>$(Rich $r)</span></li>" }
             L '</ul>'
             $ctx = New-Object System.Collections.Generic.List[string]
-            foreach ($p in @($x.procs)) { $rem = if (@($p.remote).Count) { ' · اتصال: ' + (@($p.remote) -join ', ') } else { '' }; $ctx.Add("عملية شغّالة PID $($p.pid) - ذاكرة خاصة $($p.privMB) MB، نمو $($p.growthMB) MB$rem") }
-            foreach ($p in @($x.services)) { $ctx.Add("خدمة: $($p.name) ($($p.display)) - $($p.startMode)/$($p.state)") }
-            foreach ($p in @($x.tasks)) { $ctx.Add("مهمة مجدولة: $($p.taskPath)$($p.taskName) - $($p.state)") }
-            foreach ($p in @($x.autoruns)) { $loc = ([string]$p.location) -replace '^Registry::HKEY_USERS\\S-1-5-21-[\d-]+', 'HKEY_USERS\<SID>'; $ctx.Add("تشغيل تلقائي ($($p.via)): $loc → $($p.name)") }
-            foreach ($p in @($x.drivers)) { $ctx.Add("تعريف نواة: $($p.name) - $($p.startMode)") }
-            foreach ($p in @($x.wmi)) { $ctx.Add("اشتراك WMI: $($p.class) / $($p.name)") }
-            if ($ctx.Count -gt 0) { L '<h3>أين يتصل بالنظام؟</h3><ul class="ctx">'; foreach ($c in $ctx) { L "<li>$(Rich $c)</li>" }; L '</ul>' }
+            foreach ($p in @($x.procs)) { $rem = if (@($p.remote).Count) { Get-Text 'rpt.ctx.conn' (@($p.remote) -join ', ') } else { '' }; $ctx.Add((Get-Text 'rpt.ctx.proc' $p.pid $p.privMB $p.growthMB $rem)) }
+            foreach ($p in @($x.services)) { $ctx.Add((Get-Text 'rpt.ctx.service' $p.name $p.display $p.startMode $p.state)) }
+            foreach ($p in @($x.tasks)) { $ctx.Add((Get-Text 'rpt.ctx.task' $p.taskPath $p.taskName $p.state)) }
+            foreach ($p in @($x.autoruns)) { $loc = ([string]$p.location) -replace '^Registry::HKEY_USERS\\S-1-5-21-[\d-]+', 'HKEY_USERS\<SID>'; $ctx.Add((Get-Text 'rpt.ctx.autorun' $p.via $loc $p.name)) }
+            foreach ($p in @($x.drivers)) { $ctx.Add((Get-Text 'rpt.ctx.driver' $p.name $p.startMode)) }
+            foreach ($p in @($x.wmi)) { $ctx.Add((Get-Text 'rpt.ctx.wmi' $p.class $p.name)) }
+            if ($ctx.Count -gt 0) { L "<h3>$(Get-Text 'rpt.sus.where')</h3><ul class=""ctx"">"; foreach ($c in $ctx) { L "<li>$(Rich $c)</li>" }; L '</ul>' }
             L '</div></details>'
         }
         foreach ($x in @($sus | Where-Object { $_.risk -ne 'Low' })) { & $card $x }
         $lows = @($sus | Where-Object { $_.risk -eq 'Low' })
         if ($lows.Count -gt 0) {
-            L "<details class='group'><summary>$(Pill 'info' 'منخفضة الخطورة' 'info') <span>$($lows.Count) عنصر للاطلاع</span>$(Chev)</summary><div class='sus-body'>"
+            L "<details class='group'><summary>$(Pill 'info' (Get-Text 'rpt.sus.lowgroup') 'info') <span>$(Get-Text 'rpt.sus.lowcount' $lows.Count)</span>$(Chev)</summary><div class='sus-body'>"
             foreach ($x in $lows) { & $card $x }
             L '</div></details>'
         }
@@ -572,14 +591,14 @@ function New-RamReportHtml($d) {
     L '</section>'
 
     # ---------------------------------------------------------------- hidden processes
-    L "<section id='hidden' class='blk' aria-labelledby='t-hid'><h2 class='sec' id='t-hid'>$(Ic 'eye')فحص العمليات المخفية</h2><div class='card'>"
+    L "<section id='hidden' class='blk' aria-labelledby='t-hid'><h2 class='sec' id='t-hid'>$(Ic 'eye')$(Get-Text 'rpt.hid.h')</h2><div class='card'>"
     if ($hid.Count -eq 0) {
-        L "<div class='empty'>$(Ic 'check-circle')<div>لم تُرصد عمليات مخفية: كل عملية تستجيب للنواة ظهرت في قوائم النظام.</div></div>"
+        L "<div class='empty'>$(Ic 'check-circle')<div>$(Get-Text 'rpt.hid.none')</div></div>"
     } else {
-        L "<p class='note' style='margin-top:0'>$(Rich 'الفحص يسأل النواة مباشرة عن كل PID ويقارنه بقوائم النظام. «حيّة» تعني تعمل ولا تظهر في أي قائمة (مؤشر Rootkit). «Zombie» عملية انتهت لكن النواة تحتفظ بها لأن برنامجًا آخر يمسك مقبضها، وهذا يحدث عادةً مع برامج ويندوز نفسها مثل msiexec و mofcomp.')</p>"
-        L "<div class='tw'><table><thead><tr><th class='num'>PID</th><th>الحالة</th><th>الملف</th></tr></thead><tbody>"
+        L "<p class='note' style='margin-top:0'>$(Rich (Get-Text 'rpt.hid.note'))</p>"
+        L "<div class='tw'><table><thead><tr><th class='num'>PID</th><th>$(Get-Text 'rpt.th.status')</th><th>$(Get-Text 'rpt.th.file')</th></tr></thead><tbody>"
         foreach ($h in $hid) {
-            $st = if ($h.Live) { Pill 'bad' 'حيّة ومخفية' 'error' } elseif ($h.IsWindowsImage) { Pill 'mute' 'Zombie (ملف ويندوز)' } else { Pill 'warn' 'Zombie (ملف خارجي)' 'warn' }
+            $st = if ($h.Live) { Pill 'bad' (Get-Text 'rpt.hid.live') 'error' } elseif ($h.IsWindowsImage) { Pill 'mute' (Get-Text 'rpt.hid.zombie.win') } else { Pill 'warn' (Get-Text 'rpt.hid.zombie.ext') 'warn' }
             L "<tr><td class='num'>$($h.Pid)</td><td>$st</td><td class='mono'>$(E $h.Image)</td></tr>"
         }
         L '</tbody></table></div>'
@@ -587,15 +606,15 @@ function New-RamReportHtml($d) {
     L '</div></section>'
 
     # ---------------------------------------------------------------- third-party drivers
-    L "<section id='drivers' class='blk' aria-labelledby='t-drv'><h2 class='sec' id='t-drv'>$(Ic 'driver')التعريفات غير التابعة لمايكروسوفت (الشغّالة الآن)</h2>"
-    L "<p class='lead'>$(Rich 'تسرّب ذاكرة النواة يأتي في الغالب من تعريف جهة خارجية (كرت شبكة، شاشة، تخزين، VPN، حماية). الأحدث تاريخًا في الأعلى.')</p>"
+    L "<section id='drivers' class='blk' aria-labelledby='t-drv'><h2 class='sec' id='t-drv'>$(Ic 'driver')$(Get-Text 'rpt.drv.h')</h2>"
+    L "<p class='lead'>$(Rich (Get-Text 'rpt.drv.lead'))</p>"
     $drv = @($d.Drivers3p | Select-Object -First 60)
-    if ($drv.Count -eq 0) { L "<div class='card'><div class='empty'>$(Ic 'check-circle')<div>لا توجد تعريفات من جهات خارجية شغّالة.</div></div></div>" }
+    if ($drv.Count -eq 0) { L "<div class='card'><div class='empty'>$(Ic 'check-circle')<div>$(Get-Text 'rpt.drv.none')</div></div></div>" }
     else {
-        L "<div class='tw'><table><thead><tr><th>الملف</th><th>الشركة / الإصدار</th><th>تاريخ الملف</th><th>التوقيع</th><th>التشغيل</th></tr></thead><tbody>"
+        L "<div class='tw'><table><thead><tr><th>$(Get-Text 'rpt.th.file')</th><th>$(Get-Text 'rpt.th.company')</th><th>$(Get-Text 'rpt.th.filedate')</th><th>$(Get-Text 'rpt.th.signature')</th><th>$(Get-Text 'rpt.th.start')</th></tr></thead><tbody>"
         foreach ($x in $drv) {
             $fresh = ''
-            try { if ($x.installed -and (((Get-Date) - [datetime]::Parse($x.installed, $script:RI)).TotalDays -le 45)) { $fresh = ' ' + (Pill 'info' 'جديد') } } catch { }
+            try { if ($x.installed -and (((Get-Date) - [datetime]::Parse($x.installed, $script:RI)).TotalDays -le 45)) { $fresh = ' ' + (Pill 'info' (Get-Text 'rpt.drv.new')) } } catch { }
             L "<tr><td class='mono'>$(E $x.file)$fresh</td><td><bdi dir='ltr'>$(E $x.company) $(E $x.version)</bdi></td><td><bdi dir='ltr'>$(E $x.installed)</bdi></td><td>$(TrustPill $x.trust $x.publisher)</td><td>$(E $x.startMode)</td></tr>"
         }
         L '</tbody></table></div>'
@@ -603,46 +622,39 @@ function New-RamReportHtml($d) {
     L '</section>'
 
     # ---------------------------------------------------------------- evidence
-    L "<section id='evidence' class='blk' aria-labelledby='t-ev'><h2 class='sec' id='t-ev'>$(Ic 'doc')أدلة إضافية</h2><div class='card'>"
+    L "<section id='evidence' class='blk' aria-labelledby='t-ev'><h2 class='sec' id='t-ev'>$(Ic 'doc')$(Get-Text 'rpt.ev.h')</h2><div class='card'>"
     if ($d.Defender) {
         $df = $d.Defender
-        $dSvc = Pill $(if ($df.Enabled) { 'ok' } else { 'bad' }) $(if ($df.Enabled) { 'الخدمة تعمل' } else { 'الخدمة متوقفة' })
-        $dRt = Pill $(if ($df.RealTime) { 'ok' } else { 'bad' }) $(if ($df.RealTime) { 'الحماية اللحظية تعمل' } else { 'الحماية اللحظية متوقفة' })
-        $dSig = Pill 'mute' "عمر التواقيع: $($df.SignatureAgeDays) يوم"
-        $dScan = Pill 'mute' "آخر فحص سريع: قبل $($df.QuickScanAgeDays) يوم"
+        $dSvc = Pill $(if ($df.Enabled) { 'ok' } else { 'bad' }) $(if ($df.Enabled) { Get-Text 'rpt.ev.svc.on' } else { Get-Text 'rpt.ev.svc.off' })
+        $dRt = Pill $(if ($df.RealTime) { 'ok' } else { 'bad' }) $(if ($df.RealTime) { Get-Text 'rpt.ev.rt.on' } else { Get-Text 'rpt.ev.rt.off' })
+        $dSig = Pill 'mute' (Get-Text 'rpt.ev.sigage' $df.SignatureAgeDays)
+        $dScan = Pill 'mute' (Get-Text 'rpt.ev.lastscan' $df.QuickScanAgeDays)
         L "<h3 style='margin-top:0'>Windows Defender</h3><div class='chips'>$dSvc $dRt $dSig $dScan</div>"
         if (@($df.RecentThreats).Count -gt 0) {
-            L "<h3>آخر الاكتشافات</h3><ul class='ctx'>"
+            L "<h3>$(Get-Text 'rpt.ev.threats')</h3><ul class='ctx'>"
             foreach ($t in @($df.RecentThreats)) { L "<li><bdi dir='ltr'>$(E $t.time) - $(E $t.process) - $(E $t.resources)</bdi></li>" }
             L '</ul>'
         }
-    } else { L "<h3 style='margin-top:0'>Windows Defender</h3><p class='muted' style='margin:0'>لا تتوفر معلوماته (ربما يوجد برنامج حماية آخر).</p>" }
-    L '<h3>أحداث نفاد الذاكرة في سجل النظام</h3>'
+    } else { L "<h3 style='margin-top:0'>Windows Defender</h3><p class='muted' style='margin:0'>$(Get-Text 'rpt.ev.nodef')</p>" }
+    L "<h3>$(Get-Text 'rpt.ev.oom')</h3>"
     if (@($d.Exhaustion).Count -gt 0) {
-        L "<p class='note' style='margin-top:0'>$(Rich 'المصدر Resource-Exhaustion-Detector: يسمّي البرامج التي استهلكت أكبر ذاكرة وقت الحدث.')</p>"
+        L "<p class='note' style='margin-top:0'>$(Rich (Get-Text 'rpt.ev.oom.note'))</p>"
         foreach ($e in @($d.Exhaustion)) { L "<pre class='ev'>$(E $e.time)`n$(E $e.message)</pre>" }
-    } else { L "<p class='muted' style='margin:0'>لا توجد أحداث «نفاد ذاكرة» (Event 2004) مسجلة حديثًا.</p>" }
+    } else { L "<p class='muted' style='margin:0'>$(Get-Text 'rpt.ev.oom.none')</p>" }
     L '</div></section>'
 
     # ---------------------------------------------------------------- next steps
-    L "<section id='next' class='blk' aria-labelledby='t-next'><h2 class='sec' id='t-next'>$(Ic 'steps')الخطوات المقترحة</h2><ol class='steps'>"
-    $steps = @(
-        @('إعادة تشغيل حقيقية', 'استخدم «إعادة التشغيل» (Restart) وليس «إيقاف التشغيل» ثم راقب الذاكرة. إن عاد الارتفاع خلال ساعات فالسبب تعريف أو برنامج يبدأ مع النظام.'),
-        @('حدّث التعريف المرجَّح', 'إن ظهر وسم/تعريف مرجَّح في جدول Pool tags: حدّثه من موقع المصنّع (كرت الشبكة / الشاشة / اللوحة الأم) أو من Windows Update ← خيارات متقدمة ← تحديثات اختيارية، أو أزل البرنامج الذي ثبّته (VPN، حماية، أدوات تسريع الألعاب).'),
-        @('جرّب تعطيل Fast Startup', 'لوحة التحكم ← خيارات الطاقة ← اختيار وظيفة أزرار الطاقة. مع Fast Startup لا تُصفَّر النواة عند «إيقاف التشغيل» فيبقى التسرّب حيًّا.'),
-        @('تعمّق بأداة RAMMap', 'نزّل RAMMap من Sysinternals (مايكروسوفت) وراجع تبويب Use Counts: الصفوف Driver Locked و Nonpaged Pool و Mapped File تبيّن النوع بدقة.'),
-        @('راجع الملفات المشبوهة', 'افحص SHA-256 على VirusTotal، وشغّل Microsoft Defender Offline scan قبل العزل. العزل ينقل الملف جانبًا ولا يحذفه ويمكن التراجع عنه.'),
-        @('عملية «حيّة ومخفية»؟', 'لا تعتمد على ويندوز نفسه؛ استخدم قرص إنقاذ (Defender Offline أو Kaspersky Rescue Disk).')
-    )
-    foreach ($st in $steps) { L "<li><div><b>$(Rich $st[0])</b><span>$(Rich $st[1])</span></div></li>" }
+    L "<section id='next' class='blk' aria-labelledby='t-next'><h2 class='sec' id='t-next'>$(Ic 'steps')$(Get-Text 'rpt.next.h')</h2><ol class='steps'>"
+    foreach ($n in 1..6) { L "<li><div><b>$(Rich (Get-Text ('rpt.next.' + $n + '.t')))</b><span>$(Rich (Get-Text ('rpt.next.' + $n + '.b')))</span></div></li>" }
     L '</ol></section>'
     L '</main>'
 
     # ---------------------------------------------------------------- footer
     $ic = $d.ItemCounts
-    L "<footer><div class='wrap'><div>فُحص: $($ic.Processes) عملية · $($ic.Services) خدمة · $($ic.Tasks) مهمة مجدولة · $($ic.Autoruns) تشغيل تلقائي · $($ic.Drivers) تعريف · $($ic.Wmi) اشتراك WMI مشبوه</div><div>الأداة لا تتصل بالإنترنت ولا يُرسل شيء &middot; RAM Doctor <bdi dir='ltr'>v$(E $d.Version)</bdi></div></div>"
+    L "<footer><div class='wrap'><div>$(Get-Text 'rpt.foot.counts' $ic.Processes $ic.Services $ic.Tasks $ic.Autoruns $ic.Drivers $ic.Wmi)</div><div>$(Get-Text 'rpt.foot.offline') &middot; RAM Doctor <bdi dir='ltr'>v$(E $d.Version)</bdi></div></div>"
     if (@($d.Warnings).Count -gt 0) { L "<div class='wrap'><ul class='warns'>"; foreach ($w in @($d.Warnings)) { L "<li>$(E $w)</li>" }; L '</ul></div>' }
     L '</footer>'
-    L "<script>$($script:ReportJs)</script></body></html>"
+    $js = $script:ReportJs.Replace('@@LIGHT@@', (JsStr (Get-Text 'rpt.theme.light'))).Replace('@@DARK@@', (JsStr (Get-Text 'rpt.theme.dark'))).Replace('@@COPIED@@', (JsStr (Get-Text 'rpt.copied')))
+    L "<script>$js</script></body></html>"
     return $sb.ToString()
 }
