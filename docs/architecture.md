@@ -111,8 +111,8 @@ Default folder: `Desktop\RAM-Doctor-Reports` (override with `-OutDir`).
 Every file is written crash-safe (`<file>.tmp`, flushed, then renamed into
 place by `lib/Store.ps1`), so a power cut never leaves a half-written plan. The
 newest **3** scans of this PC are kept (the scan just written always counts as
-one of them, even when the clock runs behind); files of other PC names (a
-renamed PC) are removed after 30 days. The last console line
+one of them, even when the clock runs behind); files of other PC names are never
+touched. The last console line
 `SCAN_STAMP: <yyyyMMdd-HHmmss>` tells the window which plan is new; it builds
 the file names from its own PC name, so no path has to survive the console code
 page.
@@ -200,21 +200,28 @@ the typed `YES` (or `-Yes`), create a restore point, then per suspect:
 
 **Restore** reverses the manifest in reverse order. Each item that is back gets
 `undoneAt`; an item that is refused or whose quarantined copy is missing counts
-as a failure. Only when nothing failed is the batch stamped `restoredAt`;
-otherwise the run says `Restore INCOMPLETE`, exits with 2 and a later run only
-retries what is not back yet. A `pending` step (a crash) is undone if it
+as a failure. Before a file is moved back, its target is recorded (`restoringTo`),
+so a restore interrupted after the move is recognised and finished by the next
+run. Only when nothing failed is the batch stamped `restoredAt` (if that last save
+fails: `UNSAVED`, exit 3, safe to run again); otherwise the run says
+`Restore INCOMPLETE`, exits with 2 and a later run only retries what is not back
+yet. A `pending` step (a crash) is undone if it
 happened. **Purge** deletes the `files` folders (typed `DELETE` or `-Yes`) and
 stamps `purgedAt`. A batch whose record is damaged (and its `.bak` too) or was
 never written is listed as `damaged` / `orphan`: it cannot be restored, but its
-files can be purged. Quarantine, Restore and Purge hold a per-store lock; a
+files can be purged. A record that exists but cannot be opened right now (held by
+another program) is `unreadable`: refused for now, never replaced by its older
+`.bak` and never overwritten. Quarantine, Restore and Purge hold a per-store lock; a
 second run answers `BUSY` (exit 4) and changes nothing. Actions log to
 `<store>\actions-<stamp>.log` (the newest 30 are kept).
 
 Every run ends with a machine-readable line for the window:
-`RESULT: OK [...]`, `PARTIAL <n>` (exit 2), `FAILED <reason>` (exit 1),
-`BUSY` (exit 4) or `NONE`. `-Mode List` prints one
+`RESULT: OK [...]`, `PARTIAL <n>` (exit 2), `UNSAVED` (exit 3),
+`FAILED <reason>` (exit 1; `nosave` = the undo record could not be saved,
+`error` = an unexpected error, `unreadable`, `damaged`, ...), `BUSY` (exit 4) or
+`NONE`. `-Mode List` prints one
 `BATCH_JSON: {"name","state","items","files","bytes","seq","created"}` line per
-batch (state `restorable|restored|purged|damaged|orphan|toonew`), newest first;
+batch (state `restorable|restored|purged|damaged|orphan|toonew|unreadable`), newest first;
 the window reads only these lines, never the manifests themselves.
 
 ### Quarantine manifest
@@ -228,6 +235,7 @@ the window reads only these lines, never the manifests themselves.
                  "ops": [ { "type": "StopProcess|DisableService|DisableDriver|DisableTask|RemoveRunValue|MoveStartupFile|RemoveWmi|QuarantineFile",
                             "status": "pending|done|failed",   // pending: written before the step, the run stopped around it
                             "undoneAt": "…",                   // since 1.1: put back by a (partial) restore
+                            "restoringTo": "…", "restoringSha256": "…",   // since 1.1: written just before a file is moved back
                             /* plus type-specific undo data */ } ] } ] }
 ```
 

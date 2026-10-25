@@ -29,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read as schema 1) and an inter-process lock (`Use-StoreLock`).
 - Relay: optional `requestId`. The same id again returns the first answer
   (`"replayed": true`) instead of committing a second time; a retry during the
-  first commit gets `409 in_progress`.
+  first commit gets `409 in_progress`. Such answers do not count against the
+  per-IP limit.
 
 ### Changed
 
@@ -55,7 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restore tells the truth: an item that cannot be put back (a refused or
   missing quarantined file, an unknown operation from a newer version) is a
   failure, the batch stays restorable, the window says "finished with
-  problems", and a second try only retries what is not back yet.
+  problems", and a second try only retries what is not back yet. The target of
+  every file is recorded before it is moved back, so an interrupted restore is
+  finished by the next run. A record that another program holds open is refused
+  for the moment instead of being replaced by its older backup copy.
 - Purge reports what it really did; batches dated in the future (wrong clock)
   are handled; "Undo the last quarantine" picks the newest batch by a sequence
   number instead of the clock.
@@ -63,8 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store lock; the second one answers "busy"); the window ignores clicks while
   it waits for a helper process.
 - The scan writes its report and plan crash-safe, never prunes the plan it just
-  wrote (clock behind), removes files of other PC names after 30 days, and the
-  window picks this PC's plan by its stamp. A damaged plan no longer breaks
+  wrote (clock behind), and the window picks this PC's plan by its stamp. A damaged plan no longer breaks
   every start of the window.
 - Share: one `requestId` per upload, the same on every retry (no duplicate
   folders when an answer is lost); `409 in_progress` is waited for; a relay
