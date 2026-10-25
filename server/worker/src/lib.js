@@ -730,6 +730,20 @@ export async function rateCount(kv, key, nowMs) {
   }
 }
 
+/** Gives back one event counted by rateHit at `nowMs` (same hour/day windows only; never below zero). */
+export async function rateRefund(kv, key, nowMs) {
+  if (!hasKv(kv)) return { ok: true, unbound: true };
+  try {
+    const w = await readWindows(kv, key, nowMs);
+    if (w.h === 0 && w.d === 0) return { ok: true };
+    await kv.put(key, JSON.stringify({ h: [w.hb, Math.max(0, w.h - 1)], d: [w.db, Math.max(0, w.d - 1)] }), { expirationTtl: 90000 });
+    return { ok: true };
+  } catch (_) {
+    log('rate_kv_error', {});
+    return { ok: true, error: true };
+  }
+}
+
 async function readWindows(kv, key, nowMs) {
   const w = { hb: Math.floor(nowMs / HOUR_MS), db: Math.floor(nowMs / DAY_MS), h: 0, d: 0 };
   const raw = await kv.get(key);
@@ -977,20 +991,20 @@ async function postReport(request, env, deps, now) {
   const declared = parseInt(request.headers.get('content-length') || '', 10);
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new HttpError(413, 'too_large');
 
-  // Per-IP brake first: checked before any work, and every POST counts (also invalid ones) - except a retry that is
-  // answered from an existing requestId record (a replay or 409 in_progress costs no work and stores nothing). The
-  // per-user limit is checked after the payload is validated and counted only after a successful commit, so neither
-  // garbage that guesses a userId nor a GitHub outage can burn somebody's quota.
+  // Per-IP brake first: every POST reserves one slot BEFORE any work (so parallel requests count too, also invalid ones);
+  // a retry that is answered from an existing requestId record (a replay or 409 in_progress: no work, nothing stored)
+  // gets its slot back. The per-user limit is checked after the payload is validated and counted only after a successful
+  // commit, so neither garbage that guesses a userId nor a GitHub outage can burn somebody's quota.
   const ip = (request.headers.get('CF-Connecting-IP') || 'unknown').slice(0, 64);
   const ipKey = 'ip:' + ip;
-  const ipRate = await rateCheck(env.RATE, ipKey, { hour: LIMITS.perIpPerHour, day: LIMITS.perIpPerDay }, now);
+  const ipRate = await rateHit(env.RATE, ipKey, { hour: LIMITS.perIpPerHour, day: LIMITS.perIpPerDay }, now);
   if (ipRate.error && openMode) throw new HttpError(503, 'unavailable');
   if (!ipRate.ok) throw new HttpError(429, 'rate_limited', { retryAfter: ipRate.retryAfter });
   const attempt = { countIp: true };
   try {
     return await acceptReport(request, env, deps, now, mode, openMode, attempt);
   } finally {
-    if (attempt.countIp) await rateCount(env.RATE, ipKey, now);
+    if (!attempt.countIp && ipRate.ok && !ipRate.unbound && !ipRate.error) await rateRefund(env.RATE, ipKey, now);
   }
 }
 

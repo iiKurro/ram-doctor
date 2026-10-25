@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import worker from '../worker/src/index.js';
 import {
   handle, slugify, validatePayload, parseInviteCodes, checkInvite, timingSafeEqualBytes, utcStamp, rateHit,
-  rateCheck, rateCount, folderSuffix, folderExists,
+  rateCheck, rateCount, rateRefund, folderSuffix, folderExists,
   commitFiles, sanitizeSummary, checkPlanJson, checkReportHtml, authMode,
   HttpError, LIMITS, MAX_BODY_BYTES, MAX_FILE_BYTES, FILE_CAPS, MAX_SCRIPT_BYTES,
   REQUEST_TTL_SECONDS, PENDING_STALE_MS, IN_PROGRESS_RETRY_SECONDS,
@@ -1479,4 +1479,41 @@ test('a retry answered from the requestId record (replay or 409 in_progress) cos
   }
   assert.equal(ipCount(), LIMITS.perIpPerHour);
   assert.equal((await post(payload(), env, mockGithub(), { headers })).res.status, 429);
+});
+test('per-IP: uploads still in flight hold their slot, so parallel requests cannot all pass the limit', async () => {
+  const kv = makeKv();
+  const env = openEnv(kv);
+  const headers = { 'CF-Connecting-IP': '198.51.100.88' };
+  const releases = [];
+  const inflight = [];
+  for (let i = 0; i < LIMITS.perIpPerHour; i++) {
+    const base = mockGithub();
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let seen;
+    const reached = new Promise((r) => { seen = r; });
+    releases.push(release);
+    const gh = { calls: base.calls, fetch: async (u, init) => { if (init && init.method === 'PATCH') { seen(); await gate; } return base.fetch(u, init); } };
+    inflight.push(post(payload({ userId: ('0000000' + i).slice(-8) }), env, gh, { headers }));
+    await reached; // this upload has passed the IP brake and is now committing
+  }
+  const over = await post(payload({ userId: 'abcdef09' }), env, mockGithub(), { headers });
+  assert.equal(over.res.status, 429, 'every slot is held by an upload that has not finished yet');
+  for (const r of releases) r();
+  for (const p of inflight) assert.equal((await p).res.status, 200);
+  assert.equal(JSON.parse(kv.store.get('ip:198.51.100.88')).h[1], LIMITS.perIpPerHour);
+});
+
+test('rateRefund gives one event back in the same windows, never below zero', async () => {
+  const kv = makeKv();
+  const lim = { hour: 5, day: 9 };
+  await rateHit(kv, 'k', lim, NOW);
+  await rateHit(kv, 'k', lim, NOW);
+  assert.deepEqual(await rateRefund(kv, 'k', NOW), { ok: true });
+  assert.deepEqual(JSON.parse(kv.store.get('k')), { h: [Math.floor(NOW / HOUR), 1], d: [Math.floor(NOW / (24 * HOUR)), 1] });
+  await rateRefund(kv, 'k', NOW);
+  await rateRefund(kv, 'k', NOW);
+  assert.equal(JSON.parse(kv.store.get('k')).h[1], 0);
+  assert.deepEqual(await rateRefund(undefined, 'k', NOW), { ok: true, unbound: true });
+  assert.deepEqual(await rateRefund(makeKv(true), 'k', NOW), { ok: true, error: true });
 });
