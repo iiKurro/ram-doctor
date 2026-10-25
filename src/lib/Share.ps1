@@ -10,7 +10,9 @@
 #   share.config.json ships with an empty endpoint, so uploading stays dormant until the helper configures a relay.
 #   Also offline: New-ShareShortSummary (short redacted text for pasting into a chat app, no profile, no network).
 #
-# Windows PowerShell 5.1. Contains Arabic => keep this file UTF-8 with BOM.
+# Windows PowerShell 5.1. Keep this file UTF-8 with BOM (the user-facing texts, Arabic and English, live in lib\Strings.ps1).
+
+if (-not (Get-Command Get-Text -CommandType Function -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Strings.ps1') }
 
 $script:ShareToolVersion = '1.0.1'
 $script:ShareReservedUserNames = @('public', 'default', 'default user', 'all users', 'defaultuser0', 'desktop.ini')
@@ -18,31 +20,22 @@ $script:ShareReservedUserNames = @('public', 'default', 'default user', 'all use
 # C:\Users\<name> form is masked for these.
 $script:ShareGenericNames = @('user', 'users', 'admin', 'administrator', 'public', 'default', 'guest', 'system', 'test', 'owner', 'root', 'windows', 'home', 'local')
 
-# ---------------------------------------------------------------- messages (Arabic, shown to the user)
+# ---------------------------------------------------------------- messages (shown to the user; the texts are in lib\Strings.ps1)
+# The language is the current UI language (Set-UiLang), or -Lang for one lookup. An unknown key comes back unchanged.
 function Get-ShareMessage {
-    param([Parameter(Mandatory)][string]$Key)
-    switch ($Key) {
-        'not-configured' { 'الرفع غير مفعّل بعد: لم يُضبط عنوان الخدمة. اطلب من مساعدك نسخة محدّثة من الأداة.' }
-        'insecure-endpoint' { 'عنوان الخدمة غير آمن (يجب أن يبدأ بـ https).' }
-        'no-profile' { 'لم يتم إنشاء ملفك الشخصي بعد. اختر اسم المستخدم ورمز الدعوة أولًا.' }
-        'no-plan' { 'لا توجد نتيجة فحص للرفع. شغّل الفحص أولًا.' }
-        'bad-plan' { 'ملف نتيجة الفحص تالف أو غير مقروء. أعد الفحص.' }
-        '400' { 'تعذّر قبول التقرير (بيانات غير صالحة).' }
-        '401' { 'رمز الدعوة غير صحيح. تأكد من الرمز الذي أعطاك إياه مساعدك.' }
-        '401-nocode' { 'المساعد فعّل رمز دعوة؛ اطلبه منه.' }
-        '413' { 'التقرير كبير جدًا ولا يمكن رفعه.' }
-        '429' { 'محاولات كثيرة. انتظر قليلًا ثم أعد المحاولة.' }
-        '5xx' { 'الخدمة لا تستجيب الآن. حاول مرة أخرى بعد قليل.' }
-        'offline' { 'تعذّر الاتصال بالإنترنت أو بالخدمة. تأكد من اتصالك ثم أعد المحاولة.' }
-        'bad-response' { 'ردّ غير متوقع من الخدمة.' }
-        'name-length' { 'اسم المستخدم يجب أن يكون من حرفين إلى 24 حرفًا.' }
-        'name-chars' { 'يُسمح فقط بالحروف العربية أو الإنجليزية والأرقام والمسافة والشرطة (- أو _).' }
-        'code-invalid' { 'رمز الدعوة (إن وُجد) يجب أن يكون من 4 إلى 128 حرفًا بدون مسافات.' }
-        'name-fixed' { 'اسم المستخدم ثابت ولا يمكن تغييره بعد إنشائه. لتغييره احذف الملف الشخصي أولًا.' }
-        'code-unreadable' { 'تعذّرت قراءة رمز الدعوة المحفوظ على هذا الحساب. أعد إدخاله.' }
-        'profile-write' { 'تعذّر حفظ الملف الشخصي على هذا الجهاز.' }
-        default { $Key }
-    }
+    param([Parameter(Mandatory)][string]$Key, [string]$Lang = '')
+    $k = 'share.msg.' + $Key
+    if (Test-TextKey $k -Lang $Lang) { return (Get-Text $k -Lang $Lang) }
+    return $Key
+}
+
+# Language of the texts written FOR a plan: -Lang when given, else the language the scan wrote the plan in,
+# else Arabic (a plan without "lang" comes from the Arabic-only releases).
+function Resolve-ShareLang {
+    param($Plan, [string]$Lang = '')
+    if ($Lang) { return (Resolve-UiLang $Lang) }
+    if ($Plan -and $Plan.PSObject.Properties['lang'] -and $Plan.lang) { return (Resolve-UiLang ([string]$Plan.lang)) }
+    return 'ar'
 }
 
 # ---------------------------------------------------------------- config
@@ -341,10 +334,17 @@ function ConvertTo-ShareMdCell {
 
 function New-ShareSummary {
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Plan, [string]$DisplayName = '', [string]$UserId = '', [string]$Version = $script:ShareToolVersion, [string]$HostLabel = '<PC>')
+    param([Parameter(Mandatory)]$Plan, [string]$DisplayName = '', [string]$UserId = '', [string]$Version = $script:ShareToolVersion, [string]$HostLabel = '<PC>', [string]$Lang = '')
     $inv = [Globalization.CultureInfo]::InvariantCulture
     $sb = New-Object System.Text.StringBuilder
     $nl = "`n"
+    # The labels of this summary are English (the helper reads English); the scan's own sentences (verdict, observations, reasons)
+    # keep the language of the scan. Arabic ones are wrapped in a right-to-left block; English ones need no wrapper (the relay
+    # only keeps <div dir="rtl">, so an LTR wrapper would turn into visible text).
+    $rtl = ((Resolve-ShareLang $Plan $Lang) -eq 'ar')
+    $divOpen = $(if ($rtl) { "<div dir=`"rtl`">$nl$nl" } else { '' })
+    $divCloseText = $(if ($rtl) { "$nl$nl</div>$nl$nl" } else { "$nl$nl" })
+    $divCloseList = $(if ($rtl) { "$nl</div>$nl$nl" } else { $nl })
     $verdict = $Plan.verdict
     $level = if ($verdict -and $verdict.Level) { [string]$verdict.Level } else { 'unknown' }
     $headline = if ($verdict -and $verdict.Headline) { [string]$verdict.Headline } else { '' }
@@ -359,7 +359,7 @@ function New-ShareSummary {
     [void]$sb.Append("| Administrator scan | $(if ($Plan.isAdmin) { 'yes' } else { 'no (limited)' }) |$nl$nl")
 
     [void]$sb.Append("## Verdict ($level)$nl$nl")
-    [void]$sb.Append("<div dir=`"rtl`">$nl$nl**$(ConvertTo-ShareMdCell $headline)**$nl$nl</div>$nl$nl")
+    [void]$sb.Append("$divOpen**$(ConvertTo-ShareMdCell $headline)**$divCloseText")
 
     $m = $Plan.memory
     if ($m) {
@@ -382,9 +382,9 @@ function New-ShareSummary {
     [void]$sb.Append("## Observations ($($obs.Count))$nl$nl")
     if ($obs.Count -eq 0) { [void]$sb.Append("None.$nl$nl") }
     else {
-        [void]$sb.Append("<div dir=`"rtl`">$nl$nl")
+        [void]$sb.Append($divOpen)
         foreach ($o in $obs) { [void]$sb.Append("- **[$(ConvertTo-ShareMdCell $o.Level)] $(ConvertTo-ShareMdCell $o.Title)** - $(ConvertTo-ShareMdCell $o.Body)$nl") }
-        [void]$sb.Append("$nl</div>$nl$nl")
+        [void]$sb.Append($divCloseList)
     }
 
     $sus = @($Plan.suspects | Where-Object { $_ })
@@ -405,9 +405,9 @@ function New-ShareSummary {
             if ($s.path) { [void]$sb.Append("Path: $bt$(ConvertTo-ShareMdCell $s.path)$bt$nl$nl") }
             $reasons = @($s.reasons | Where-Object { $_ })
             if ($reasons.Count -gt 0) {
-                [void]$sb.Append("<div dir=`"rtl`">$nl$nl")
+                [void]$sb.Append($divOpen)
                 foreach ($r in $reasons) { [void]$sb.Append("- $(ConvertTo-ShareMdCell $r)$nl") }
-                [void]$sb.Append("$nl</div>$nl$nl")
+                [void]$sb.Append($divCloseList)
             }
         }
     }
@@ -479,11 +479,13 @@ function New-ShareShortSummary {
         [switch]$IncludeHostName,
         $Redactor,
         [int]$MaxChars = 1500,
-        [string]$Version = $script:ShareToolVersion
+        [string]$Version = $script:ShareToolVersion,
+        [string]$Lang = ''   # language of the labels: -Lang, else the plan's own language, else Arabic
     )
     if (-not (Test-Path -LiteralPath $PlanPath)) { throw 'no-plan' }
     $raw = Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8
     try { $rawObj = $raw | ConvertFrom-Json } catch { throw 'bad-plan' }
+    $sl = Resolve-ShareLang $rawObj $Lang
     if (-not $Redactor) { $Redactor = New-ShareRedactor -DiscoverFrom @($raw) -ExtraComputerNames @([string]$rawObj.host) -IncludeHostName:$IncludeHostName }
     $plan = (Protect-ShareJson -Json $raw -Redactor $Redactor) | ConvertFrom-Json
     $inv = [Globalization.CultureInfo]::InvariantCulture
@@ -496,38 +498,38 @@ function New-ShareShortSummary {
         return $t
     }
     $num = { param($v) if ($null -eq $v -or "$v" -eq '') { '?' } else { ([double]$v).ToString('0.##', $inv) } }
-    $riskAr = @{ High = 'عالٍ'; Medium = 'متوسط'; Low = 'منخفض' }
+    $riskKey = @{ High = 'level.high'; Medium = 'level.med'; Low = 'level.low' }
 
     $headline = if ($plan.verdict -and $plan.verdict.Headline) { & $cut $plan.verdict.Headline 160 } else { '-' }
     $m = $plan.memory
     $memLine = $null
     if ($m) {
-        $memLine = 'الذاكرة: مستخدم {0}/{1} GB | Non-paged {2} GB | Paged {3} GB | غير منسوبة {4} GB' -f (& $num $m.UsedGB), (& $num $m.TotalGB), (& $num $m.NonPagedGB), (& $num $m.PagedGB), (& $num $m.UnaccountedGB)
+        $memLine = Get-Text 'sum.mem' (& $num $m.UsedGB) (& $num $m.TotalGB) (& $num $m.NonPagedGB) (& $num $m.PagedGB) (& $num $m.UnaccountedGB) -Lang $sl
     }
     $obsAll = @($plan.observations | Where-Object { $_ -and $_.Level -ne 'info' -and $_.Title } | ForEach-Object { '- ' + (& $cut $_.Title 90) })
     $susAll = @($plan.suspects | Where-Object { $_ -and $_.risk -in 'High', 'Medium' } | ForEach-Object {
-            $r = if ($riskAr.ContainsKey([string]$_.risk)) { $riskAr[[string]$_.risk] } else { [string]$_.risk }
+            $r = if ($riskKey.ContainsKey([string]$_.risk)) { Get-Text $riskKey[[string]$_.risk] -Lang $sl } else { [string]$_.risk }
             $reason = & $cut (@($_.reasons)[0]) 80
             $sha = if ($_.sha256) { ' | sha256:' + ([string]$_.sha256).Substring(0, [Math]::Min(12, ([string]$_.sha256).Length)) } else { '' }
             '- [{0}] {1} ({2}) - {3}{4}' -f $r, (& $cut $_.name 40), (& $cut $_.trust 24), $reason, $sha
         })
     $susTotal = @($plan.suspects | Where-Object { $_ }).Count
-    $hostLine = if ($IncludeHostName -and $plan.host) { 'الجهاز: ' + (& $cut $plan.host 40) } else { $null }
-    $footer = 'RAM-Doctor {0} | وقت الفحص: {1}' -f $Version, (& $cut $plan.created 25)
+    $hostLine = if ($IncludeHostName -and $plan.host) { (Get-Text 'sum.host' -Lang $sl) + (& $cut $plan.host 40) } else { $null }
+    $footer = Get-Text 'sum.footer' $Version (& $cut $plan.created 25) -Lang $sl
 
     $build = {
         param([int]$nObs, [int]$nSus)
         $l = New-Object System.Collections.Generic.List[string]
-        $l.Add('تقرير RAM Doctor')
-        $l.Add('الحكم: ' + $headline)
+        $l.Add((Get-Text 'sum.title' -Lang $sl))
+        $l.Add((Get-Text 'sum.verdict' -Lang $sl) + $headline)
         if ($memLine) { $l.Add($memLine) }
         if ($hostLine) { $l.Add($hostLine) }
-        if ($nObs -gt 0) { $l.Add('أهم الملاحظات:'); foreach ($o in ($obsAll | Select-Object -First $nObs)) { $l.Add($o) } }
+        if ($nObs -gt 0) { $l.Add((Get-Text 'sum.notes' -Lang $sl)); foreach ($o in ($obsAll | Select-Object -First $nObs)) { $l.Add($o) } }
         if ($nSus -gt 0) {
-            $l.Add('ملفات مشبوهة ({0}):' -f $susTotal)
+            $l.Add((Get-Text 'sum.sus' $susTotal -Lang $sl))
             foreach ($s in ($susAll | Select-Object -First $nSus)) { $l.Add($s) }
-        } elseif ($susTotal -eq 0) { $l.Add('ملفات مشبوهة: لا يوجد') }
-        else { $l.Add('ملفات منخفضة الخطورة فقط ({0}) - التفاصيل في التقرير' -f $susTotal) }
+        } elseif ($susTotal -eq 0) { $l.Add((Get-Text 'sum.sus.none' -Lang $sl)) }
+        else { $l.Add((Get-Text 'sum.sus.low' $susTotal -Lang $sl)) }
         $l.Add($footer)
         return ($l -join $nl)
     }
