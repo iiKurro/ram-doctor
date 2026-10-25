@@ -46,7 +46,7 @@ $script:lsTimer.Start()
         @{ Name = "still open after the 2nd switch, back in $start"; Ok = [bool]($lines -match "^step 3: lang=$start visible=True") }
         @{ Name = "still open after the 3rd switch, in $other"; Ok = [bool]($lines -match "^final: lang=$other visible=True") }
         @{ Name = 'the frame is mirrored exactly in Arabic'; Ok = (@($lines -match '^(step|final)' | Where-Object { ($_ -match 'lang=ar') -ne ($_ -match 'mirrored=True') }).Count -eq 0) }
-        @{ Name = 'it closed only when asked, and the process ended'; Ok = ($ended -and $lines.Count -gt 0 -and $lines[-1] -eq 'CLOSED') }
+        @{ Name = 'it closed only when asked (after the last step), and the process ended'; Ok = ($ended -and $lines.Count -ge 2 -and $lines[-1] -eq 'CLOSED' -and $lines[-2] -match '^final:') }
     )
     Write-Host "[$start] start language"
     foreach ($c in $checks) { Write-Host ('{0}  {1}' -f $(if ($c.Ok) { 'PASS' } else { 'FAIL' }), $c.Name); if (-not $c.Ok) { $worst = 1 } }

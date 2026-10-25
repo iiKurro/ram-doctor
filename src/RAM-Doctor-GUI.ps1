@@ -1154,7 +1154,10 @@ try {
     Show-Info 'Info' 'gui.info.ready.t' 'gui.info.ready.m'
     Apply-Language
     Connect-Tour
-    [void]$form.ShowDialog()
+    # Application.Run, not ShowDialog: switching the language mirrors the frame (RightToLeftLayout), which makes WinForms
+    # re-create the window. A modal loop (ShowDialog) ends when its window handle is destroyed, so the window simply
+    # vanished after a switch; the application loop knows a re-created handle is not a closed window.
+    [System.Windows.Forms.Application]::Run($form)
 }
 catch {
     $msg = $_ | Out-String
