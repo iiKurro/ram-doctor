@@ -118,6 +118,7 @@ foreach ($mod in 'CimCmdlets', 'Microsoft.PowerShell.Security') {
 }
 Mem 'modules imported'
 . (Join-Path $Root 'lib\Report.ps1')
+. (Join-Path $Root 'lib\Store.ps1')    # crash-safe output files (.tmp + rename) and the reports-folder lock
 
 # ---------------------------------------------------------------- output folder
 $desktop = [Environment]::GetFolderPath('Desktop'); if (-not $desktop) { $desktop = $env:TEMP }   # services / odd profiles have no Desktop
@@ -962,15 +963,48 @@ $data = [pscustomobject]@{
         Drivers = @($Items | Where-Object Kind -eq 'Driver').Count; Wmi = @($Items | Where-Object Kind -eq 'Wmi').Count
     }
 }
+# Keeps the reports folder small. This PC: the newest $Keep scans, and the scan just written always counts as one of them
+# (a clock that runs behind must not make it look old). Other PC names (the PC was renamed, or reports were copied here):
+# removed once they are $OtherHostDays days old. Only files that follow the exact naming scheme are ever touched.
+function Remove-OldScans([string]$Dir, [string]$HostName, [string]$CurrentStamp, [int]$Keep = 3, [int]$OtherHostDays = 30) {
+    $mine = New-Object System.Collections.ArrayList
+    $others = New-Object System.Collections.ArrayList
+    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Filter 'Plan-*.json' -File -Force -ErrorAction SilentlyContinue)) {
+        $m = [regex]::Match($f.Name, '^Plan-(.+)-(\d{8}-\d{6})\.json$')
+        if (-not $m.Success -or ($f.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        $o = [pscustomobject]@{ Host = $m.Groups[1].Value; Stamp = $m.Groups[2].Value; Time = $f.LastWriteTime }
+        if ($o.Host -ieq $HostName) { [void]$mine.Add($o) } else { [void]$others.Add($o) }
+    }
+    $old = @($mine | Where-Object { $_.Stamp -ne $CurrentStamp } | Sort-Object Stamp -Descending | Select-Object -Skip ([Math]::Max(0, $Keep - 1)))
+    $cut = (Get-Date).AddDays(-$OtherHostDays)
+    $old += @($others | Where-Object { $_.Time -lt $cut })
+    foreach ($o in $old) {
+        foreach ($n in "Plan-$($o.Host)-$($o.Stamp).json", "RAMDoctor-$($o.Host)-$($o.Stamp).html", "RAMDoctor-$($o.Host)-$($o.Stamp).json") {
+            foreach ($x in $n, "$n.bak") {
+                $fp = Join-Path $Dir $x
+                $fi = New-Object IO.FileInfo($fp)
+                if ($fi.Exists -and -not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint)) { Remove-Item -LiteralPath $fp -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+}
+
+# Two scans finishing at the same moment (two windows) must not prune each other's files or share a name.
+$outLock = Enter-StoreLock -Name (Get-StoreLockName -Prefix 'reports' -Path $OutDir) -TimeoutMs 20000
+if ($outLock.Status -eq 'Busy') { Warn 'Another scan is writing its results into the same folder; continuing without the folder lock.' }
+while ((Test-Path -LiteralPath (Join-Path $OutDir "Plan-$HostName-$Stamp.json")) -or (Test-Path -LiteralPath (Join-Path $OutDir "RAMDoctor-$HostName-$Stamp.html"))) {
+    $Stamp = ([datetime]::ParseExact($Stamp, 'yyyyMMdd-HHmmss', $Inv)).AddSeconds(1).ToString('yyyyMMdd-HHmmss', $Inv)   # never replace another scan's files
+}
 $base = "RAMDoctor-$HostName-$Stamp"
 $htmlPath = Join-Path $OutDir "$base.html"
 $jsonPath = Join-Path $OutDir "$base.json"
 $planPath = Join-Path $OutDir "Plan-$HostName-$Stamp.json"
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 # Light footprint: only two small files per scan (report ~30 KB + plan ~15 KB). The big raw JSON is optional.
-if ($KeepRawJson) { [IO.File]::WriteAllText($jsonPath, ($data | ConvertTo-Json -Depth 8), $utf8Bom) }
+# Every file is written crash-safe (<file>.tmp, flushed, then renamed): a power cut never leaves a half-written plan behind.
+if ($KeepRawJson) { try { Write-TextAtomic -Path $jsonPath -Text ($data | ConvertTo-Json -Depth 8) } catch { Warn "Raw data could not be written: $($_.Exception.Message)" } }
 Phase 'before report write'
-try { [IO.File]::WriteAllText($htmlPath, (New-RamReportHtml $data), $utf8Bom) } catch { Warn "Report generation failed: $($_.Exception.Message)" }
+try { Write-TextAtomic -Path $htmlPath -Text (New-RamReportHtml $data) } catch { Warn "Report generation failed: $($_.Exception.Message)" }
 Phase 'after html'
 $peakMB = 0; $peakCommitMB = 0   # measured AFTER the heaviest step
 try { $me = [Diagnostics.Process]::GetCurrentProcess(); $peakMB = [int][math]::Round($me.PeakWorkingSet64 / 1MB); $peakCommitMB = [int][math]::Round($me.PeakPagedMemorySize64 / 1MB) } catch { }
@@ -979,18 +1013,13 @@ $plan = [pscustomobject]@{
     verdict = $verdict; observations = @($data.Observations); memory = $memory; suspects = @($suspectOut)
     scan = [pscustomobject]@{ durationSec = [int][math]::Round(((Get-Date) - $t0).TotalSeconds); peakWorkingSetMB = $peakMB; peakCommitMB = $peakCommitMB; sampleSeconds = [int]$windowSec }   # additive, informational
 }
-[IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 8), $utf8Bom)
+$planOk = $true
+try { Write-JsonAtomic -Path $planPath -Object $plan -Schema 1 -Depth 12 }   # schema 1 = the plan format since 1.0.0 (plus additive fields)
+catch { $planOk = $false; Warn "The plan could not be written: $($_.Exception.Message)" }
 Phase 'after plan'
 # keep only the 3 newest scans of this PC, so reports never pile up (exact host match: host "PC" must not eat files of host "PC-2")
-try {
-    $planRx = '^Plan-' + [regex]::Escape($HostName) + '-(\d{8}-\d{6})$'
-    $old = @(Get-ChildItem -LiteralPath $OutDir -Filter 'Plan-*.json' -File | Where-Object { $_.BaseName -match $planRx } | Sort-Object Name -Descending | Select-Object -Skip 3)
-    foreach ($f in $old) {
-        $stampOld = ([regex]::Match($f.BaseName, $planRx)).Groups[1].Value
-        foreach ($n in $f.Name, "RAMDoctor-$HostName-$stampOld.html", "RAMDoctor-$HostName-$stampOld.json") { Remove-Item -LiteralPath (Join-Path $OutDir $n) -Force -ErrorAction SilentlyContinue }
-    }
-} catch { }
-
+if ($planOk) { try { Remove-OldScans -Dir $OutDir -HostName $HostName -CurrentStamp $Stamp } catch { } }
+Exit-StoreLock $outLock
 Write-Host ''
 Write-Host '================ RESULT ================' -ForegroundColor Cyan
 Write-Host ("Memory: used {0} GB of {1} GB | NonPaged {2} GB | Paged {3} GB | unaccounted {4} GB" -f $memory.UsedGB, $memory.TotalGB, $memory.NonPagedGB, $memory.PagedGB, $memory.UnaccountedGB)
@@ -999,4 +1028,7 @@ Write-Host "Report : $htmlPath"
 Write-Host "Plan   : $planPath   (read by the Quarantine step; nothing has been changed)"
 Write-Host ("Tool footprint: peak working set {0} MB, peak commit {1} MB, scan took {2} s" -f $peakMB, $peakCommitMB, [int][math]::Round(((Get-Date) - $t0).TotalSeconds))
 Write-Host '========================================' -ForegroundColor Cyan
+# machine-readable for the window (ASCII only): it builds the file names from its own PC name and this stamp
+if ($planOk) { Write-Host "SCAN_STAMP: $Stamp" } else { Write-Host 'SCAN_STAMP: none' }
 if (-not $NoOpen) { try { Start-Process -FilePath $htmlPath } catch { } }
+if (-not $planOk) { exit 1 }
