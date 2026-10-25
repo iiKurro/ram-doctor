@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   READ-ONLY. Collects memory / kernel pool / process / startup / driver evidence, writes an HTML
-  report (Arabic) + a JSON action plan. It never kills, deletes or changes anything.
+  report (Arabic or English, see -Lang) + a JSON action plan. It never kills, deletes or changes anything.
   Acting on the findings is a separate, explicit step: RAM-Doctor-Actions.ps1.
   The tool makes no network connections and nothing is sent anywhere.
 
@@ -14,6 +14,10 @@
     Plan-<PC>-<stamp>.json        the action plan read by RAM-Doctor-Actions.ps1 and the GUI
                                   (schema: verdict, observations, memory, suspects, created, host, report - only ever ADD fields)
   -KeepRawJson additionally writes the full raw data as RAMDoctor-<PC>-<stamp>.json.
+
+  Language: every text the scan produces (observations, verdict, reasons, the report) is written in ONE language,
+  chosen with -Lang ar|en and otherwise from the Windows UI language (Arabic -> ar, everything else -> en). The
+  plan gets an additive "lang" field. All strings live in lib\Strings.ps1. Console output is always English ASCII.
 
   Designed for PCs that are short of RAM: no big collections are kept, files are hashed only for suspects,
   and the peak working set of this process is printed at the end.
@@ -27,7 +31,8 @@ param(
     [string]$OutDir = '',
     [switch]$NoOpen,
     [switch]$KeepRawJson,           # also save the full raw data as .json (for technicians; off by default to stay light)
-    [double]$ThresholdScale = 1.0   # <1 = more sensitive (kernel-pool / unaccounted-memory alarms trigger earlier)
+    [double]$ThresholdScale = 1.0,  # <1 = more sensitive (kernel-pool / unaccounted-memory alarms trigger earlier)
+    [ValidateSet('ar', 'en')][string]$Lang   # language of the texts and the report; default = Windows UI language
 )
 
 $ErrorActionPreference = 'Continue'
@@ -42,6 +47,8 @@ $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 $WinDir = $env:SystemRoot.TrimEnd('\')
 $WinDirL = $WinDir.ToLowerInvariant()
 $Warnings = New-Object System.Collections.Generic.List[string]
+. (Join-Path $Root 'lib\Strings.ps1')   # every user-facing text (ar / en)
+Set-UiLang $Lang
 
 function Say([string]$m) { Write-Host ('[{0}] {1}' -f (Get-Date).ToString('HH:mm:ss', $Inv), $m) }
 # memory checkpoints, printed only with -Verbose (keeps the tool honest about its own footprint)
@@ -267,29 +274,29 @@ function Get-Signals {
     # A running process whose file is gone is a classic "delete after launch" trick; a dangling
     # autorun/service entry for an uninstalled program is just clutter and is not scored.
     if ($Kind -eq 'Process' -and $Path -and [IO.Path]::IsPathRooted($Path) -and $sig.Trust -eq 'Missing') {
-        & $add 'missing' 5 'عملية شغّالة وملفها غير موجود على القرص (حُذف بعد التشغيل أو يعمل من الذاكرة فقط)'
+        & $add 'missing' 5 (Get-Text 'sig.missing')
     }
-    if ($sig.Trust -eq 'Unsigned') { & $add 'unsigned' 2 'الملف غير موقّع رقميًا' }
-    if ($sig.Trust -eq 'Untrusted') { & $add 'untrusted' 3 "توقيع الملف غير موثوق ($($sig.Status))" }
-    if ($sig.Trust -eq 'Tampered') { & $add 'tampered' 8 'توقيع الملف لا يطابق محتواه (الملف عُدّل بعد توقيعه)' }
+    if ($sig.Trust -eq 'Unsigned') { & $add 'unsigned' 2 (Get-Text 'sig.unsigned') }
+    if ($sig.Trust -eq 'Untrusted') { & $add 'untrusted' 3 (Get-Text 'sig.untrusted' $sig.Status) }
+    if ($sig.Trust -eq 'Tampered') { & $add 'tampered' 8 (Get-Text 'sig.tampered') }
     if ($weak -and $sig.Trust -ne 'Missing' -and $zone -in 'Temp', 'Public', 'Downloads') {
-        & $add 'zone' 3 "يعمل من مجلد مؤقت/عام ($zone) وليس من مجلد تثبيت"
+        & $add 'zone' 3 (Get-Text 'sig.zone.temp' $zone)
     } elseif ($weak -and $sig.Trust -ne 'Missing' -and $zone -in 'AppData', 'ProgramData') {
-        & $add 'zone' 2 "يعمل من مجلد بيانات المستخدم ($zone) وليس من Program Files"
+        & $add 'zone' 2 (Get-Text 'sig.zone.data' $zone)
     } elseif ($weak -and $sig.Trust -ne 'Missing' -and $zone -eq 'UserPrograms') {
-        & $add 'zone' 1 'يعمل من مجلد برامج المستخدم (AppData\Local\Programs)'
+        & $add 'zone' 1 (Get-Text 'sig.zone.userprog')
     } elseif ($sig.Trust -eq 'Signed' -and $zone -in 'Temp', 'Public') {
-        & $add 'zone' 2 "ملف موقّع لكنه يعمل من مجلد مؤقت ($zone)"
+        & $add 'zone' 2 (Get-Text 'sig.zone.signedtemp' $zone)
     }
-    if ($weak -and $leaf -and (Test-RandomName $leaf)) { & $add 'random' 2 'اسم الملف يبدو عشوائيًا' }
-    if ($weak -and $sig.Trust -ne 'Missing' -and (Get-HasVersionInfo $Path)) { & $add 'verinfo' -1 'يحمل معلومات إصدار كاملة (شركة/منتج/وصف) - يخفف الشبهة قليلًا' }
+    if ($weak -and $leaf -and (Test-RandomName $leaf)) { & $add 'random' 2 (Get-Text 'sig.random') }
+    if ($weak -and $sig.Trust -ne 'Missing' -and (Get-HasVersionInfo $Path)) { & $add 'verinfo' -1 (Get-Text 'sig.verinfo') }
 
     # '\' matters: "C:\Windows Update\svchost.exe" or "C:\Windows.old\..." must NOT count as inside C:\Windows
     if (-not $trusted -and $base -in $CriticalNames -and $Path -and -not $Path.StartsWith($WinDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        & $add 'masq' 8 "اسمه ($leaf) يطابق عملية نظام لكنه خارج مجلد ويندوز - انتحال شائع للبرمجيات الخبيثة"
+        & $add 'masq' 8 (Get-Text 'sig.masq' $leaf)
     } elseif (-not $trusted -and $base.Length -ge 5) {
         foreach ($c in $CriticalNames) {
-            if ($c.Length -ge 5 -and (Test-OneEdit $base $c)) { & $add 'lookalike' 7 "اسمه ($leaf) يشبه عملية النظام $c بفارق حرف واحد"; break }
+            if ($c.Length -ge 5 -and (Test-OneEdit $base $c)) { & $add 'lookalike' 7 (Get-Text 'sig.lookalike' $leaf $c); break }
         }
     }
 
@@ -298,11 +305,11 @@ function Get-Signals {
         # weighs less than the same command wired into startup (task / autorun / service / WMI).
         $running = ($Kind -eq 'Process')
         $hostIsScripter = ($base -in $Scripters)
-        if ($Cmd -match $MinerRegex) { & $add 'miner' 8 'سطر الأوامر يحتوي مؤشرات تعدين عملات رقمية (Miner)' }
-        if ($Cmd -match $EncodedRegex) { & $add 'encoded' $(if ($running) { 3 } else { 6 }) 'سطر الأوامر مشفّر أو يحمّل ويشغّل كودًا (PowerShell مشفّر / Download cradle)' }
-        if ($Cmd -match $LolbinRegex) { & $add 'lolbin' $(if ($running) { 6 } else { 7 }) 'استخدام أداة نظام لتحميل/تشغيل كود من الإنترنت' }
-        if ($hostIsScripter -and $Cmd -match 'https?://') { & $add 'urlcmd' $(if ($running) { 1 } else { 3 }) 'أداة سكربت تتصل برابط إنترنت في سطر أوامرها' }
-        if ($hostIsScripter -and $Cmd -match '(?i)\\(temp|appdata|programdata|users\\public)\\') { & $add 'argpath' $(if ($running) { 1 } else { 3 }) 'أداة سكربت تشغّل ملفًا من مجلد مؤقت/AppData' }
+        if ($Cmd -match $MinerRegex) { & $add 'miner' 8 (Get-Text 'sig.miner') }
+        if ($Cmd -match $EncodedRegex) { & $add 'encoded' $(if ($running) { 3 } else { 6 }) (Get-Text 'sig.encoded') }
+        if ($Cmd -match $LolbinRegex) { & $add 'lolbin' $(if ($running) { 6 } else { 7 }) (Get-Text 'sig.lolbin') }
+        if ($hostIsScripter -and $Cmd -match 'https?://') { & $add 'urlcmd' $(if ($running) { 1 } else { 3 }) (Get-Text 'sig.urlcmd') }
+        if ($hostIsScripter -and $Cmd -match '(?i)\\(temp|appdata|programdata|users\\public)\\') { & $add 'argpath' $(if ($running) { 1 } else { 3 }) (Get-Text 'sig.argpath') }
     }
     return [pscustomobject]@{ Signals = $sigs; Sig = $sig; Zone = $zone }
 }
@@ -353,23 +360,14 @@ function Get-PoolSnapshot {
     } catch { return $null }
 }
 
-$KnownTags = @{
-    'File' = 'كائنات الملفات (File objects) - نواة ويندوز'
-    'MmCa' = 'ملفات معيّنة في الذاكرة (Mapped files / control areas) - نواة ويندوز'
-    'Thre' = 'كائنات الخيوط (Threads) - نواة ويندوز'
-    'Proc' = 'كائنات العمليات (Processes) - نواة ويندوز'
-    'Toke' = 'رموز الأمان (Tokens) - نواة ويندوز'
-    'ALPC' = 'منافذ ALPC للتواصل بين العمليات - نواة ويندوز'
-    'Even' = 'كائنات الأحداث (Events) - نواة ويندوز'
-    'EtwB' = 'مخازن ETW لتتبّع الأحداث - نواة ويندوز'
-    'Irp ' = 'حزم طلبات الإدخال/الإخراج (IRP) - نواة ويندوز'
-    'Mdl ' = 'واصفات الذاكرة (MDL) - نواة ويندوز'
-    'Cont' = 'ذاكرة فيزيائية متجاورة محجوزة (غالبًا تعريف أجهزة)'
-    'NVRM' = 'تعريف NVIDIA للشاشة (nvlddmkm.sys)'
-    'smNp' = 'مدير المخزن / ضغط الذاكرة (Store Manager) - نواة ويندوز'
-    'smCB' = 'مدير المخزن / ضغط الذاكرة (Store Manager) - نواة ويندوز'
-    'smBt' = 'مدير المخزن / ضغط الذاكرة (Store Manager) - نواة ويندوز'
+# pool tag -> string-table key of its description (lib\Strings.ps1); the text is looked up in the scan language
+$KnownTagKeys = @{
+    'File' = 'tag.file'; 'MmCa' = 'tag.mmca'; 'Thre' = 'tag.thre'; 'Proc' = 'tag.proc'; 'Toke' = 'tag.toke'; 'ALPC' = 'tag.alpc'
+    'Even' = 'tag.even'; 'EtwB' = 'tag.etwb'; 'Irp ' = 'tag.irp'; 'Mdl ' = 'tag.mdl'; 'Cont' = 'tag.cont'; 'NVRM' = 'tag.nvrm'
+    'smNp' = 'tag.store'; 'smCB' = 'tag.store'; 'smBt' = 'tag.store'
 }
+$KnownTags = @{}
+foreach ($tagName in $KnownTagKeys.Keys) { $KnownTags[$tagName] = Get-Text $KnownTagKeys[$tagName] }
 
 # ---------------------------------------------------------------- snapshot #1
 Phase 'start'
@@ -609,27 +607,27 @@ foreach ($it in $Items) {
     if ($it.Kind -eq 'Process') {
         $ln = $it.Name.ToLowerInvariant(); $pn = $it.ParentName.ToLowerInvariant()
         if ($ln -eq 'svchost.exe' -and $pn -and $pn -ne 'services.exe') {
-            [void]$extra.Add([pscustomobject]@{ Key = 'parent'; Points = 6; Text = "svchost.exe أبوه $($it.ParentName) وليس services.exe (غير طبيعي)" })
+            [void]$extra.Add([pscustomobject]@{ Key = 'parent'; Points = 6; Text = (Get-Text 'sig.parent.svchost' $it.ParentName) })
         }
         if (($ln -eq 'lsass.exe' -or $ln -eq 'services.exe') -and $pn -and $pn -ne 'wininit.exe') {
-            [void]$extra.Add([pscustomobject]@{ Key = 'parent'; Points = 6; Text = "$($it.Name) أبوه $($it.ParentName) وليس wininit.exe (غير طبيعي)" })
+            [void]$extra.Add([pscustomobject]@{ Key = 'parent'; Points = 6; Text = (Get-Text 'sig.parent.wininit' $it.Name $it.ParentName) })
         }
         if ($ln -eq 'lsass.exe' -and $lsassCount -gt 1) {
-            [void]$extra.Add([pscustomobject]@{ Key = 'dup'; Points = 8; Text = "يوجد $lsassCount نسخ من lsass.exe (يجب أن تكون نسخة واحدة)" })
+            [void]$extra.Add([pscustomobject]@{ Key = 'dup'; Points = 8; Text = (Get-Text 'sig.dup' $lsassCount) })
         }
         if ($it.Net) {
             foreach ($n in $it.Net) {
                 if ($MiningPorts -contains $n.Port) {
-                    [void]$extra.Add([pscustomobject]@{ Key = 'netmine'; Points = 6; Text = "اتصال بمنفذ شائع لمجمّعات التعدين ($($n.Remote):$($n.Port))" }); break
+                    [void]$extra.Add([pscustomobject]@{ Key = 'netmine'; Points = 6; Text = (Get-Text 'sig.netmine' "$($n.Remote):$($n.Port)") }); break
                 }
             }
             if ($r.Sig.Trust -in 'Unsigned', 'Untrusted', 'Tampered') {
-                [void]$extra.Add([pscustomobject]@{ Key = 'netunsigned'; Points = 1; Text = 'برنامج غير موثوق التوقيع لديه اتصال نشط بالإنترنت' })
+                [void]$extra.Add([pscustomobject]@{ Key = 'netunsigned'; Points = 1; Text = (Get-Text 'sig.netunsigned') })
             }
         }
     }
     if ($it.Kind -eq 'Wmi') {
-        [void]$extra.Add([pscustomobject]@{ Key = 'wmi'; Points = 6; Text = "اشتراك WMI دائم ($($it.WmiClass)) ينفّذ أوامر - أسلوب إخفاء معروف لا يظهر في قوائم التشغيل" })
+        [void]$extra.Add([pscustomobject]@{ Key = 'wmi'; Points = 6; Text = (Get-Text 'sig.wmi' $it.WmiClass) })
     }
     if ($it.Kind -eq 'Process' -and -not $it.Path -and $PseudoProcs -contains $it.Name) {
         $r.Sig = [pscustomobject]@{ Status = 'Internal'; Publisher = 'Windows kernel'; Trust = 'OS' }   # kernel-internal pseudo processes have no file
@@ -663,7 +661,7 @@ foreach ($it in $Items) {
         $it.PrivWS = [int64]$b.WorkingSetPrivate; $it.WS = [int64]$b.WorkingSet
         $it.PrivBytes = [int64]$b.PrivateBytes; $it.Handles = [int]$b.HandleCount
         if ($it.Growth -ge 200MB -and $it.Sig.Trust -notin 'OS', 'MS' -and -not $selfChain.ContainsKey($it.Pid)) {
-            [void]$it.Signals.Add([pscustomobject]@{ Key = 'growth'; Points = 2; Text = "حجم ذاكرته الخاصة زاد $(ToMB $it.Growth) MB خلال فترة الفحص" })
+            [void]$it.Signals.Add([pscustomobject]@{ Key = 'growth'; Points = 2; Text = (Get-Text 'sig.growth' (ToMB $it.Growth)) })
         }
     }
 }
@@ -689,7 +687,7 @@ foreach ($key in $groups.Keys) {
     foreach ($m in $members) { foreach ($s in $m.Signals) { if (-not $merged.ContainsKey($s.Key) -or $merged[$s.Key].Points -lt $s.Points) { $merged[$s.Key] = $s } } }
     $score = ($merged.Values | Measure-Object Points -Sum).Sum
     $hasPersist = @($members | Where-Object { $persistKinds -contains $_.Kind }).Count -gt 0
-    if ($hasPersist -and $score -ge 4) { $score += 1; $merged['persist'] = [pscustomobject]@{ Key = 'persist'; Points = 1; Text = 'مضبوط على التشغيل التلقائي (خدمة / مهمة مجدولة / تشغيل عند الإقلاع) فيعود بعد إعادة التشغيل' } }
+    if ($hasPersist -and $score -ge 4) { $score += 1; $merged['persist'] = [pscustomobject]@{ Key = 'persist'; Points = 1; Text = (Get-Text 'sig.persist') } }
     if ($score -lt 3) { continue }
     $risk = if ($score -ge 8) { 'High' } elseif ($score -ge 5) { 'Medium' } else { 'Low' }
     $first = $members[0]
@@ -854,22 +852,22 @@ Phase 'after evidence'
 $anomalies = New-Object System.Collections.ArrayList
 try {
     $wl = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction Stop
-    if ($wl.Shell -and $wl.Shell -ne 'explorer.exe') { [void]$anomalies.Add([pscustomobject]@{ Level = 'high'; Title = 'قيمة Winlogon\Shell معدّلة'; Detail = "القيمة الحالية: $($wl.Shell) (الطبيعي: explorer.exe)" }) }
-    if ($wl.Userinit -and $wl.Userinit.TrimEnd(',') -ine "$WinDir\system32\userinit.exe") { [void]$anomalies.Add([pscustomobject]@{ Level = 'high'; Title = 'قيمة Winlogon\Userinit معدّلة'; Detail = "القيمة الحالية: $($wl.Userinit)" }) }
+    if ($wl.Shell -and $wl.Shell -ne 'explorer.exe') { [void]$anomalies.Add([pscustomobject]@{ Level = 'high'; Title = (Get-Text 'anom.shell.t'); Detail = (Get-Text 'anom.shell.d' $wl.Shell) }) }
+    if ($wl.Userinit -and $wl.Userinit.TrimEnd(',') -ine "$WinDir\system32\userinit.exe") { [void]$anomalies.Add([pscustomobject]@{ Level = 'high'; Title = (Get-Text 'anom.userinit.t'); Detail = (Get-Text 'anom.userinit.d' $wl.Userinit) }) }
 } catch { }
 try {
     $ifeo = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options' -ErrorAction Stop
     foreach ($k in $ifeo) {
         $dbg = (Get-ItemProperty -LiteralPath $k.PSPath -Name Debugger -ErrorAction SilentlyContinue).Debugger
-        if ($dbg) { [void]$anomalies.Add([pscustomobject]@{ Level = 'med'; Title = "IFEO Debugger مضبوط على $($k.PSChildName)"; Detail = "يُشغَّل بدلًا منه: $dbg (تستخدمه بعض أدوات المطوّرين لكنه أسلوب شائع لتعطيل برامج الحماية)" }) }
+        if ($dbg) { [void]$anomalies.Add([pscustomobject]@{ Level = 'med'; Title = (Get-Text 'anom.ifeo.t' $k.PSChildName); Detail = (Get-Text 'anom.ifeo.d' $dbg) }) }
     }
 } catch { }
 try {
     $aw = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows' -ErrorAction Stop
-    if ($aw.LoadAppInit_DLLs -eq 1 -and $aw.AppInit_DLLs) { [void]$anomalies.Add([pscustomobject]@{ Level = 'high'; Title = 'AppInit_DLLs مفعّل'; Detail = "يُحقن في كل برنامج: $($aw.AppInit_DLLs)" }) }
+    if ($aw.LoadAppInit_DLLs -eq 1 -and $aw.AppInit_DLLs) { [void]$anomalies.Add([pscustomobject]@{ Level = 'high'; Title = (Get-Text 'anom.appinit.t'); Detail = (Get-Text 'anom.appinit.d' $aw.AppInit_DLLs) }) }
 } catch { }
 
-# ---------------------------------------------------------------- observations + verdict (Arabic)
+# ---------------------------------------------------------------- observations + verdict (in the scan language, see lib\Strings.ps1)
 $obs = New-Object System.Collections.ArrayList
 function Add-Obs([string]$Level, [string]$Title, [string]$Body) { [void]$obs.Add([pscustomobject]@{ Level = $Level; Title = $Title; Body = $Body }) }
 $totalB = $mem2.TotalBytes
@@ -882,78 +880,79 @@ $Th = [pscustomobject]@{
 $topTag = if ($poolNon.Count -gt 0) { $poolNon[0] } else { $null }
 $topTagText = ''
 if ($topTag) {
-    $who = if ($topTag.known) { $topTag.known } elseif (@($topTag.candidates).Count -gt 0) { 'قد يتبع: ' + ((@($topTag.candidates) | ForEach-Object { $_.file }) -join '، ') } else { 'غير معروف' }
-    $topTagText = " أكبر مستهلك داخل المجمّع هو الوسم [$($topTag.tag)] بحجم $($topTag.mb) MB ($who)."
+    $who = if ($topTag.known) { $topTag.known } elseif (@($topTag.candidates).Count -gt 0) { Get-Text 'obs.toptag.maybe' ((@($topTag.candidates) | ForEach-Object { $_.file }) -join (Get-Text 'sep.list')) } else { Get-Text 'obs.toptag.unknown' }
+    $topTagText = Get-Text 'obs.toptag' $topTag.tag $topTag.mb $who
 }
 if ($mem2.NonPaged -ge $Th.NppHigh) {
-    Add-Obs 'high' 'تسرّب محتمل في ذاكرة النواة (Non-paged pool)' ("حجم مجمّع الذاكرة غير المتصفّح يبلغ $(Num (ToGB $mem2.NonPaged)) GB والطبيعي أقل من نحو 1 GB. هذا أقوى مؤشر على تسرّب ذاكرة من تعريف (Driver)، ولا يُنسب في مدير المهام لأي برنامج." + $topTagText)
+    Add-Obs 'high' (Get-Text 'obs.npp.high.t') ((Get-Text 'obs.npp.high.b' (Num (ToGB $mem2.NonPaged))) + $topTagText)
 } elseif ($mem2.NonPaged -ge $Th.NppMed) {
-    Add-Obs 'med' 'ذاكرة النواة (Non-paged pool) أعلى من المعتاد' ("القيمة $(Num (ToGB $mem2.NonPaged)) GB. ليست حرجة لكنها أعلى من الطبيعي؛ راقب إن كانت تكبر مع الوقت." + $topTagText)
+    Add-Obs 'med' (Get-Text 'obs.npp.med.t') ((Get-Text 'obs.npp.med.b' (Num (ToGB $mem2.NonPaged))) + $topTagText)
 }
 if ($mem2.Paged -ge $Th.PagedHigh) {
-    Add-Obs 'high' 'تضخّم في Paged pool' "حجم Paged pool يبلغ $(Num (ToGB $mem2.Paged)) GB والطبيعي أقل من نحو 1.5 GB. يشير غالبًا لتسرّب في تعريف أو برنامج حماية أو VPN."
+    Add-Obs 'high' (Get-Text 'obs.paged.t') (Get-Text 'obs.paged.b' (Num (ToGB $mem2.Paged)))
 }
 if ($unaccounted -ge $Th.UnaccHigh) {
-    Add-Obs 'high' 'ذاكرة كبيرة خارج أي عملية' "حوالي $(Num (ToGB $unaccounted)) GB من الاستخدام لا تقع ضمن أي Working Set ولا ضمن مجمّع النواة. من أسبابها: ذاكرة محجوزة من تعريف (Driver Locked)، أو AWE، أو RAM Disk، أو عملية مخفية. افتح أداة RAMMap من Sysinternals وراجع تبويب Use Counts."
+    Add-Obs 'high' (Get-Text 'obs.unacc.high.t') (Get-Text 'obs.unacc.high.b' (Num (ToGB $unaccounted)))
 } elseif ($unaccounted -ge $Th.UnaccMed) {
-    Add-Obs 'med' 'جزء من الذاكرة غير منسوب لعمليات' "حوالي $(Num (ToGB $unaccounted)) GB خارج الـ Working Sets. قد يكون طبيعيًا (ذاكرة تعريفات/ألعاب) لكنه يستحق المتابعة عبر RAMMap."
+    Add-Obs 'med' (Get-Text 'obs.unacc.med.t') (Get-Text 'obs.unacc.med.b' (Num (ToGB $unaccounted)))
 }
 if ($allProc.Count -gt 0 -and $byProgram.Count -gt 0) {
     $topP = $byProgram[0]
     if (($topP.privMB * 1MB) -ge 0.30 * $used) {
         $lvl = if ($topP.trust -in 'OS', 'MS', 'Signed') { 'info' } else { 'med' }
-        Add-Obs $lvl "أكبر مستهلك: $($topP.name)" "البرنامج $($topP.name) ($($topP.count) عملية) يستهلك نحو $(Num ($topP.privMB / 1024)) GB من الذاكرة الخاصة، وتوقيعه: $($topP.trust)$(if ($topP.publisher) { ' - ' + $topP.publisher })."
+        $sigText = [string]$topP.trust + $(if ($topP.publisher) { ' - ' + $topP.publisher })
+        Add-Obs $lvl (Get-Text 'obs.top.t' $topP.name) (Get-Text 'obs.top.b' $topP.name $topP.count (Num ($topP.privMB / 1024)) $sigText)
     }
 }
 if ($hiddenLive.Count -gt 0) {
-    Add-Obs 'high' 'عملية حيّة مخفية عن قوائم النظام' ("وُجدت $($hiddenLive.Count) عملية تستجيب مباشرة للنواة لكنها غير ظاهرة في Get-Process ولا WMI (PID: " + (($hiddenLive | ForEach-Object { $_.Pid }) -join ', ') + '). هذا سلوك Rootkit؛ يُنصح بفحص بقرص إنقاذ (Offline) بدل الاعتماد على ويندوز نفسه.')
+    Add-Obs 'high' (Get-Text 'obs.hidden.t') (Get-Text 'obs.hidden.b' $hiddenLive.Count (($hiddenLive | ForEach-Object { $_.Pid }) -join ', '))
 }
 $zombieOdd = @($zombies | Where-Object { -not $_.IsWindowsImage })
 if ($zombieOdd.Count -gt 0) {
-    Add-Obs 'med' 'عمليات منتهية لكن النواة ما زالت تحتفظ بها' ("PIDs: " + (($zombieOdd | ForEach-Object { "$($_.Pid) [$($_.Image)]" }) -join '؛ ') + '. غالبًا برنامج يحتفظ بمقبض (Handle) لعملية انتهت، وقد يكون سبب تسرّب ذاكرة صغير.')
+    Add-Obs 'med' (Get-Text 'obs.zombie.t') (Get-Text 'obs.zombie.b' (($zombieOdd | ForEach-Object { "$($_.Pid) [$($_.Image)]" }) -join (Get-Text 'sep.semi')))
 }
 $highS = @($suspectOut | Where-Object { $_.risk -eq 'High' })
 $medS = @($suspectOut | Where-Object { $_.risk -eq 'Medium' })
 if ($highS.Count -gt 0) {
-    Add-Obs 'high' "ملفات عالية الخطورة ($($highS.Count))" ('مؤشرات متعددة اجتمعت على: ' + (($highS | ForEach-Object { $_.name }) -join '، ') + '. هذه مؤشرات وليست حكمًا نهائيًا؛ راجع التفاصيل قبل أي إجراء.')
+    Add-Obs 'high' (Get-Text 'obs.high.t' $highS.Count) (Get-Text 'obs.high.b' (($highS | ForEach-Object { $_.name }) -join (Get-Text 'sep.list')))
 }
 if ($medS.Count -gt 0) {
-    Add-Obs 'med' "ملفات متوسطة الخطورة ($($medS.Count))" ('تستحق المراجعة: ' + (($medS | Select-Object -First 8 | ForEach-Object { $_.name }) -join '، '))
+    Add-Obs 'med' (Get-Text 'obs.med.t' $medS.Count) (Get-Text 'obs.med.b' (($medS | Select-Object -First 8 | ForEach-Object { $_.name }) -join (Get-Text 'sep.list')))
 }
 foreach ($a in $anomalies) { Add-Obs $a.Level $a.Title $a.Detail }
 if ($mem2.NonPaged - $mem1.NonPaged -ge 30MB -or $mem2.Paged - $mem1.Paged -ge 30MB) {
-    Add-Obs 'high' 'التسرّب نشط الآن' "خلال $($memory.WindowSec) ثانية فقط زاد Non-paged بمقدار $($memory.NonPagedGrowthMB) MB و Paged بمقدار $($memory.PagedGrowthMB) MB. راجع جدول الوسوم (Pool tags) الأسرع نموًا."
+    Add-Obs 'high' (Get-Text 'obs.leak.t') (Get-Text 'obs.leak.b' $memory.WindowSec $memory.NonPagedGrowthMB $memory.PagedGrowthMB)
 } elseif ($topGrowers.Count -gt 0 -and $topGrowers[0].growthMB -ge 100) {
-    Add-Obs 'med' 'برنامج تتضخّم ذاكرته الآن' "$($topGrowers[0].name) (PID $($topGrowers[0].pid)) زادت ذاكرته الخاصة $($topGrowers[0].growthMB) MB خلال $($memory.WindowSec) ثانية."
+    Add-Obs 'med' (Get-Text 'obs.grower.t') (Get-Text 'obs.grower.b' $topGrowers[0].name $topGrowers[0].pid $topGrowers[0].growthMB $memory.WindowSec)
 }
 if ($mem2.Committed -ge 0.9 * $mem2.CommitLimit) {
-    Add-Obs 'med' 'قريب من حد الذاكرة الافتراضية (Commit limit)' "المحجوز $(Num (ToGB $mem2.Committed)) GB من أصل $(Num (ToGB $mem2.CommitLimit)) GB. قد تظهر رسائل نفاد الذاكرة وتتعطل برامج."
+    Add-Obs 'med' (Get-Text 'obs.commit.t') (Get-Text 'obs.commit.b' (Num (ToGB $mem2.Committed)) (Num (ToGB $mem2.CommitLimit)))
 }
 if ($sys.ReservedGB -ge 1) {
-    Add-Obs 'info' 'ذاكرة محجوزة للعتاد' "المركّب $($sys.InstalledGB) GB والمتاح لويندوز $($sys.UsableGB) GB؛ الفرق ($($sys.ReservedGB) GB) تحجزه الـ BIOS/الشاشة المدمجة وهذا طبيعي."
+    Add-Obs 'info' (Get-Text 'obs.reserved.t') (Get-Text 'obs.reserved.b' $sys.InstalledGB $sys.UsableGB $sys.ReservedGB)
 }
 if ($sys.UptimeDays -ge 7 -and $sys.FastStartup) {
-    Add-Obs 'med' 'التشغيل السريع (Fast Startup) مفعّل والجهاز شغّال منذ مدة' "مدة التشغيل $($sys.Uptime). مع Fast Startup خيار «إيقاف التشغيل» لا يصفّر النواة، فأي تسرّب يبقى بعد الإطفاء. استخدم «إعادة التشغيل» (Restart) أو عطّل Fast Startup."
+    Add-Obs 'med' (Get-Text 'obs.fast.t') (Get-Text 'obs.fast.b' $sys.Uptime)
 }
-if ($defender -and (-not $defender.RealTime)) { Add-Obs 'med' 'حماية Defender اللحظية متوقفة' 'إن لم يكن هناك برنامج حماية آخر فالجهاز غير محمي حاليًا.' }
-if ($defender -and $defender.RecentThreats.Count -gt 0) { Add-Obs 'med' 'Defender سجّل اكتشافات حديثة' ('آخر اكتشاف: ' + $defender.RecentThreats[0].resources) }
+if ($defender -and (-not $defender.RealTime)) { Add-Obs 'med' (Get-Text 'obs.defrt.t') (Get-Text 'obs.defrt.b') }
+if ($defender -and $defender.RecentThreats.Count -gt 0) { Add-Obs 'med' (Get-Text 'obs.defthreat.t') (Get-Text 'obs.defthreat.b' $defender.RecentThreats[0].resources) }
 if ($mem2.StandbyBytes -ge 0.25 * $totalB) {
-    Add-Obs 'info' 'ذاكرة التخزين المؤقت (Standby/Cached)' "حوالي $(Num (ToGB $mem2.StandbyBytes)) GB. هذي ذاكرة مُخزَّنة للتسريع ويحرّرها ويندوز فورًا عند الحاجة، فهي ليست مشكلة حتى لو ظهرت كاستخدام."
+    Add-Obs 'info' (Get-Text 'obs.standby.t') (Get-Text 'obs.standby.b' (Num (ToGB $mem2.StandbyBytes)))
 }
 
 $levels = @{ high = 3; med = 2; low = 1; info = 0 }
 $maxLevel = 0; foreach ($o in $obs) { if ($levels[$o.Level] -gt $maxLevel) { $maxLevel = $levels[$o.Level] } }
 $headline = ''
-if ($hiddenLive.Count -gt 0 -or $highS.Count -gt 0) { $headline = 'تم رصد مؤشرات تستحق التدقيق العاجل (قد تكون برمجية خبيثة)' }
-elseif ($mem2.NonPaged -ge $Th.NppMed -or $mem2.Paged -ge $Th.PagedHigh) { $headline = 'السبب الأرجح: تسرّب ذاكرة في تعريف (Driver) على مستوى النواة' }
-elseif ($unaccounted -ge $Th.UnaccMed) { $headline = 'جزء كبير من الذاكرة غير منسوب لأي عملية (ذاكرة مشتركة/محجوزة)' }
-elseif ($maxLevel -ge 2) { $headline = 'توجد ملاحظات متوسطة الخطورة، راجع القائمة' }
-else { $headline = 'لا يوجد تسرّب أو مؤشر خبيث واضح في هذه اللحظة' }
+if ($hiddenLive.Count -gt 0 -or $highS.Count -gt 0) { $headline = Get-Text 'verdict.urgent' }
+elseif ($mem2.NonPaged -ge $Th.NppMed -or $mem2.Paged -ge $Th.PagedHigh) { $headline = Get-Text 'verdict.driver' }
+elseif ($unaccounted -ge $Th.UnaccMed) { $headline = Get-Text 'verdict.unacc' }
+elseif ($maxLevel -ge 2) { $headline = Get-Text 'verdict.medium' }
+else { $headline = Get-Text 'verdict.ok' }
 $verdict = [pscustomobject]@{ Level = $(@('ok', 'low', 'med', 'high')[$maxLevel]); Headline = $headline }
 
 # ---------------------------------------------------------------- write outputs
 $data = [pscustomobject]@{
-    Tool = 'RAM-Doctor'; Version = $ToolVersion; Created = IsoDate (Get-Date); Sys = $sys; Memory = $memory; Verdict = $verdict
+    Tool = 'RAM-Doctor'; Version = $ToolVersion; Lang = (Get-UiLang); Created = IsoDate (Get-Date); Sys = $sys; Memory = $memory; Verdict = $verdict
     Observations = @($obs | Sort-Object { -$levels[$_.Level] }); TopProcesses = $topProcs; ByProgram = $byProgram; TopGrowers = $topGrowers
     PoolNonPaged = $poolNon; PoolPaged = $poolPaged; PoolGrowing = $poolGrow; PoolAvailable = [bool]$pool2
     Suspects = @($suspectOut); Drivers3p = $drivers3p; Hidden = @($hidden); Defender = $defender; Exhaustion = $exhaustion
@@ -976,7 +975,7 @@ Phase 'after html'
 $peakMB = 0; $peakCommitMB = 0   # measured AFTER the heaviest step
 try { $me = [Diagnostics.Process]::GetCurrentProcess(); $peakMB = [int][math]::Round($me.PeakWorkingSet64 / 1MB); $peakCommitMB = [int][math]::Round($me.PeakPagedMemorySize64 / 1MB) } catch { }
 $plan = [pscustomobject]@{
-    tool = 'RAM-Doctor'; version = $ToolVersion; host = $HostName; created = IsoDate (Get-Date); isAdmin = $IsAdmin; report = $htmlPath
+    tool = 'RAM-Doctor'; version = $ToolVersion; lang = (Get-UiLang); host = $HostName; created = IsoDate (Get-Date); isAdmin = $IsAdmin; report = $htmlPath
     verdict = $verdict; observations = @($data.Observations); memory = $memory; suspects = @($suspectOut)
     scan = [pscustomobject]@{ durationSec = [int][math]::Round(((Get-Date) - $t0).TotalSeconds); peakWorkingSetMB = $peakMB; peakCommitMB = $peakCommitMB; sampleSeconds = [int]$windowSec }   # additive, informational
 }
