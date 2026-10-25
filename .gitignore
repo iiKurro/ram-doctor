@@ -47,3 +47,4 @@ docs/_site/
 Thumbs.db
 desktop.ini
 .DS_Store
+server/worker/wrangler.local.toml
