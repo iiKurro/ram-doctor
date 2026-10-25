@@ -11,6 +11,7 @@ Everything is a **heuristic indicator**, not a verdict. A *High* rating means
 malware". This page is honest about what is and is not covered.
 
 Contents: [memory accounting](#memory-accounting) ·
+[driver-reserved memory](#driver-reserved-memory-pool-tag-cont) ·
 [verdict thresholds](#verdict-thresholds) ·
 [kernel pool tags](#kernel-pool-tags) ·
 [signals and weights](#signals-and-weights) ·
@@ -21,25 +22,101 @@ Contents: [memory accounting](#memory-accounting) ·
 
 ## Memory accounting
 
+The question behind the tool is "my RAM is full, why does Task Manager show
+nothing?". Task Manager's default **Memory** column shows each process's
+**private working set** only, so everything else that is in use is invisible
+there. RAM Doctor splits the memory in use into parts that add up exactly:
+
 ```
 Used        = TotalVisible - Available                 (Available = free + standby)
-SumWS       = sum of Working Set of all processes      (includes shared pages)
-SumPrivate  = sum of Private Working Set               (what Task Manager shows)
-Shared      = max(0, SumWS - SumPrivate)               (upper bound: shared pages repeat)
-Unaccounted = max(0, Used - SumWS - NonPagedPool - Modified)
+Private     = sum of Private Working Set               (what Task Manager shows)
+SharedSum   = sum of (Working Set - Private WS)        (a page counts once per process that maps it: an upper bound)
+Hidden      = Used - Private                           (what Task Manager does not show)
+  Kernel      = Non-paged pool + Paged pool resident
+  System      = System cache resident + pageable driver code resident + Modified list
+  Drivers     = driver-reserved contiguous memory      (pool tags ConT / Cont, see below)
+  Shared      = min(what is left, SharedSum)           ESTIMATE: shared memory of programs, each page once
+  Unexplained = what is left beyond SharedSum
+Unattributed = Drivers + Unexplained                   (the corrected "not attributed to any process")
+Unaccounted  = max(0, Used - SumWS - NonPagedPool - Modified)   (formula of 1.0-1.1.2, kept in the plan)
 ```
 
+Each part takes at most what is left of `Hidden`, in the order listed, so
+sampling noise (the counters are read a few milliseconds apart) can never make
+the parts add up to more than the memory in use, and no part is negative.
+
+* **Shared** is an estimate. Windows has no counter for "shared pages, each
+  counted once" (only RAMMap's page-by-page walk has that), so it is what is
+  left after everything measurable is taken out, capped by `SharedSum`. It also
+  holds small kernel structures that have no counter (page tables, kernel
+  stacks). Browsers and launchers with many processes hold most of it: the
+  consumers table shows `Working Set - Private` per program (summed over its
+  processes, so it overcounts too; it is for ranking, not adding up).
 * **Non-paged pool** and **paged pool** are kernel memory that belongs to no
   process. A driver leak shows up here.
-* **Unaccounted** is what is *not* inside any process working set and not
-  non-paged pool or the modified list: driver-locked memory, AWE, RAM disks,
-  hardware-reserved regions, or a hidden process. Earlier versions compared
-  against *private* working sets only and mis-reported large shared regions
-  (games, browsers, file cache) as "missing"; comparing against full working
-  sets avoids that false alarm.
+* **Unexplained** is what is left even if every shared page were counted once
+  per process: driver-locked pages the tag table does not record
+  (`MmAllocatePagesForMdl`), AWE, RAM disks, or a hidden process.
+* **Why the old "not attributed" said 0 on the PC that started this project.**
+  Its formula subtracted the *summed* working sets. With 30 browser processes
+  mapping the same DLLs that sum is far larger than the real shared memory, so
+  it cancelled out 2.3 GB of driver reservations: Used 18.19 GB, private 8.56,
+  `SharedSum` 9.88, non-paged 0.9, modified 0.14 gives
+  `18.19 - 18.44 - 0.9 - 0.14 < 0`, so 0. The breakdown measures the driver
+  reservations on their own: Hidden 9.63 = shared ~4.47 + drivers 2.26 +
+  kernel pools 2.07 + cache, driver code and modified 0.83 + unexplained 0.
+  `UnaccountedGB` stays in the plan for older readers; the report, the summaries
+  and the observations use the corrected values.
 * **Standby / cached** memory is reclaimable and is *not* a problem even though
-  it counts as "used" in some views.
+  it counts as "used" in some views. It is not part of `Used` above.
 * Hardware-reserved memory (installed minus usable) is reported as information.
+
+### Driver-reserved memory (pool tag `ConT`)
+
+Drivers that need physically contiguous memory (DMA buffers, graphics rings and
+frame buffers, capture and virtual-display devices) call
+`MmAllocateContiguousMemory*`. In the Windows Research Kernel sources the
+memory manager serves a small request from the non-paged pool under the tag
+`MmCm` (that memory *is* in the pool counter), and otherwise takes free pages
+straight from the physical page lists and only *records* them in the pool tag
+table with `ExInsertPoolTag` under `Cont`. Windows 10 and 11 record them under
+`ConT`. Those bytes appear in PoolMon and in the report's tag table but are not
+part of **Pool Nonpaged Bytes**, and they belong to no process, so Task Manager
+cannot show them anywhere. On the scan that started this project `ConT` held
+2310 MB while the whole non-paged pool counter was 0.9 GB, which is only
+possible because they are outside it.
+
+What counts, precisely:
+
+* The tags `ConT` and `Cont`, compared case-sensitively (pool tags are). On the
+  development PC (Windows 11, one discrete GPU) they hold 7 MB (347 live
+  blocks, about 21 KB each) and 6 MB (405 live blocks, about 16 KB each):
+  multi-page blocks, as contiguous allocations are. `MmCa` (control areas of
+  mapped files), `MmCm` and every driver's own tag are ordinary pool memory and
+  are already inside the pool counters, so they are not in this class.
+* A check against the counter (`Get-DriverReservedBytes`): when the *other*
+  non-paged tags already explain at least half of the counter, at most
+  `counter - others` of the contiguous bytes could hide inside it, so they count
+  in full (the documented case). Otherwise only the part the counter provably
+  cannot hold (`others + contiguous - counter`) counts. A Windows build that did
+  put them inside the pool is therefore never counted twice by much.
+* Without the tag table (the native helper failed) the value is unknown, not 0:
+  `DriverReservedKnown` is `false`, the report and the summaries say so, and any
+  such memory ends up in the shared estimate.
+
+The tag is written by the memory manager on behalf of whichever driver asked,
+so it **cannot name the driver** (and the byte search used for other tags would
+only find chance matches, so it is skipped for these two). The observation
+lists **candidates** honestly as candidates: the display adapters (from
+`Win32_VideoController`, trademark marks removed) and running graphics,
+capture, virtual-display or virtual-machine drivers whose file is not
+Microsoft's. The company in the file's version information decides that, not
+the signature, because graphics drivers are WHQL-signed by Microsoft. The usual
+causes and fixes: an integrated GPU that is enabled although the monitor is on
+the discrete card (disable it in the BIOS/UEFI), outdated graphics drivers,
+virtual display or capture software that is no longer used. RAMMap's
+*Use Counts* tab (row *Driver Locked*) confirms memory that drivers hold
+outside the pools.
 
 A second snapshot is taken after an observation window (default 30 s, at least
 that long since snapshot 1). Deltas are computed per process (private bytes),
@@ -55,8 +132,10 @@ for the pools, commit, used memory and per pool tag.
 | Kernel leak: non-paged pool | high | `NonPaged >= max(3 GB, 12% of R)` |
 | Non-paged pool above normal | med | `NonPaged >= max(1.5 GB, 6% of R)` |
 | Paged pool bloat | high | `Paged >= max(3 GB, 12% of R)` |
-| Large memory outside any process | high | `Unaccounted >= max(4 GB, 20% of R)` |
-| Memory partly unattributed | med | `Unaccounted >= max(2 GB, 10% of R)` |
+| A hardware driver keeps reserving memory | high | `Drivers >= 2 GB` **and** the contiguous tags grew by >= 30 MB during the window |
+| Memory reserved by a hardware driver | med | `Drivers >= 512 MB` |
+| Large memory outside any process | high | `Unexplained >= max(4 GB, 20% of R)` |
+| Memory partly unattributed | med | `Unexplained >= max(2 GB, 10% of R)` |
 | Leak is active right now | high | non-paged or paged grew >= 30 MB during the window |
 | A process is growing | med | top grower gained >= 100 MB during the window |
 | Biggest consumer | info / med | one program >= 30% of used memory (med if not signed) |
@@ -70,9 +149,34 @@ for the pools, commit, used memory and per pool tag.
 | Standby >= 25% of R | info | explains "used" memory that is reclaimable |
 | Hardware reserved >= 1 GB | info | BIOS / integrated graphics |
 
+Why these driver-reservation thresholds: contiguous allocations are normally a
+handful of DMA buffers (13 MB on the development PC), so 512 MB is far above
+normal and still catches the case that started this project (2.3 GB) as
+*medium*, worded as "memory reserved by a hardware driver, not a virus". A
+large but **stable** reservation is a driver setting or a second graphics
+adapter, not a leak, so it never becomes *high* on its size alone: that needs
+2 GB **and** growth during the window (30 MB, the same rule as the kernel-pool
+leak). `-ThresholdScale` scales 512 MB and 2 GB like the other byte thresholds.
+The "unattributed" rows use `Unexplained`, which no longer counts the kernel
+pools, the cache or the driver reservations (they have their own rows) and no
+longer hides behind double-counted shared pages.
+
 The **headline** is chosen in this order: hidden live process or any High
-suspect, then kernel-pool thresholds, then unaccounted memory, then any medium
-observation, otherwise "no clear leak or malicious indicator right now".
+suspect, then kernel-pool thresholds, then a growing driver reservation, then
+unexplained memory. Then, when no observation is High, the headline answers the
+user's real question with the two biggest parts of the memory Task Manager does
+not show (only when at least 1 GB is hidden), for example *"No leak found: most
+of the memory Task Manager does not show (9.6 GB) is shared memory of open
+programs (~4.5 GB) and memory reserved by hardware drivers (~2.3 GB)"*,
+followed by *"; other findings are listed below"* when there are medium
+findings. "No leak found" is left out while a program is growing by 100 MB or
+more during the window (the sentence then starts with "Most of the memory").
+Otherwise any medium observation, otherwise "no clear leak or malicious
+indicator right now". The verdict
+**level** is still the highest observation level, so the window's bar keeps its
+colour. Observations of the same level keep the order in which they were found:
+the memory explanations (kernel pool, driver reservation, unexplained memory)
+come before the security findings (suspicious files, Defender history).
 A scan only sees **the moment it runs**; run it while the problem is visible.
 
 ## Kernel pool tags
@@ -83,7 +187,11 @@ tag, allocations, frees and bytes in paged and non-paged pool. RAM Doctor:
 * shows the top 12 non-paged, top 6 paged, and up to 6 tags that **grew by at
   least 1 MB** during the window;
 * describes about fifteen well-known Windows tags (`File`, `MmCa`, `EtwB`,
-  `NVRM`, ...) from a built-in dictionary;
+  `NVRM`, `ConT`, ...) from a built-in dictionary (tags are compared
+  case-sensitively: `ConT` and `cont` are different tags);
+* adds the contiguous tags `ConT` / `Cont` to the
+  [driver-reserved memory](#driver-reserved-memory-pool-tag-cont), because they
+  are recorded outside the pool counters;
 * maps the remaining printable tags to **candidate drivers** by scanning the
   binaries of the running drivers for the 4 raw bytes. A tag found in more than
   8 files is reported as "too generic to attribute".
@@ -237,9 +345,14 @@ Be skeptical of a clean result in these situations:
 * **Exact attribution of a pool leak**. Tag-to-driver mapping is a heuristic.
 * **GPU/VRAM, hypervisor and container memory** beyond what shows in the
   process list (`vmmem`).
-* **Memory-type breakdown** like RAMMap's *Use Counts* (driver-locked, AWE,
-  mapped-file categories). RAM Doctor tells you the remainder exists and sends
-  you to RAMMap for the category.
+* **An exact memory-type breakdown** like RAMMap's *Use Counts*. RAM Doctor
+  separates private memory, kernel pools, cache, driver reservations recorded
+  in the pool tag table and the rest, but the shared part is an estimate, and
+  driver-locked pages that the tag table does not record (`MmAllocatePagesForMdl`,
+  AWE) are only visible as "unexplained" (or inside the shared estimate when
+  the shared working sets are large). RAMMap walks every page and settles it.
+* **Which driver** reserved contiguous memory: the tag is written by Windows
+  for the caller, so the report lists candidates only.
 * **Windows editions or locales** other than the English Windows 11 it was
   developed on are expected to work (counters are read through locale-neutral
   WMI classes) but have had less testing.
