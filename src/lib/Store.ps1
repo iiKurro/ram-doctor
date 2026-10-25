@@ -9,11 +9,13 @@
 #        original file is then unchanged and no .tmp is left behind.
 #
 #    Read-JsonSafe -Path <file> -MaxSchema <n> [-Validate { param($data) ... $true }]
-#        Never throws. Returns  Status = Ok | Missing | Recovered | Damaged | TooNew,  Data, Message
+#        Never throws. Returns  Status = Ok | Missing | Recovered | Damaged | Unreadable | TooNew,  Data, Message
 #        (plus Schema, Source = main|bak, DamagedFiles). A file that cannot be parsed is renamed to
 #        <file>.damaged-<stamp> (never deleted) and the .bak copy is used instead (Status Recovered). Missing means that
 #        no copy exists at all: while only damaged copies are left the status stays Damaged until the file is written
-#        again. TooNew (a newer version wrote it) never falls back to the older .bak and never renames anything.
+#        again. TooNew (a newer version wrote it) and Unreadable (it exists but cannot be opened right now, e.g. held by
+#        another program) never fall back to the older .bak and never rename anything; Write-JsonAtomic refuses to
+#        overwrite an Unreadable file.
 #        Files written by 1.0.x have no "schema" field: they are read as schema 1.
 #
 #    Write-TextAtomic -Path <file> -Text <text>
@@ -89,17 +91,19 @@ function Get-StoreDamagedCopies([string]$Path) {
     catch { return @() }
 }
 
-# Reads and checks ONE file. State = Ok | Missing | Damaged | TooNew. ContentBad = the bytes themselves are bad (as opposed
-# to a file that is locked or not readable right now): only such a file is renamed aside.
+# Reads and checks ONE file. State = Ok | Missing | Damaged | Unreadable | TooNew. Damaged always means the bytes themselves
+# are bad (ContentBad): only such a file is renamed aside and replaced by the .bak copy. Unreadable = it exists but cannot
+# be opened or read right now (held by another program, access denied, a folder in its place, too large): its content is
+# unknown, so it must neither be replaced by the older .bak nor be overwritten.
 function Read-StoreCandidate {
     param([string]$Path, [long]$MaxSchema, [scriptblock]$Validate)
     $c = [pscustomobject]@{ State = 'Missing'; Data = $null; Schema = 0; Reason = ''; ContentBad = $false }
-    if ([IO.Directory]::Exists($Path)) { $c.State = 'Damaged'; $c.Reason = 'is a folder, not a file'; return $c }
+    if ([IO.Directory]::Exists($Path)) { $c.State = 'Unreadable'; $c.Reason = 'is a folder, not a file'; return $c }
     if (-not [IO.File]::Exists($Path)) { return $c }
 
     $bytes = $null; $err = ''
-    for ($i = 0; $i -lt 3 -and $null -eq $bytes; $i++) {
-        if ($i -gt 0) { Start-Sleep -Milliseconds (100 * $i) }     # an antivirus scan or a writer may hold it for a moment
+    for ($i = 0; $i -lt 8 -and $null -eq $bytes; $i++) {
+        if ($i -gt 0) { Start-Sleep -Milliseconds (100 * $i) }     # an antivirus scan or a writer may hold it for a while (~3 s in all)
         $fs = $null
         try {
             $fs = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
@@ -117,7 +121,7 @@ function Read-StoreCandidate {
         }
         finally { if ($fs) { $fs.Dispose() } }
     }
-    if ($null -eq $bytes) { $c.State = 'Damaged'; $c.Reason = "could not be read ($err)"; return $c }
+    if ($null -eq $bytes) { $c.State = 'Unreadable'; $c.Reason = "could not be opened ($err)"; return $c }
 
     $c.State = 'Damaged'; $c.ContentBad = $true
     $start = 0
@@ -189,7 +193,8 @@ function Write-JsonAtomic {
     # good backup copy.
     $current = Read-StoreCandidate -Path $full -MaxSchema ([long]::MaxValue) -Validate $null
     if ($current.State -eq 'Ok' -and $current.Schema -gt $Schema) { throw "Write-JsonAtomic: '$full' was written by a newer version (schema $($current.Schema) > $Schema); it was not overwritten." }
-    if ($current.State -eq 'Damaged' -and $current.ContentBad) {
+    if ($current.State -eq 'Unreadable') { throw "Write-JsonAtomic: '$full' $($current.Reason); it was not overwritten (its content is unknown)." }
+    if ($current.State -eq 'Damaged') {
         if (-not (Move-StoreDamaged $full)) { throw "Write-JsonAtomic: '$full' is damaged and could not be set aside ($script:StoreLastError); nothing was written." }
     }
 
@@ -292,9 +297,11 @@ function Read-JsonSafe {
         $main = Read-StoreCandidate -Path $full -MaxSchema $MaxSchema -Validate $Validate
         if ($main.State -eq 'Ok') { $res.Status = 'Ok'; $res.Data = $main.Data; $res.Schema = $main.Schema; $res.Source = 'main'; return $res }
         if ($main.State -eq 'TooNew') { $res.Status = 'TooNew'; $res.Schema = $main.Schema; $res.Message = "$name $($main.Reason)."; return $res }
+        # held by another program / not accessible: its content is unknown and may be NEWER than the .bak - never fall back
+        if ($main.State -eq 'Unreadable') { $res.Status = 'Unreadable'; $res.Message = "$name $($main.Reason); try again in a moment."; return $res }
         if ($main.State -eq 'Damaged') {
             $notes.Add("$name $($main.Reason)")
-            if ($main.ContentBad) { & $setAside $full $name }
+            & $setAside $full $name
         }
 
         $bakPath = $full + '.bak'
@@ -308,10 +315,14 @@ function Read-JsonSafe {
             $res.Status = 'TooNew'; $res.Schema = $bak.Schema
             $notes.Add("the backup copy $($bak.Reason)")
         }
+        elseif ($bak.State -eq 'Unreadable') {
+            $res.Status = 'Unreadable'
+            $notes.Add("the backup copy $($bak.Reason); try again in a moment")
+        }
         elseif ($bak.State -eq 'Damaged') {
             $res.Status = 'Damaged'
             $notes.Add("the backup copy $($bak.Reason)")
-            if ($bak.ContentBad) { & $setAside $bakPath "$name.bak" }
+            & $setAside $bakPath "$name.bak"
         }
         elseif ($main.State -eq 'Missing') {
             # Damage stays visible: once both copies were set aside the file is "Damaged", not "Missing", until it is
@@ -352,13 +363,27 @@ function Get-StoreLockName {
     return $Prefix + '-' + ((@($h[0..7]) | ForEach-Object { $_.ToString('x2') }) -join '')
 }
 
+# Owners whose lock is honoured. Not elevated: any (empty list). Elevated: SYSTEM, Administrators and the default owner of
+# this process's own token. That last one is Administrators on a normal system; with UAC off or the built-in Administrator
+# under the "object creator" owner policy it is the user's own SID - every elevated RAM Doctor then creates its locks with
+# that owner, and the copies must still see each other's lock (a squatter with the same SID can then only make it wait).
+function Get-StoreLockOwners {
+    param([switch]$Elevated)
+    if (-not $Elevated) { return @() }
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($sid in 'S-1-5-18', 'S-1-5-32-544') { $list.Add($sid) }
+    try { $own = [Security.Principal.WindowsIdentity]::GetCurrent().Owner; if ($own -and -not $list.Contains($own.Value)) { $list.Add($own.Value) } } catch { }
+    return $list.ToArray()
+}
+
 function Enter-StoreLock {
     <# Takes the machine-wide mutex RAM-Doctor-<Name> and returns a handle for Exit-StoreLock:
          Status = 'Ok'   held (or Guarded = $false: no trustworthy lock could be had at all, see below); Scope = Global | Local
          Status = 'Busy' another process holds it (waited -TimeoutMs); nothing is held
        Any program can create a mutex name. When elevated, a lock whose owner is not SYSTEM / Administrators was made by a
        non-elevated program (for example malware squatting the name to block quarantine): it is ignored (Global, then
-       Local) and at worst the caller runs without a lock (Guarded = $false) instead of waiting forever.
+       Local) and at worst the caller runs without a lock (Guarded = $false) instead of waiting forever. The token's own
+       default owner is trusted too (see Get-StoreLockOwners).
        -TrustedOwners replaces that owner list (an empty list = accept any owner, the default when not elevated).
        The lock belongs to the thread: the same thread can take it again, so a WinForms DoEvents loop still needs its
        own busy flag. A process that ends without Exit-StoreLock releases it implicitly (the next holder sees Abandoned). #>
@@ -369,7 +394,7 @@ function Enter-StoreLock {
         [string[]]$TrustedOwners = @()
     )
     $trusted = @($TrustedOwners)
-    if (-not $PSBoundParameters.ContainsKey('TrustedOwners')) { $trusted = if (Test-StoreElevated) { @('S-1-5-18', 'S-1-5-32-544') } else { @() } }
+    if (-not $PSBoundParameters.ContainsKey('TrustedOwners')) { $trusted = Get-StoreLockOwners -Elevated:(Test-StoreElevated) }
     $leaf = 'RAM-Doctor-' + ($Name -replace '[^A-Za-z0-9._-]', '_')
     if ($leaf.Length -gt 200) { $leaf = $leaf.Substring(0, 200) }
     $h = [pscustomobject]@{ Status = 'Ok'; Name = $Name; Mutex = $null; Scope = ''; Guarded = $true; Abandoned = $false; Message = '' }

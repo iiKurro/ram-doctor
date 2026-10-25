@@ -418,3 +418,37 @@ Describe 'New-StorePrivateDir and Remove-StorePrivateDir' {
         [IO.File]::ReadAllText((Join-Path $victim 'precious.txt')) | Should -Be 'keep me' -Because 'a junction in place of the folder is removed as a link'
     }
 }
+
+Describe 'A file that exists but cannot be opened right now (Unreadable)' {
+    It 'is reported as Unreadable: the older .bak is NOT used, nothing is renamed, and it is never overwritten' {
+        $dir = New-CaseDir 'locked'
+        $file = Join-Path $dir 'manifest.json'
+        Write-JsonAtomic -Path $file -Object @{ ops = @('one') } -Schema 1
+        Write-JsonAtomic -Path $file -Object @{ ops = @('one', 'two') } -Schema 1
+        $before = Get-B64 $file
+        $hold = [IO.File]::Open($file, 'Open', 'Read', 'None')       # another program holds it (antivirus, backup ...)
+        try {
+            $r = Read-JsonSafe -Path $file -MaxSchema 1
+            $r.Status | Should -Be 'Unreadable'
+            $r.Data | Should -BeNullOrEmpty -Because 'the .bak (one op) is older than the file that is held (two ops)'
+            $r.Message | Should -Match 'could not be opened'
+            { Write-JsonAtomic -Path $file -Object @{ ops = @('one') } -Schema 1 } | Should -Throw '*not overwritten*'
+        }
+        finally { $hold.Dispose() }
+        Get-B64 $file | Should -Be $before
+        @(Get-Names $dir | Where-Object { $_ -like '*.damaged-*' }).Count | Should -Be 0
+        (Read-JsonSafe -Path $file -MaxSchema 1).Data.ops.Count | Should -Be 2
+    }
+}
+
+Describe 'Get-StoreLockOwners' {
+    It 'accepts any owner when not elevated, and SYSTEM, Administrators and this token''s default owner when elevated' {
+        @(Get-StoreLockOwners).Count | Should -Be 0
+        $own = [Security.Principal.WindowsIdentity]::GetCurrent().Owner.Value
+        $list = @(Get-StoreLockOwners -Elevated)
+        $list | Should -Contain 'S-1-5-18'
+        $list | Should -Contain 'S-1-5-32-544'
+        $list | Should -Contain $own -Because 'with UAC off or the "object creator" owner policy every elevated copy creates its locks with this owner'
+        @($list | Select-Object -Unique).Count | Should -Be $list.Count
+    }
+}

@@ -348,3 +348,100 @@ $b2 = Get-StoredPath $d 7 'short.exe' 'startup'
         @(Get-ChildItem -LiteralPath $c.Store -Filter 'actions-*.log').Count | Should -BeLessOrEqual 31
     }
 }
+
+Describe 'Actions: save failures, a locked record, an interrupted restore' -Tag 'Integration' {
+    BeforeAll {
+        . (Join-Path $script:Root 'src\lib\Store.ps1')
+        function Get-BatchDirs($Case) { @(Get-ChildItem -LiteralPath (Join-Path $Case.Store 'Quarantine') -Directory -ErrorAction SilentlyContinue | Sort-Object Name) }
+        function Get-ResultLine($Run) { @(($Run.StdOut -split "`r?`n") | Where-Object { $_ -like 'RESULT:*' } | Select-Object -Last 1) -join '' }
+        # Runs one mode IN-PROCESS of a child powershell (Actions dot-sourced with -LoadFunctionsOnly) with Save-Manifest
+        # replaced: saves number $From..$To fail as if the disk were full. $Extra is more code run before the mode.
+        function Invoke-WithFailingSaves($Case, [string]$Mode, [int]$From, [int]$To, [string]$Extra = '') {
+            $code = @"
+`$Plan = '$($Case.Plan)'; `$SelectIds = @(1); `$Yes = [switch]`$true; `$NoRestorePoint = [switch]`$true; `$Batch = ''
+[void](Initialize-StoreRoot)
+`$script:saveN = 0
+function Save-Manifest(`$manifest, [string]`$dir) {
+    `$script:saveN++
+    if (`$script:saveN -ge $From -and `$script:saveN -le $To) { throw 'simulated: there is not enough space on the disk' }
+    Write-JsonAtomic -Path (Join-Path `$dir 'manifest.json') -Object `$manifest -Schema `$ManifestSchema -Depth 12
+}
+$Extra
+Invoke-$($Mode)Mode
+"@
+            return (Invoke-ActionsSnippet -StoreDir $Case.Store -Code $code)
+        }
+    }
+
+    It 'the first step cannot be recorded: nothing is changed, no batch is left, RESULT: FAILED nosave' {
+        $c = New-Case 'save-begin'
+        $r = Invoke-WithFailingSaves $c 'Quarantine' 2 99      # save 1 = the empty record, save 2 = the first "pending" step
+        $r.ExitCode | Should -Be 1 -Because $r.StdOut
+        Get-ResultLine $r | Should -Be 'RESULT: FAILED nosave'
+        $r.StdOut | Should -Match 'undo record could not be saved'
+        Test-Path -LiteralPath $c.Victim | Should -BeTrue
+        @(Get-BatchDirs $c).Count | Should -Be 0
+    }
+
+    It 'a step that happened but could not be marked done stays "pending" (FAILED nosave + batch name) and Restore undoes it' {
+        $c = New-Case 'save-complete'
+        $r = Invoke-WithFailingSaves $c 'Quarantine' 3 99      # save 2 = "pending" before the move, save 3 = "done" after it
+        $r.ExitCode | Should -Be 1 -Because $r.StdOut
+        $batch = @(Get-BatchDirs $c)
+        $batch.Count | Should -Be 1
+        Get-ResultLine $r | Should -Be ("RESULT: FAILED nosave " + $batch[0].Name)
+        Test-Path -LiteralPath $c.Victim | Should -BeFalse -Because 'the move itself happened'
+        (Get-Manifest $c).entries[0].ops[0].status | Should -Be 'pending'
+        $rs = Invoke-Actions $c @('-Mode', 'Restore')
+        $rs.ExitCode | Should -Be 0 -Because $rs.StdOut
+        (Get-FileHash -LiteralPath $c.Victim -Algorithm SHA256).Hash | Should -Be $c.Sha
+    }
+
+    It 'an unexpected error is reported as FAILED error, not as a full disk' {
+        $c = New-Case 'unexpected'
+        $r = Invoke-WithFailingSaves $c 'Quarantine' 0 0 -Extra "function Get-StoredPath { throw 'simulated bug' }"
+        $r.ExitCode | Should -Be 1
+        Get-ResultLine $r | Should -Be 'RESULT: FAILED error'
+        $r.StdOut | Should -Match 'unexpected error: simulated bug'
+        Test-Path -LiteralPath $c.Victim | Should -BeTrue
+    }
+
+    It 'a record that another program holds is refused (FAILED unreadable): no .bak fallback, nothing overwritten, not "damaged"' {
+        $c = New-Case 'held'
+        (Invoke-Actions $c @('-Mode', 'Quarantine', '-Plan', $c.Plan, '-Select', '1')).ExitCode | Should -Be 0
+        $dir = @(Get-BatchDirs $c)[0].FullName
+        $mf = Join-Path $dir 'manifest.json'
+        $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($mf))
+        $hold = [IO.File]::Open($mf, 'Open', 'Read', 'None')
+        try {
+            $r = Invoke-Actions $c @('-Mode', 'Restore')
+            $r.ExitCode | Should -Be 1 -Because $r.StdOut
+            Get-ResultLine $r | Should -Be 'RESULT: FAILED unreadable'
+            $l = Invoke-Actions $c @('-Mode', 'List')
+            $l.StdOut | Should -Match '"state":"unreadable"'
+            $l.StdOut | Should -Not -Match '"state":"damaged"'
+        }
+        finally { $hold.Dispose() }
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($mf)) | Should -Be $before
+        @(Get-ChildItem -LiteralPath $dir -Filter '*.damaged-*').Count | Should -Be 0
+        Test-Path -LiteralPath $c.Victim | Should -BeFalse -Because 'nothing was restored while the record was held'
+        (Invoke-Actions $c @('-Mode', 'Restore')).ExitCode | Should -Be 0
+        Test-Path -LiteralPath $c.Victim | Should -BeTrue
+    }
+
+    It 'a restore to a ".restored" name whose record could not be updated is finished by the next run (restoringTo)' {
+        $c = New-Case 'interrupted'
+        (Invoke-Actions $c @('-Mode', 'Quarantine', '-Plan', $c.Plan, '-Select', '1')).ExitCode | Should -Be 0
+        [IO.File]::WriteAllText($c.Victim, 'a new file with the same name')   # the original path is taken: restore goes to <name>.restored
+        $r = Invoke-WithFailingSaves $c 'Restore' 2 99          # save 1 = "restoringTo" before the move; every later save fails
+        $r.ExitCode | Should -Be 3 -Because $r.StdOut
+        Get-ResultLine $r | Should -Be 'RESULT: UNSAVED'
+        $restored = $c.Victim + '.restored'
+        (Get-FileHash -LiteralPath $restored -Algorithm SHA256).Hash | Should -Be $c.Sha
+        (Get-Manifest $c).entries[0].ops[0].restoringTo | Should -Be $restored
+        $r2 = Invoke-Actions $c @('-Mode', 'Restore')
+        $r2.ExitCode | Should -Be 0 -Because $r2.StdOut
+        $r2.StdOut | Should -Match 'already put back by an earlier restore'
+        (Get-Manifest $c).restoredAt | Should -Not -BeNullOrEmpty
+    }
+}
