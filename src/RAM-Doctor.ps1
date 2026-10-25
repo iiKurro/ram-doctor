@@ -963,21 +963,18 @@ $data = [pscustomobject]@{
         Drivers = @($Items | Where-Object Kind -eq 'Driver').Count; Wmi = @($Items | Where-Object Kind -eq 'Wmi').Count
     }
 }
-# Keeps the reports folder small. This PC: the newest $Keep scans, and the scan just written always counts as one of them
-# (a clock that runs behind must not make it look old). Other PC names (the PC was renamed, or reports were copied here):
-# removed once they are $OtherHostDays days old. Only files that follow the exact naming scheme are ever touched.
-function Remove-OldScans([string]$Dir, [string]$HostName, [string]$CurrentStamp, [int]$Keep = 3, [int]$OtherHostDays = 30) {
+# Keeps the reports folder small: the newest $Keep scans of THIS PC, and the scan just written always counts as one of
+# them (a clock that runs behind must not make it look old). Scans of other PC names (copied here, or from before the PC
+# was renamed) are never touched, as in 1.0.x. Only files that follow the exact naming scheme are ever removed.
+function Remove-OldScans([string]$Dir, [string]$HostName, [string]$CurrentStamp, [int]$Keep = 3) {
     $mine = New-Object System.Collections.ArrayList
-    $others = New-Object System.Collections.ArrayList
     foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Filter 'Plan-*.json' -File -Force -ErrorAction SilentlyContinue)) {
         $m = [regex]::Match($f.Name, '^Plan-(.+)-(\d{8}-\d{6})\.json$')
         if (-not $m.Success -or ($f.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
-        $o = [pscustomobject]@{ Host = $m.Groups[1].Value; Stamp = $m.Groups[2].Value; Time = $f.LastWriteTime }
-        if ($o.Host -ieq $HostName) { [void]$mine.Add($o) } else { [void]$others.Add($o) }
+        if ($m.Groups[1].Value -ine $HostName) { continue }      # exact host match: host "PC" never eats files of host "PC-2"
+        [void]$mine.Add([pscustomobject]@{ Host = $m.Groups[1].Value; Stamp = $m.Groups[2].Value })
     }
     $old = @($mine | Where-Object { $_.Stamp -ne $CurrentStamp } | Sort-Object Stamp -Descending | Select-Object -Skip ([Math]::Max(0, $Keep - 1)))
-    $cut = (Get-Date).AddDays(-$OtherHostDays)
-    $old += @($others | Where-Object { $_.Time -lt $cut })
     foreach ($o in $old) {
         foreach ($n in "Plan-$($o.Host)-$($o.Stamp).json", "RAMDoctor-$($o.Host)-$($o.Stamp).html", "RAMDoctor-$($o.Host)-$($o.Stamp).json") {
             foreach ($x in $n, "$n.bak") {
