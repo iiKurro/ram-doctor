@@ -2,9 +2,10 @@
 #  RAM Doctor - the guided tour of the window (src/lib/Tour.ps1)
 #
 #  A short "coach marks" tour: the window is dimmed, one real control at a time is lit with an accent ring, and a small
-#  card explains it (step counter, title, one to three plain sentences, Back / Next / Skip). Keys: Enter or Space = next,
-#  Esc = leave, and the arrow that points at the Next button = next (Right in English, Left in Arabic, where the card is
-#  mirrored), the other arrow = back.
+#  card explains it (step counter, title, one to three plain sentences, Back / Next / Skip). The card has the keyboard while
+#  the tour is open: Tab moves between its buttons, Enter or Space presses the focused one (Next at first), Esc = leave, and
+#  the arrow that points at the Next button = next (Right in English, Left in Arabic, where the card is mirrored), the other
+#  arrow = back. Screen readers see the card as a dialog with its texts and buttons, and each step is announced.
 #
 #  The tour is optional and harmless: it never starts a scan, never presses anything, and saves nothing. A part that is
 #  not on screen yet (the result buttons before the first scan, for example) is explained on a card in the middle of the
@@ -14,10 +15,11 @@
 #  Pieces
 #    * pure helpers (no window): the step list, which steps apply, the card texts, key handling, card placement and
 #      scrolling. tests\Tour.Tests.ps1 covers them.
-#    * runtime: Start-Tour / Show-TourStep / Move-TourStep / Stop-Tour, the first-run banner (New-TourBanner) and
+#    * runtime: Start-Tour / Show-TourStep / Move-TourStep / Stop-Tour, the first-use offer on the ready bar (Add-TourOffer) and
 #      Connect-Tour, which RAM-Doctor-GUI.ps1 calls once. They use the window's own variables ($form, $page, $btnScan ...)
 #      and its Bind-Text / Add-Log, so they only run inside the window.
-#    * the overlay itself is Fluent.FCoach in lib\Fluent.cs (a layered window that never takes the focus).
+#    * the overlay itself is Fluent.FCoach in lib\Fluent.cs (a layered window over the window's content; when the tour
+#      closes, the keyboard focus goes back to the window).
 #
 #  Every text is a tour.* key in lib\Strings.ps1. Keep this file UTF-8 WITH BOM.
 # ==========================================================================================
@@ -301,11 +303,67 @@ function Invoke-TourKey([string]$Key) {
     }
 }
 
-function Hide-TourBanner {
-    $b = Get-TourControl 'tourBar'
-    if ($b -and $b.Visible) { $b.Visible = $false }
+# ---- first use: the window's "Ready to scan" bar also offers the tour (one calm message, not a second bar)
+$script:TourOffer = $false        # true until the user takes the tour, closes the offer or starts a scan
+$script:TourOfferUi = $null
+
+function Add-TourOffer {
+    <# Puts a "Start the tour" button and a close button on the window's result bar ($Bar). They show only on the first
+       use and only while the bar still says "Ready to scan"; the bar then also says what the tour is (Update-TourOffer). #>
+    param([Parameter(Mandatory)]$Bar, [bool]$FirstUse)
+    $go = New-Object Fluent.FButton
+    $go.Kind = 'Accent'; $go.Glyph = [string][char]0xE768; $go.Size = New-Object System.Drawing.Size(150, 34); $go.Font = [Fluent.Theme]::Semi(10)
+    $x = New-Object Fluent.FButton
+    $x.Kind = 'Subtle'; $x.Glyph = [string][char]0xE711; $x.Size = New-Object System.Drawing.Size(34, 34)
+    $go.Visible = $false; $x.Visible = $false
+    $Bar.Controls.Add($go); $Bar.Controls.Add($x)
+    Bind-Text $go 'tour.offer.go'
+    Bind-Text $x 'tour.offer.close' 'AccessibleName'
+    $script:TourOfferUi = @{ Bar = $Bar; Go = $go; Close = $x; On = $false }
+    $script:TourOffer = $FirstUse
+    $Bar.Add_Layout({ param($s, $e) try { Set-TourOfferLayout } catch { } })
+    $go.Add_Click({ Invoke-TourSafely { Start-Tour } })
+    $x.Add_Click({ Hide-TourOffer })
 }
 
+function Set-TourOfferLayout {
+    # the two buttons sit at the far end of the bar (left in Arabic), vertically centred; the text keeps clear of them
+    $ui = $script:TourOfferUi
+    if (-not $ui) { return }
+    $b = $ui.Bar; $g = $ui.Go; $c = $ui.Close
+    if (-not $ui.On) { if ($b.ReserveEnd -ne 0) { $b.ReserveEnd = 0; [void]$b.FitHeight(); $b.Invalidate() }; return }
+    $s = [Fluent.Theme]::Scale
+    $gw = [Math]::Max([int](120 * $s), $g.ContentWidth() + [int](12 * $s))
+    if ($g.Width -ne $gw) { $g.Width = $gw }
+    $edge = [int](14 * $s); $gap = [int](8 * $s)
+    $reserve = $gw + $gap + $c.Width + $edge
+    if ($b.ReserveEnd -ne $reserve) { $b.ReserveEnd = $reserve; [void]$b.FitHeight(); $b.Invalidate() }
+    $y = [int][Math]::Max(0, ($b.Height - $g.Height) / 2)
+    $yc = [int][Math]::Max(0, ($b.Height - $c.Height) / 2)
+    if ($b.RightToLeft -eq 'Yes') { $c.Location = New-Object System.Drawing.Point($edge, $yc); $g.Location = New-Object System.Drawing.Point(($edge + $c.Width + $gap), $y) }
+    else { $c.Location = New-Object System.Drawing.Point(($b.Width - $edge - $c.Width), $yc); $g.Location = New-Object System.Drawing.Point(($c.Left - $gap - $g.Width), $y) }
+}
+
+function Update-TourOffer {
+    <# Shows or hides the offer. The window calls it whenever its result bar may have changed (Show-Info, Refresh-Buttons). #>
+    $ui = $script:TourOfferUi
+    if (-not $ui) { return }
+    $mode = Get-TourControl 'infoMode'; $titleKey = Get-TourControl 'infoTitleKey'; $msgKey = Get-TourControl 'infoMsgKey'
+    $on = [bool]($script:TourOffer -and $mode -eq 'keys' -and $titleKey -eq 'gui.info.ready.t' -and -not $script:Tour)
+    $want = $(if ($on) { (Get-Text $msgKey) + "`n" + (Get-Text 'tour.offer.m') } else { $null })
+    if ($on -eq $ui.On -and (-not $on -or $ui.Bar.Message -eq $want.Replace("`n", "`r`n"))) { return }
+    $ui.On = $on
+    $ui.Go.Visible = $on; $ui.Close.Visible = $on
+    if ($on) { $ui.Bar.Message = $want }
+    elseif ($mode -eq 'keys' -and $msgKey) { $ui.Bar.Message = Get-Text $msgKey }   # back to the plain "ready" text (a result text is never touched)
+    Set-TourOfferLayout
+    [void]$ui.Bar.FitHeight()
+}
+
+function Hide-TourOffer {
+    $script:TourOffer = $false
+    Update-TourOffer
+}
 function Start-Tour {
     <# Opens the tour over the window (nothing happens when it is already open or the window is not on screen). #>
     param([int]$At = 0)
@@ -313,7 +371,7 @@ function Start-Tour {
     $form = Get-TourControl 'form'; $page = Get-TourControl 'page'
     if (-not $form -or -not $form.Visible -or -not $form.IsHandleCreated -or -not $page) { return }
     if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { return }
-    Hide-TourBanner
+    Hide-TourOffer
     $state = Get-TourState
     $o = New-Object Fluent.FCoach
     $script:Tour = [pscustomobject]@{
@@ -341,8 +399,9 @@ function Start-Tour {
     $null = $o.Handle   # the window's dpi is known from here on
     Show-TourStep $At
     if (-not $script:Tour) { return }
-    $o.Show()
+    $o.Show()   # the card takes the keyboard focus (Tab, Enter, screen readers); Stop-Tour gives it back to the window
     $o.Present()
+    $o.Activate()
     $tm = New-Object System.Windows.Forms.Timer
     $tm.Interval = 400   # follows anything that moves underneath (a scan finishing, a toast, the window being resized)
     $tm.Add_Tick({ Invoke-TourSafely { Update-TourLayout } })
@@ -357,58 +416,39 @@ function Stop-Tour {
     try { Close-TourExpanders } catch { }
     $script:Tour = $null
     try { if ($t.Timer) { $t.Timer.Stop(); $t.Timer.Dispose() } } catch { }
-    try { $o = $t.Overlay; if ($o -and -not $o.IsDisposed) { $o.Detach(); $o.Hide(); $o.Close(); $o.Dispose() } } catch { }
+    $hadFocus = $false
+    try { $o = $t.Overlay; if ($o -and -not $o.IsDisposed) { $hadFocus = $o.ContainsFocus -or ([System.Windows.Forms.Form]::ActiveForm -eq $o); $o.Detach(); $o.Hide(); $o.Close(); $o.Dispose() } } catch { }
+    try { $form = Get-TourControl 'form'; if ($hadFocus -and $form -and $form.Visible) { $form.Activate() } } catch { }   # the keyboard focus goes back where it was
     try {
         $page = Get-TourControl 'page'
         if ($page -and -not $page.IsDisposed) { $page.AutoScrollPosition = New-Object System.Drawing.Point((-$t.Scroll.X), (-$t.Scroll.Y)) }
     } catch { }
 }
 
-function New-TourBanner {
-    <# The first-run banner "New here? Take a 1-minute tour" with a Start button and a close button (built by the window). #>
-    $bar = New-Object Fluent.FInfoBar
-    $bar.Level = 'Info'
-    $go = New-Object Fluent.FButton
-    $go.Kind = 'Accent'; $go.Glyph = [string][char]0xE768; $go.Size = New-Object System.Drawing.Size(150, 34); $go.Font = [Fluent.Theme]::Semi(10)
-    $x = New-Object Fluent.FButton
-    $x.Kind = 'Subtle'; $x.Glyph = [string][char]0xE711; $x.Size = New-Object System.Drawing.Size(34, 34)
-    $bar.Controls.Add($go); $bar.Controls.Add($x)
-    Bind-Text $bar 'tour.banner.t' 'Title'
-    Bind-Text $bar 'tour.banner.m' 'Message'
-    Bind-Text $go 'tour.banner.go'
-    Bind-Text $x 'tour.banner.close' 'AccessibleName'
-    $bar.Tag = @{ Go = $go; Close = $x }
-    $bar.Add_Layout({ param($s, $e)
-            try {
-                $b = $s; $g = $b.Tag.Go; $c = $b.Tag.Close
-                $tw = [System.Windows.Forms.TextRenderer]::MeasureText($g.Text, $g.Font).Width
-                $gw = [Math]::Max(120, $tw + 18 + 8 + 30)
-                if ($g.Width -ne $gw) { $g.Width = $gw }
-                $reserve = $gw + 8 + $c.Width + 12
-                if ($b.ReserveEnd -ne $reserve) { $b.ReserveEnd = $reserve; [void]$b.FitHeight(); $b.Invalidate() }
-                $y = [int][Math]::Max(0, ($b.Height - $g.Height) / 2)
-                if ($b.RightToLeft -eq 'Yes') { $c.Location = New-Object System.Drawing.Point(12, $y); $g.Location = New-Object System.Drawing.Point((12 + $c.Width + 8), $y) }
-                else { $c.Location = New-Object System.Drawing.Point(($b.Width - 12 - $c.Width), $y); $g.Location = New-Object System.Drawing.Point(($c.Left - 8 - $g.Width), $y) }
-            } catch { }
-        })
-    $go.Add_Click({ Invoke-TourSafely { Start-Tour } })
-    $x.Add_Click({ Hide-TourBanner })
-    return $bar
+function Restore-TourFocus {
+    $t = $script:Tour
+    if (-not $t -or -not $t.Overlay -or $t.Overlay.IsDisposed) { return }
+    $form = Get-TourControl 'form'
+    if ($form) { [void]$form.BeginInvoke([Action] { try { if ($script:Tour -and -not $script:Tour.Overlay.IsDisposed) { $script:Tour.Overlay.Activate() } } catch { } }) }
 }
 
 function Connect-Tour {
-    <# Wires the tour into the window once it is built: the header button, its tooltip, the banner (hidden as soon as a
-       scan starts) and the window events the overlay follows. #>
+    <# Wires the tour into the window once it is built: the header button, its tooltip, the first-use offer (hidden as soon
+       as a scan starts) and the window events the overlay follows. #>
     $form = Get-TourControl 'form'; $btn = Get-TourControl 'btnTour'; $scan = Get-TourControl 'btnScan'
     if ($btn) {
         $btn.Add_Click({ Invoke-TourSafely { Start-Tour } })
         Bind-Text $btn 'tour.btn.tip' 'AccessibleDescription'
         $btn.Add_MouseEnter({ param($s, $e) try { $tip = Get-TourControl 'langTip'; if ($tip) { $tip.SetToolTip($s, (Get-Text 'tour.btn.tip')) } } catch { } })
     }
-    if ($scan) { $scan.Add_Click({ Hide-TourBanner }) }
+    if ($scan) { $scan.Add_Click({ Hide-TourOffer }) }
     if ($form) {
         $form.Add_Move({ if ($script:Tour) { Invoke-TourSafely { Update-TourLayout } } })
         $form.Add_Resize({ if ($script:Tour) { Invoke-TourSafely { Update-TourLayout } } })
         $form.Add_FormClosing({ if ($script:Tour) { Invoke-TourSafely { Stop-Tour } } })
+        # the card keeps the keyboard while the tour is open: after a click on the window's title bar (a drag or a resize
+        # ends first) it takes it back
+        $form.Add_Activated({ if ($script:Tour -and [System.Windows.Forms.Control]::MouseButtons -eq 'None') { Invoke-TourSafely { Restore-TourFocus } } })
+        $form.Add_ResizeEnd({ if ($script:Tour) { Invoke-TourSafely { Restore-TourFocus } } })
     }
 }

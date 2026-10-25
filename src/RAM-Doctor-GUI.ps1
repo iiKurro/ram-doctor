@@ -15,6 +15,11 @@
     -Theme Auto|Light|Dark   Auto follows the Windows app theme
     -Accent ''|default|#RRGGBB   '' = derive from the Windows accent colour, default = Windows blue
     -ShareProfileDir / -ShareEndpoint / -ShareDryRun / -ShareForceConfigured   exercise the (dormant) share UI in tests
+    -UiScale 100..400   draw the window as at that display scale (percent) on any screen: layout tests at 125-200 %
+
+  Display scaling: the process is made dpi-aware (Per-Monitor V2 where Windows has it) before any window exists, so text
+  stays sharp at 125-200 %. Sizes below are written for 96 dpi: the whole window is scaled once (Initialize-WindowScale),
+  sizes computed later go through S, and moving to a monitor with another scale re-scales it (Set-WindowDpi).
 #>
 [CmdletBinding()]
 param(
@@ -29,7 +34,8 @@ param(
     [string]$ShareEndpoint = '',
     [switch]$ShareDryRun,
     [switch]$ShareForceConfigured,
-    [ValidateSet('ar', 'en')][string]$Lang
+    [ValidateSet('ar', 'en')][string]$Lang,
+    [ValidateRange(0, 400)][int]$UiScale = 0
 )
 
 $ErrorActionPreference = 'Continue'
@@ -52,8 +58,14 @@ try {
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
     if (-not ('Fluent.Theme' -as [type])) {
-        Add-Type -ReferencedAssemblies 'System.Windows.Forms', 'System.Drawing' -Language CSharp -TypeDefinition ([IO.File]::ReadAllText((Join-Path $AppDir 'lib\Fluent.cs')))
+        Add-Type -ReferencedAssemblies 'System.Windows.Forms', 'System.Drawing', 'Accessibility' -Language CSharp -TypeDefinition ([IO.File]::ReadAllText((Join-Path $AppDir 'lib\Fluent.cs')))
     }
+
+    # ------------------------------------------------------------ display scaling (before the first window exists)
+    $script:DpiMode = [Fluent.Dpi]::Enable()
+    $script:SysDpi = [Fluent.Dpi]::ForSystem()
+    if ($UiScale -gt 0) { [Fluent.Theme]::SetDpi([int][Math]::Round(96 * $UiScale / 100.0), 96) }   # tests: any scale on any screen
+    else { [Fluent.Theme]::SetDpi($script:SysDpi, $script:SysDpi) }
 
     # ------------------------------------------------------------ theme (dark/light + Windows accent colour)
     $dark = $false
@@ -82,6 +94,7 @@ try {
     function Semi([double]$pt) { [Fluent.Theme]::Semi([single]$pt) }
     function Glyph([int]$code) { [string][char]$code }
     function Pad([int]$l, [int]$t, [int]$r, [int]$b) { New-Object System.Windows.Forms.Padding($l, $t, $r, $b) }
+    function S([double]$v) { [Fluent.Theme]::S([single]$v) }   # a 96-dpi size in device pixels (for sizes computed after start-up)
 
     function New-Tlp([int]$cols, [int]$rows, $bg) {
         $t = New-Object System.Windows.Forms.TableLayoutPanel
@@ -133,7 +146,7 @@ try {
     $hdr = New-Tlp 4 1 $cWin; $hdr.Height = 88
     Add-Col $hdr 'Absolute' 68; Add-Col $hdr 'Percent' 100; Add-Col $hdr 'Absolute' 162; Add-Col $hdr 'Absolute' 116; Add-Row $hdr 'Percent' 100
     $badge = New-Object Fluent.FBadge
-    $badge.Glyph = Glyph 0xE9D9; $badge.GlyphPx = 26; $badge.Size = New-Object System.Drawing.Size(52, 52); $badge.Radius = 13; $badge.Anchor = 'None'
+    $badge.Glyph = Glyph 0xE9D9; $badge.GlyphPx = 26; $badge.Size = New-Object System.Drawing.Size(52, 52); $badge.Radius = 13; $badge.Anchor = 'None'; Bind-Text $badge 'gui.title' 'AccessibleName'
     $tt = New-Tlp 1 2 $cWin; Add-Col $tt 'Percent' 100; Add-Row $tt 'Absolute' 48; Add-Row $tt 'Percent' 100   # the subtitle may take two lines in a narrow window
     $lblTitle = New-Lbl '' (Semi 22) $cText $cWin 'BottomLeft'; Bind-Text $lblTitle 'gui.title'
     $lblSub = New-Lbl '' (Ui 10.5) $cSub $cWin 'TopLeft'   # text: Apply-ShareVisibility (it mentions sharing only when sharing is on)
@@ -150,11 +163,6 @@ try {
     $banner.Visible = (-not $CanAct)
     Add-Block $banner 4 10
 
-    # ---- first use (no report yet): offer the tour
-    $tourBar = New-TourBanner
-    $tourBar.Visible = (Test-TourFirstRun $ReportsDir)
-    Add-Block $tourBar 4 10
-
     # ---- step 1: hero card
     $hero = New-Object Fluent.FCard
     $hero.Height = 156; $hero.Padding = Pad 22 18 22 14
@@ -167,7 +175,7 @@ try {
     $topText.Controls.Add($lblHeroT, 0, 0); $topText.Controls.Add($lblHeroD, 0, 1)
     $btnScan = New-Btn '' 'Accent' (Glyph 0xE721) 190 42; $btnScan.Anchor = 'None'; $btnScan.Font = Semi 11   # text: Refresh-Buttons
     $top.Controls.Add($topText, 0, 0); $top.Controls.Add($btnScan, 1, 0)
-    $bar = New-Object Fluent.FProgress; $bar.Dock = 'Fill'; $bar.Margin = Pad 0 2 0 2
+    $bar = New-Object Fluent.FProgress; $bar.Dock = 'Fill'; $bar.Margin = Pad 0 2 0 2; Bind-Text $bar 'gui.a11y.progress' 'AccessibleName'
     $lblStatus = New-Lbl '' (Ui 10) $cSub $cCard 'TopLeft'   # text: Set-Status
     $lblStatus.Margin = Pad 0 4 0 0
     $ht.Controls.Add($top, 0, 0); $ht.Controls.Add($bar, 0, 2); $ht.Controls.Add($lblStatus, 0, 3)
@@ -178,6 +186,7 @@ try {
     $info = New-Object Fluent.FInfoBar   # text: Show-Info / Load-Results
     $info.Level = 'Info'
     Add-Block $info 0 12
+    Add-TourOffer $info (Test-TourFirstRun $ReportsDir)   # first use (no report yet): this bar also offers the tour (lib\Tour.ps1)
 
     $toast = New-Object Fluent.FInfoBar
     $toast.Level = 'Success'; $toast.Visible = $false
@@ -202,7 +211,7 @@ try {
     $lblPick = New-Lbl '' (Ui 10) $cSub $cCard 'MiddleRight'   # text: Refresh-Buttons
     $fh.Controls.Add($lblFindT, 0, 0); $fh.Controls.Add($lblPick, 1, 0)
     $list = New-Object Fluent.FList
-    $list.Dock = 'Fill'; $list.RowHeight = 64; $list.Margin = Pad 0 0 0 0; Bind-Text $list 'gui.find.empty' 'EmptyText'
+    $list.Dock = 'Fill'; $list.RowHeight = 64; $list.Margin = Pad 0 0 0 0; Bind-Text $list 'gui.find.empty' 'EmptyText'; Bind-Text $list 'gui.find.t' 'AccessibleName'
     $fb = New-Tlp 2 1 $cCard; Add-Col $fb 'Absolute' 230; Add-Col $fb 'Percent' 100; Add-Row $fb 'Percent' 100
     $btnQ = New-Btn '' 'Accent' (Glyph 0xEA18) 214 40; $btnQ.Anchor = 'None'; Bind-Text $btnQ 'gui.btn.q'
     $lblQHint = New-Lbl '' (Ui 9.5) $cSub $cCard 'MiddleLeft'; Bind-Text $lblQHint 'gui.find.hint'
@@ -227,7 +236,7 @@ try {
     function New-SettingRow([string]$glyph, [string]$titleKey, [string]$descKey, $button) {
         $r = New-Tlp 3 1 $cCard; $r.Height = 66; $r.Margin = Pad 0 0 0 0
         Add-Col $r 'Absolute' 52; Add-Col $r 'Percent' 100; Add-Col $r 'Absolute' 176; Add-Row $r 'Percent' 100
-        $ic = New-Object Fluent.FBadge; $ic.Filled = $false; $ic.Glyph = $glyph; $ic.GlyphPx = 20; $ic.Size = New-Object System.Drawing.Size(36, 36); $ic.Anchor = 'None'
+        $ic = New-Object Fluent.FBadge; $ic.Filled = $false; $ic.Glyph = $glyph; $ic.GlyphPx = 20; $ic.Size = New-Object System.Drawing.Size(36, 36); $ic.Anchor = 'None'; $ic.Decorative = $true
         $ic.GlyphColor = [Fluent.Theme]::SubText
         $tx = New-Tlp 1 2 $cCard; Add-Col $tx 'Percent' 100; Add-Row $tx 'Percent' 50; Add-Row $tx 'Percent' 50
         $lt = New-Lbl '' (Semi 10.5) $cText $cCard 'BottomLeft'; Bind-Text $lt $titleKey
@@ -260,15 +269,15 @@ try {
     $exLog = New-Object Fluent.FExpander; $exLog.Glyph = Glyph 0xE9D9; $exLog.Dock = 'Fill'; $exLog.Margin = Pad 0 0 0 0; Bind-Text $exLog 'gui.details.t'
     $txtLog = New-Object System.Windows.Forms.TextBox
     $txtLog.Multiline = $true; $txtLog.ReadOnly = $true; $txtLog.ScrollBars = 'Vertical'; $txtLog.Dock = 'Fill'; $txtLog.BorderStyle = 'None'
-    $txtLog.Font = [Fluent.Theme]::Mono(9); $txtLog.RightToLeft = 'No'; $txtLog.BackColor = $cField; $txtLog.ForeColor = $cText; $txtLog.Margin = Pad 8 4 8 8; $txtLog.Visible = $false
+    $txtLog.Font = [Fluent.Theme]::Mono(9); $txtLog.RightToLeft = 'No'; $txtLog.BackColor = $cField; $txtLog.ForeColor = $cText; $txtLog.Margin = Pad 8 4 8 8; $txtLog.Visible = $false; Bind-Text $txtLog 'gui.details.t' 'AccessibleName'
     $dt.Controls.Add($exLog, 0, 0); $dt.Controls.Add($txtLog, 0, 1)
     $details.Controls.Add($dt)
     Add-Block $details 0 24
 
     function Resize-Cards {
-        $more.Height = 8 + 8 + 48 + $(if ($exMore.Expanded) { $moreBody.PreferredSize.Height + 4 } else { 0 })
+        $more.Height = (S 64) + $(if ($exMore.Expanded) { $moreBody.PreferredSize.Height + (S 4) } else { 0 })
         $moreBody.Visible = $exMore.Expanded
-        $details.Height = 8 + 8 + 48 + $(if ($exLog.Expanded) { 150 } else { 0 })
+        $details.Height = (S 64) + $(if ($exLog.Expanded) { S 150 } else { 0 })
         $txtLog.Visible = $exLog.Expanded
     }
     Resize-Cards
@@ -289,6 +298,7 @@ try {
     function Show-Info([string]$level, [string]$titleKey, [string]$msgKey) {
         $script:infoMode = 'keys'; $script:infoLevel = $level; $script:infoTitleKey = $titleKey; $script:infoMsgKey = $msgKey
         $info.Level = $level; $info.Title = Get-Text $titleKey; $info.Message = Get-Text $msgKey; [void]$info.FitHeight()
+        Update-TourOffer
     }
     function Get-MsgBoxOptions { if (Test-Rtl) { [System.Windows.Forms.MessageBoxOptions]'RtlReading, RightAlign' } else { [System.Windows.Forms.MessageBoxOptions]0 } }
     function Info-Box([string]$text, [string]$icon = 'Information') {
@@ -426,6 +436,7 @@ try {
         $btnPurge.Enabled = ((-not $busy) -and $CanAct -and $hasFiles)
         $btnClean.Enabled = (-not $busy)
         $btnShareDel.Enabled = ((-not $busy) -and $script:share.Configured)
+        Update-TourOffer
     }
 
     function Start-Task([string]$kind, [string[]]$psArgs, [scriptblock]$onDone) {
@@ -578,9 +589,9 @@ try {
         if ($planLang -ne (Get-UiLang)) { $hint += "`n" + (Get-Text 'gui.note.otherlang') }
         # the findings card grows with its content (1 to 3 rows), no empty space
         $rows = [math]::Min(3, [math]::Max(1, $list.Items.Count))
-        $lh = $rows * $list.RowHeight + 4
+        $lh = S ($rows * $list.RowHeight + 4)
         $ft.RowStyles[1].Height = $lh
-        $find.Height = 14 + 34 + $lh + 12 + 44 + 20
+        $find.Height = (S (14 + 34 + 12 + 44 + 20)) + $lh
         $pre = if ($previous) { Get-Text 'gui.prev' $r.Time.ToString('yyyy-MM-dd HH:mm', [Globalization.CultureInfo]::InvariantCulture) } else { '' }
         $info.Level = $lv
         $info.Title = $pre + [string]$plan.verdict.Headline
@@ -711,6 +722,11 @@ try {
         $d.Add_Shown({ [Fluent.Win]::StyleWindow($this.Handle, $dark, $cWin, $cText) })
         return $d
     }
+    function Show-Dialog($d) {   # dialogs are built at 96 dpi like the window: scale them to the current dpi, then show
+        $k = [Fluent.Theme]::Scale
+        if ([Math]::Abs($k - 1) -gt 0.001) { $d.Scale((New-Object System.Drawing.SizeF($k, $k))) }
+        return $d.ShowDialog($form)
+    }
 
     function Show-ProfileDialog {
         if ($Unattended -and $script:TestProfile) { return $script:TestProfile }
@@ -721,13 +737,13 @@ try {
         Add-Dlg (New-Lbl (Get-Text 'gui.profile.h') (Semi 15) $cText $cWin 'MiddleLeft') 38
         Add-Dlg (New-Lbl (Get-Text 'gui.profile.p') (Ui 10) $cSub $cWin 'TopLeft') 30
         Add-Dlg (New-Lbl (Get-Text 'gui.profile.user') (Semi 10) $cText $cWin 'BottomLeft') 26
-        $fu = New-Object Fluent.FField; $fu.Cue = (Get-Text 'gui.profile.cue'); $fu.MaxLen = 24
+        $fu = New-Object Fluent.FField; $fu.Cue = (Get-Text 'gui.profile.cue'); $fu.MaxLen = 24; $fu.Label = Get-Text 'gui.profile.user'
         Add-Dlg $fu 44
         $tog = New-Btn (Get-Text 'gui.profile.code.btn') 'Subtle' (Glyph 0xE70D) 190 34
         $tog.Dock = 'None'; $tog.Anchor = 'Top,Right'; $tog.Margin = Pad 0 6 0 0; $tog.Height = 34
         [void]$t.Controls.Add($tog)
         $lblCode = New-Lbl (Get-Text 'gui.profile.code.lbl') (Semi 10) $cText $cWin 'BottomLeft'; Add-Dlg $lblCode 26
-        $fc = New-Object Fluent.FField; $fc.Password = $true; Add-Dlg $fc 44
+        $fc = New-Object Fluent.FField; $fc.Password = $true; $fc.Label = Get-Text 'gui.profile.code.lbl'; Add-Dlg $fc 44
         $lblCode.Visible = $false; $fc.Visible = $false
         $lblErr = New-Lbl '' (Ui 9.5) ([Fluent.Theme]::Danger) $cWin 'MiddleLeft'
         if ($dark) { $lblErr.ForeColor = [System.Drawing.Color]::FromArgb(0xFF, 0x99, 0xA4) }
@@ -743,7 +759,7 @@ try {
                 $show = -not $fc.Visible
                 $fc.Visible = $show; $lblCode.Visible = $show
                 $tog.Glyph = $(if ($show) { Glyph 0xE70E } else { Glyph 0xE70D })
-                $d.ClientSize = New-Object System.Drawing.Size(540, $(if ($show) { 420 } else { 350 }))
+                $d.ClientSize = New-Object System.Drawing.Size((S 540), (S $(if ($show) { 420 } else { 350 })))
             })
         $ok.Add_Click({
                 $u = $fu.Value.Trim(); $c = $fc.Value.Trim()
@@ -755,7 +771,7 @@ try {
             })
         $cancel.Add_Click({ $d.DialogResult = 'Cancel' })
         $d.AcceptButton = $null
-        $res = $d.ShowDialog($form)
+        $res = Show-Dialog $d
         $val = $d.Tag
         $d.Dispose()
         if ($res -eq 'OK') { return $val } else { return $null }
@@ -775,7 +791,7 @@ try {
         foreach ($n in $names) {
             Add-Row $ct 'Percent' 33.3
             $r = New-Tlp 3 1 $cCard; Add-Col $r 'Absolute' 36; Add-Col $r 'Percent' 100; Add-Col $r 'Absolute' 90
-            $ic = New-Object Fluent.FBadge; $ic.Filled = $false; $ic.Glyph = (Glyph 0xE8A5); $ic.GlyphPx = 18; $ic.Size = New-Object System.Drawing.Size(28, 28); $ic.Anchor = 'None'; $ic.GlyphColor = $cSub
+            $ic = New-Object Fluent.FBadge; $ic.Filled = $false; $ic.Glyph = (Glyph 0xE8A5); $ic.GlyphPx = 18; $ic.Size = New-Object System.Drawing.Size(28, 28); $ic.Anchor = 'None'; $ic.GlyphColor = $cSub; $ic.Decorative = $true
             $nm = New-Lbl ($n[0] + '  (' + $n[1] + ')') (Ui 10) $cText $cCard 'MiddleLeft'
             $kb = ''; if ($previewInfo -and $previewInfo.Sizes.ContainsKey($n[1])) { $kb = ([char]0x202A).ToString() + [string]$previewInfo.Sizes[$n[1]] + ' KB' + ([char]0x202C).ToString() }   # LRE..PDF keeps "3 KB" in reading order
             $sz = New-Lbl $kb (Ui 10) $cSub $cCard 'MiddleRight'
@@ -798,7 +814,7 @@ try {
         $prev.Add_Click({ if ($previewInfo -and $previewInfo.Dir -and (Test-Path -LiteralPath $previewInfo.Dir)) { Start-Process explorer.exe -ArgumentList ('"{0}"' -f $previewInfo.Dir) } })
         $send.Add_Click({ $d.DialogResult = 'OK' })
         $cancel.Add_Click({ $d.DialogResult = 'Cancel' })
-        $res = $d.ShowDialog($form)
+        $res = Show-Dialog $d
         $inc = $chk.Checked
         $d.Dispose()
         if ($res -eq 'OK') { return @{ Include = $inc } } else { return $null }
@@ -1029,7 +1045,7 @@ try {
         $g = [System.Drawing.Graphics]::FromImage($src); $g.CopyFromScreen($r.Location, [System.Drawing.Point]::Empty, $r.Size); $g.Dispose()
         $out = New-Object System.Drawing.Bitmap($r.Width, $r.Height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
         $g2 = [System.Drawing.Graphics]::FromImage($out); $g2.SmoothingMode = 'AntiAlias'
-        $gp = [Fluent.Theme]::RoundRect((New-Object System.Drawing.RectangleF(0, 0, $r.Width, $r.Height)), 9)
+        $gp = [Fluent.Theme]::RoundRect((New-Object System.Drawing.RectangleF(0, 0, $r.Width, $r.Height)), (S 9))
         $g2.SetClip($gp); $g2.DrawImage($src, 0, 0); $g2.Dispose()
         $out.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); $out.Dispose(); $src.Dispose(); $gp.Dispose()
         $frm.TopMost = $prevTop
@@ -1068,9 +1084,46 @@ try {
         Apply-Language
     }
 
+    # ------------------------------------------------------------ display scaling
+    # Everything above is written for 96 dpi. Initialize-WindowScale scales the whole window once to the current dpi;
+    # Set-WindowDpi re-scales it when it moves to a monitor with another scale (WM_DPICHANGED, through Fluent.DpiWatcher)
+    # or opens on one. Sizes computed later (cards, findings list, dialogs) use S.
+    function Initialize-WindowScale {
+        $k = [Fluent.Theme]::Scale
+        if ([Math]::Abs($k - 1) -gt 0.001) { $form.Scale((New-Object System.Drawing.SizeF($k, $k))) }
+        Resize-Cards
+    }
+    function Set-WindowDpi([int]$dpi, $suggested) {
+        if ($UiScale -gt 0) { return }   # a scale forced for tests stays
+        $old = [Fluent.Theme]::Scale
+        [Fluent.Theme]::SetDpi($dpi, $script:SysDpi)
+        $k = [Fluent.Theme]::Scale / $old
+        if ([Math]::Abs($k - 1) -lt 0.001) { return }
+        $form.SuspendLayout()
+        try {
+            $form.Scale((New-Object System.Drawing.SizeF($k, $k)))
+            [Fluent.Theme]::RescaleFonts($form, $k)
+        } finally { $form.ResumeLayout($true) }
+        if ($suggested -and -not $suggested.IsEmpty) { $form.Bounds = $suggested }
+        Resize-Cards
+        if ($script:infoMode -eq 'results' -and $script:current) {
+            $ids = @($list.GetChecked() | ForEach-Object { [int]$_.Tag })
+            [void](Load-Results $script:current $script:currentPrev)
+            foreach ($it in $list.Items) { $it.Checked = ($ids -contains [int]$it.Tag) }
+            Refresh-Buttons
+        }
+        foreach ($b in @($info, $toast, $banner)) { [void]$b.FitHeight() }
+        $form.Invalidate($true)
+    }
+    $script:dpiWatch = New-Object Fluent.DpiWatcher
+    $script:dpiWatch.Add_Changed({ param($s, $e) Guard { Set-WindowDpi $e.Dpi $e.Suggested } })
+    $form.Add_HandleCreated({ try { $script:dpiWatch.ReleaseHandle(); $script:dpiWatch.AssignHandle($form.Handle) } catch { } })   # again after a language switch
+
     # ------------------------------------------------------------ start-up
     $form.Add_Shown({
             Guard {
+                $wd = [Fluent.Dpi]::ForWindow($form.Handle)   # it may have opened on a monitor with another scale than the main one
+                if ($wd -ne [Fluent.Theme]::Dpi -and $UiScale -le 0) { Set-WindowDpi $wd $null }
                 [Fluent.Win]::StyleWindow($form.Handle, $dark, $cWin, $cText)
                 [Fluent.Win]::SetScrollTheme($page.Handle, $dark)
                 $script:share = Read-ShareProfile
@@ -1096,6 +1149,7 @@ try {
                 }
             }
         })
+    Initialize-WindowScale
     Set-Status 'gui.status.ready' 0
     Show-Info 'Info' 'gui.info.ready.t' 'gui.info.ready.m'
     Apply-Language
