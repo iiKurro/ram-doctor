@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-25
+
+### Fixed
+
+- **Switching the language closed the window** (1.1.0 and 1.1.1). Mirroring the frame for Arabic makes Windows
+  re-create the window, and the window was shown as a modal dialog, whose loop ends when its window is destroyed. It is
+  now run with `Application.Run`, which knows a re-created window is not a closed one.
+- `tests/gui/LangSwitch.Test.ps1` (CI desktop job) switches the language the way a user does, from a click that
+  returns, and checks that the window is still open after each of three switches. The flow test missed this because
+  it drives everything from inside one handler.
+
 ## [1.1.1] - 2026-10-25
 
 ### Added
@@ -216,7 +227,8 @@ First public release.
 - Documentation, issue forms (including a false-positive form), CI and
   release workflows.
 
-[Unreleased]: https://github.com/iiKurro/ram-doctor/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/iiKurro/ram-doctor/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/iiKurro/ram-doctor/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/iiKurro/ram-doctor/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/iiKurro/ram-doctor/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/iiKurro/ram-doctor/compare/v1.0.0...v1.0.1
