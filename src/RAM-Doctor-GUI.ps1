@@ -412,7 +412,7 @@ try {
         $btnShare.Enabled = ((-not $busy) -and $has)
         $acts.Visible = $has
         $find.Visible = ($list.Items.Count -gt 0)
-        $canRestore = (@($script:batches | Where-Object { $_.state -eq 'restorable' }).Count -gt 0)
+        $canRestore = (@($script:batches | Where-Object { $_.state -eq 'restorable' -or $_.state -eq 'unreadable' }).Count -gt 0)
         $hasFiles = ((Get-QuarantinedStats).Count -gt 0)
         $btnRestore.Enabled = ((-not $busy) -and $CanAct -and $canRestore)
         $btnPurge.Enabled = ((-not $busy) -and $CanAct -and $hasFiles)
@@ -498,9 +498,12 @@ try {
         if ($err) { Add-Log ('[stderr] ' + $err.Substring(0, [Math]::Min(600, $err.Length))) }
         $script:lastOutput = $out
         $script:lastExit = $script:proc.ExitCode
-        Remove-TaskFiles @($script:outFile, $script:errFile)   # leave nothing behind in %TEMP%
-        $script:proc = $null
+        # finish the task state BEFORE deleting its files: the delete may pump window messages (retries), and nothing that
+        # runs meanwhile may see a half-finished task or take its callback
         $cb = $script:onDone; $script:onDone = $null
+        $files = @($script:outFile, $script:errFile)
+        $script:proc = $null
+        Remove-TaskFiles $files   # leave nothing behind in %TEMP%
         Refresh-Buttons
         if ($cb) { Guard $cb }
     }
@@ -530,6 +533,7 @@ try {
     # Read-JsonSafe and must never break the window.
     function Load-Results($r, [bool]$previous) {
         $rd = Read-JsonSafe -Path $r.Plan -MaxSchema 1 -Validate { param($x) $x.PSObject.Properties['verdict'] -and $x.PSObject.Properties['suspects'] }
+        $script:planReadStatus = $rd.Status
         if ($rd.Status -ne 'Ok' -and $rd.Status -ne 'Recovered') { Add-Log ("[plan] {0}: {1} {2}" -f [IO.Path]::GetFileName($r.Plan), $rd.Status, $rd.Message); return $false }
         $plan = $rd.Data
         $script:current = $r
@@ -843,6 +847,10 @@ try {
                 } elseif ($res -eq 'BUSY') {
                     Set-Status 'store.status.busy' 0
                     Info-Box (Get-Text 'store.busy.box') 'Warning'
+                } elseif ($res -like 'FAILED error*') {
+                    # stopped by an unexpected error: whatever was done is recorded and can be undone
+                    Set-Status 'gui.status.qfail' 0
+                    Info-Box (Get-Text 'store.q.error.box') 'Warning'
                 } elseif ($res -like 'FAILED nosave*') {
                     # stopped because the undo record could not be saved: whatever was done is recorded and can be undone
                     Set-Status 'gui.status.qfail' 0
@@ -917,8 +925,10 @@ try {
 
     $btnRestore.Add_Click({ Guard {
             Update-Batches   # the list printed by the actions script, newest first (by its sequence number, not the clock)
-            $b = @($script:batches | Where-Object { $_.state -eq 'restorable' }) | Select-Object -First 1
+            # the newest batch that can be undone; one whose record cannot be opened right now is NOT skipped for an older one
+            $b = @($script:batches | Where-Object { $_.state -eq 'restorable' -or $_.state -eq 'unreadable' }) | Select-Object -First 1
             if (-not $b) { Refresh-Buttons; Info-Box (Get-Text 'gui.restore.none'); return }
+            if ($b.state -eq 'unreadable') { Info-Box (Get-Text 'restore.unreadable.box') 'Warning'; return }
             if (-not (Confirm-Box (Get-Text 'gui.restore.confirm') (Get-Text 'gui.restore.title') 'Question')) { return }
             $argv = @(('"{0}"' -f $ActionsScript), '-Mode', 'Restore', '-Batch', [string]$b.name, '-Yes')
             if ($QuarantineDir) { $argv += @('-StoreDir', ('"{0}"' -f $QuarantineDir)) }
@@ -931,7 +941,9 @@ try {
                 if ($res -like 'OK*') { Set-Status 'gui.status.restored' 100; Info-Box (Get-Text 'gui.restore.done.box') }
                 elseif ($res -match '^PARTIAL\s+(\d+)') { Set-Status 'restore.status.partial' 0; Info-Box (Get-Text 'restore.partial.box' $Matches[1]) 'Warning' }
                 elseif ($res -eq 'BUSY') { Set-Status 'store.status.busy' 0; Info-Box (Get-Text 'store.busy.box') 'Warning' }
+                elseif ($res -eq 'UNSAVED') { Set-Status 'gui.status.restored' 100; Info-Box (Get-Text 'restore.unsaved.box') 'Warning' }
                 elseif ($res -match '^FAILED (damaged|orphan)') { Set-Status 'gui.status.restorefail' 0; Info-Box (Get-Text 'restore.damaged.box') 'Warning' }
+                elseif ($res -eq 'FAILED unreadable') { Set-Status 'gui.status.restorefail' 0; Info-Box (Get-Text 'restore.unreadable.box') 'Warning' }
                 elseif ($res -eq 'FAILED toonew') { Set-Status 'gui.status.restorefail' 0; Info-Box (Get-Text 'restore.toonew.box') 'Warning' }
                 else { Set-Status 'gui.status.restorefail' 0; Info-Box (Get-Text 'gui.restore.fail.box') 'Warning' }
             }
@@ -1061,7 +1073,7 @@ try {
                 $skipped = 0
                 foreach ($r in @(Get-LatestResults)) {
                     if (Load-Results $r $true) { Set-Status 'gui.status.last' 0; break }
-                    $skipped++
+                    if ($script:planReadStatus -eq 'Damaged') { $skipped++ }   # (a plan that is merely held by another program is not "damaged")
                 }
                 if ($skipped -gt 0) { Show-Toast 'Warning' (Get-Text 'store.plan.damaged.t') (Get-Text 'store.plan.damaged.m') }
                 Refresh-Buttons

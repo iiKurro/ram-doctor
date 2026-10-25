@@ -156,7 +156,8 @@ function Save-ShareProfile {
     # the invite code is OPTIONAL (only needed if the helper's relay enforces one)
     if ($Code -and -not (Test-ShareInviteCode $Code)) { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'code-invalid'); Profile = $null } }
     $state = Get-ShareProfileState -ProfileDir $ProfileDir
-    if ($state.Status -eq 'TooNew') { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'profile-write'); Profile = $null } }   # written by a newer version: never overwritten
+    # written by a newer version, or held by another program right now (its content is unknown): never overwritten
+    if ($state.Status -eq 'TooNew' -or $state.Status -eq 'Unreadable') { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'profile-write'); Profile = $null } }
     $existing = $state.Profile
     $userId = $null; $created = $null; $prot = ''
     if ($existing) {
