@@ -116,13 +116,16 @@ Describe 'Single-file builder - RELEASE variant' {
 
         It 'removes the unpack folder in a finally block and sweeps leftovers older than a day' {
             $h = Get-HeaderPieces -Bat $script:Bat
-            $h.Pieces['P6'] | Should -Match 'finally \{ if\(\$w\)\{ Remove-Item -LiteralPath \$w -Recurse'
+            $h.Pieces['P6'] | Should -Match 'finally \{ if\(\$lk\)\{ \$lk\.Dispose\(\) \}; if\(\$w\)\{ Remove-Item -LiteralPath \$w -Recurse'
             $h.Pieces['P4'] | Should -Match 'AddDays\(-1\)'
+            # a folder whose in-use.lock is still held (a copy that has been running for more than a day) is never swept
+            $h.Pieces['P4'] | Should -Match '-not \(Test-InUse \$d\.FullName\)'
+            $h.Pieces['P6'] | Should -Match '^\$lk=\[IO\.File\]::Open\(\(Join-Path \$w ''in-use\.lock''\),''OpenOrCreate'',''ReadWrite'',''Read''\);'
         }
 
         It 'starts the window with FIXED arguments: nothing from outside is appended to its command line' {
             $h = Get-HeaderPieces -Bat $script:Bat
-            $h.Pieces['P6'] | Should -Match '^\$a=''-NoProfile -ExecutionPolicy Bypass -STA -File ''\+\$q\+\$g\+\$q;'
+            $h.Pieces['P6'] | Should -Match '(^|; )\$a=''-NoProfile -ExecutionPolicy Bypass -STA -File ''\+\$q\+\$g\+\$q;'
             $h.Pieces['P6'] | Should -Not -Match '\$a=.*\$env:'
             $script:Header | Should -Not -Match '%\*|%2|%3'      # no pass-through of the command line either
         }

@@ -74,15 +74,16 @@ function New-LockedAcl($o){ $s=New-Object Security.AccessControl.DirectorySecuri
 # P3  create a folder ALREADY locked (atomic), and check a folder afterwards: not a junction, owned by SYSTEM/Administrators,
 #     inheritance off, no allow-rule for anybody else
 $P3 = @'
-function New-LockedDir($d){ try{ [void][IO.Directory]::CreateDirectory($d,(New-LockedAcl $true)) } catch { [void][IO.Directory]::CreateDirectory($d,(New-LockedAcl $false)) } }; function Test-LockedDir($d){ $i=New-Object IO.DirectoryInfo($d); if(-not $i.Exists){return $false}; if($i.Attributes -band [IO.FileAttributes]::ReparsePoint){return $false}; $a=$i.GetAccessControl(); if($trusted -notcontains $a.GetOwner([Security.Principal.SecurityIdentifier]).Value){return $false}; if(-not $a.AreAccessRulesProtected){return $false}; foreach($r in $a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){ if($r.AccessControlType -eq 'Allow' -and $trusted -notcontains $r.IdentityReference.Value){return $false} }; return $true };
+function New-LockedDir($d){ try{ [void][IO.Directory]::CreateDirectory($d,(New-LockedAcl $true)) } catch { [void][IO.Directory]::CreateDirectory($d,(New-LockedAcl $false)) } }; function Test-LockedDir($d){ $i=New-Object IO.DirectoryInfo($d); if(-not $i.Exists){return $false}; if($i.Attributes -band [IO.FileAttributes]::ReparsePoint){return $false}; $a=$i.GetAccessControl(); if($trusted -notcontains $a.GetOwner([Security.Principal.SecurityIdentifier]).Value){return $false}; if(-not $a.AreAccessRulesProtected){return $false}; foreach($r in $a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){ if($r.AccessControlType -eq 'Allow' -and $trusted -notcontains $r.IdentityReference.Value){return $false} }; return $true }; function Test-InUse($d){ $k=Join-Path $d 'in-use.lock'; if(-not (Test-Path -LiteralPath $k)){return $false}; try{ [IO.File]::Delete($k); return $false } catch { return $true } };
 '@
-# P4  pick the unpack folder (and remove leftovers older than a day); the secure folder must pass Test-LockedDir or we stop.
+# P4  pick the unpack folder (and remove leftovers older than a day, unless a running copy still holds their in-use.lock);
+#     the secure folder must pass Test-LockedDir or we stop.
 #     $secure is shared by both variants, so the test build exercises exactly the release code.
 $secure = @'
-$par=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'RAM-Doctor-run'; if(-not (Test-Path -LiteralPath $par)){ New-LockedDir $par }; if(-not (Test-LockedDir $par)){ throw 'the run folder is not locked down' }; foreach($d in Get-ChildItem -LiteralPath $par -Directory -Force){ if($d.LastWriteTime -lt $cut -and -not ($d.Attributes -band [IO.FileAttributes]::ReparsePoint)){ Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue } }; $w=Join-Path $par ([guid]::NewGuid().ToString('N')); New-LockedDir $w; if(-not (Test-LockedDir $w)){ throw 'the unpack folder is not locked down' }
+$par=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'RAM-Doctor-run'; if(-not (Test-Path -LiteralPath $par)){ New-LockedDir $par }; if(-not (Test-LockedDir $par)){ throw 'the run folder is not locked down' }; foreach($d in Get-ChildItem -LiteralPath $par -Directory -Force){ if($d.LastWriteTime -lt $cut -and -not ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) -and -not (Test-InUse $d.FullName)){ Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue } }; $w=Join-Path $par ([guid]::NewGuid().ToString('N')); New-LockedDir $w; if(-not (Test-LockedDir $w)){ throw 'the unpack folder is not locked down' }
 '@
 $tempFolder = @'
-foreach($d in Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'RAM-Doctor-run-*' -ErrorAction SilentlyContinue){ if($d.LastWriteTime -lt $cut){ Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue } }; $w=Join-Path $env:TEMP ('RAM-Doctor-run-'+[guid]::NewGuid().ToString('N').Substring(0,8)); [void][IO.Directory]::CreateDirectory($w)
+foreach($d in Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'RAM-Doctor-run-*' -ErrorAction SilentlyContinue){ if($d.LastWriteTime -lt $cut -and -not (Test-InUse $d.FullName)){ Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue } }; $w=Join-Path $env:TEMP ('RAM-Doctor-run-'+[guid]::NewGuid().ToString('N').Substring(0,8)); [void][IO.Directory]::CreateDirectory($w)
 '@
 $P4release = 'try{ $cut=(Get-Date).AddDays(-1); ' + $secure.Trim() + ';'
 $P4dev = 'try{ $cut=(Get-Date).AddDays(-1); if($env:RAMDOC_MODE -eq ''secure''){ ' + $secure.Trim() + ' } else { ' + $tempFolder.Trim() + ' };'
@@ -90,12 +91,13 @@ $P4dev = 'try{ $cut=(Get-Date).AddDays(-1); if($env:RAMDOC_MODE -eq ''secure''){
 $P5 = @'
 $t=[IO.File]::ReadAllText($env:SELF,[Text.Encoding]::UTF8); foreach($m in [regex]::Matches($t,'(?ms)^#@@FILE (.+?)\r?\n(.*?)(?=^#@@FILE |\z)')){ $p=[IO.Path]::GetFullPath((Join-Path $w $m.Groups[1].Value.Trim())); if(-not $p.StartsWith($w+'\',[StringComparison]::OrdinalIgnoreCase)){ throw 'unexpected path in the package' }; [void][IO.Directory]::CreateDirectory((Split-Path $p)); [IO.File]::WriteAllText($p,$m.Groups[2].Value,(New-Object Text.UTF8Encoding($true))) }; $g=Join-Path $w 'src\RAM-Doctor-GUI.ps1'; if(-not (Test-Path -LiteralPath $g)){ throw 'the window script is missing' };
 '@
-# P6  run the window from there and wait for it; always delete the folder afterwards
+# P6  run the window from there and wait for it, holding in-use.lock open meanwhile (so another start never sweeps a folder
+#     that is still in use, however long the window stays open); always delete the folder afterwards
 $P6release = @'
-$a='-NoProfile -ExecutionPolicy Bypass -STA -File '+$q+$g+$q; [void](Start-Process -FilePath (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $a -NoNewWindow -Wait) } catch { [Console]::Error.WriteLine('Could not unpack RAM Doctor: '+$_.Exception.Message); $rc=90 } finally { if($w){ Remove-Item -LiteralPath $w -Recurse -Force -ErrorAction SilentlyContinue } }; exit $rc
+$lk=[IO.File]::Open((Join-Path $w 'in-use.lock'),'OpenOrCreate','ReadWrite','Read'); $a='-NoProfile -ExecutionPolicy Bypass -STA -File '+$q+$g+$q; [void](Start-Process -FilePath (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $a -NoNewWindow -Wait) } catch { [Console]::Error.WriteLine('Could not unpack RAM Doctor: '+$_.Exception.Message); $rc=90 } finally { if($lk){ $lk.Dispose() }; if($w){ Remove-Item -LiteralPath $w -Recurse -Force -ErrorAction SilentlyContinue } }; exit $rc
 '@
 $P6dev = @'
-if($env:RAMDOC_UNPACK_ONLY){ [Console]::Out.WriteLine('RAMDOC-WORK='+$w) } else { $a='-NoProfile -ExecutionPolicy Bypass -STA -File '+$q+$g+$q+' '+$env:RAMDOC_GUI_ARGS; [void](Start-Process -FilePath (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $a -NoNewWindow -Wait) } } catch { [Console]::Error.WriteLine('Could not unpack RAM Doctor: '+$_.Exception.Message); $rc=90 } finally { if($w -and -not $env:RAMDOC_UNPACK_ONLY){ Remove-Item -LiteralPath $w -Recurse -Force -ErrorAction SilentlyContinue } }; exit $rc
+if($env:RAMDOC_UNPACK_ONLY){ [Console]::Out.WriteLine('RAMDOC-WORK='+$w) } else { $lk=[IO.File]::Open((Join-Path $w 'in-use.lock'),'OpenOrCreate','ReadWrite','Read'); $a='-NoProfile -ExecutionPolicy Bypass -STA -File '+$q+$g+$q+' '+$env:RAMDOC_GUI_ARGS; [void](Start-Process -FilePath (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $a -NoNewWindow -Wait) } } catch { [Console]::Error.WriteLine('Could not unpack RAM Doctor: '+$_.Exception.Message); $rc=90 } finally { if($lk){ $lk.Dispose() }; if($w -and -not $env:RAMDOC_UNPACK_ONLY){ Remove-Item -LiteralPath $w -Recurse -Force -ErrorAction SilentlyContinue } }; exit $rc
 '@
 
 function New-Header([bool]$Dev) {
@@ -146,11 +148,11 @@ function New-Header([bool]$Dev) {
     $l.Add('rem  P3  create a folder ALREADY locked (atomic, no window in which anyone else can write), and check a folder afterwards:')
     $l.Add('rem      not a junction, owned by SYSTEM/Administrators, inheritance off, no allow-rule for anybody else')
     $l.Add('set "P3=' + $P3.Trim() + '"')
-    $l.Add('rem  P4  pick the unpack folder (and remove leftovers older than a day); it must pass Test-LockedDir or we stop')
+    $l.Add('rem  P4  pick the unpack folder (and remove leftovers older than a day that no running copy holds); it must pass Test-LockedDir or we stop')
     $l.Add('set "P4=' + $(if ($Dev) { $P4dev } else { $P4release }) + '"')
     $l.Add('rem  P5  write every file found below this header into that folder (each one UTF-8 with BOM, as Windows PowerShell 5.1 needs)')
     $l.Add('set "P5=' + $P5.Trim() + '"')
-    $l.Add('rem  P6  run the window from there and wait for it; always delete the folder afterwards')
+    $l.Add('rem  P6  run the window from there and wait for it (in-use.lock stays open meanwhile); always delete the folder afterwards')
     $l.Add('set "P6=' + $(if ($Dev) { $P6dev.Trim() } else { $P6release.Trim() }) + '"')
     $l.Add('"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "%P1% %P2% %P3% %P4% %P5% %P6%"')
     $l.Add('if "%errorlevel%"=="90" goto :failed')
