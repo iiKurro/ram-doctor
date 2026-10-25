@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-25
+
 ### Added
 
 - **English interface.** The window, the HTML report, the texts the scan writes (observations, verdict, suspect reasons), the share
@@ -188,5 +190,7 @@ First public release.
 - Documentation, issue forms (including a false-positive form), CI and
   release workflows.
 
-[Unreleased]: https://github.com/iiKurro/ram-doctor/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/iiKurro/ram-doctor/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/iiKurro/ram-doctor/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/iiKurro/ram-doctor/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/iiKurro/ram-doctor/releases/tag/v1.0.0

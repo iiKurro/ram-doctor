@@ -170,7 +170,7 @@ More in [docs/architecture.md](docs/architecture.md).
 
 | Where | What | When |
 | --- | --- | --- |
-| `C:\ProgramData\RAM-Doctor-run\<random>\` | Unpacked scripts of the one-file release (~330 KB), in a folder only Administrators and SYSTEM can write to | While the window is open; deleted on exit |
+| `C:\ProgramData\RAM-Doctor-run\<random>\` | Unpacked scripts of the one-file release (~550 KB), in a folder only Administrators and SYSTEM can write to | While the window is open; deleted on exit |
 | `Desktop\RAM-Doctor-Reports\` | `RAMDoctor-<host>-<stamp>.html` and `Plan-<host>-<stamp>.json` (~45 KB per scan) | Every scan; the **newest 3** scans are kept |
 | `C:\ProgramData\RAM-Doctor\` | Quarantined files, `manifest.json`, `actions-<stamp>.log` | Only if you use quarantine |
 | System restore point | "RAM-Doctor before quarantine" | Before a quarantine, if System Protection is on |

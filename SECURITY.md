@@ -7,7 +7,8 @@ services and move files. Security reports are taken seriously.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
+| 1.1.x   | :white_check_mark: |
+| 1.0.x   | :x:                |
 | < 1.0   | :x:                |
 
 Only the latest release receives fixes. Please reproduce on the latest release
