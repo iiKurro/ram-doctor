@@ -35,6 +35,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $AppDir = $PSScriptRoot
 . (Join-Path $AppDir 'lib\Strings.ps1')   # every user-facing text (ar / en)
+. (Join-Path $AppDir 'lib\Store.ps1')     # damage-tolerant reading of the plan, safe removal of temp folders
 Set-UiLang $Lang
 $ScanScript = Join-Path $AppDir 'RAM-Doctor.ps1'
 $ActionsScript = Join-Path $AppDir 'RAM-Doctor-Actions.ps1'
@@ -305,18 +306,32 @@ try {
             $t = $sr.ReadToEnd(); $sr.Close(); return $t
         } catch { return '' }
     }
-    function Get-Batches {
-        $q = Join-Path $StoreRoot 'Quarantine'
-        if (-not (Test-Path -LiteralPath $q)) { return @() }
-        @(Get-ChildItem -LiteralPath $q -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') } | Sort-Object Name -Descending)
+    # The quarantine batches as the actions script sees them (RAM-Doctor-Actions.ps1 -Mode List, one BATCH_JSON line each,
+    # newest first). The window never parses manifests itself: a damaged one cannot break it. Refreshed after every action.
+    $script:batches = @()
+    function Update-Batches {
+        $script:batches = @()
+        if (-not $CanAct -or -not (Test-Path -LiteralPath (Join-Path $StoreRoot 'Quarantine'))) { return }
+        $a = @(('"{0}"' -f $ActionsScript), '-Mode', 'List')
+        if ($QuarantineDir) { $a += @('-StoreDir', ('"{0}"' -f $QuarantineDir)) }
+        if ($AllowNonAdmin) { $a += '-AllowNonAdmin' }
+        $r = Invoke-Cli $a 60
+        $found = New-Object System.Collections.ArrayList
+        foreach ($line in ($r.Output -split "`r?`n")) {
+            if ($line -match '^BATCH_JSON:\s*(\{.*\})\s*$') { try { [void]$found.Add(($Matches[1] | ConvertFrom-Json)) } catch { } }
+        }
+        $script:batches = @($found)
     }
     function Get-QuarantinedStats {
-        $n = 0; $bytes = 0
-        foreach ($b in (Get-Batches)) {
-            $fd = Join-Path $b.FullName 'files'
-            if (Test-Path -LiteralPath $fd) { $fs = @(Get-ChildItem -LiteralPath $fd -File -Force -ErrorAction SilentlyContinue); $n += $fs.Count; $bytes += ($fs | Measure-Object Length -Sum).Sum }
-        }
+        $n = 0; $bytes = 0.0
+        foreach ($b in @($script:batches | Where-Object { $_.state -ne 'purged' })) { $n += [int]$b.files; $bytes += [double]$b.bytes }
         [pscustomobject]@{ Count = $n; MB = [math]::Round($bytes / 1MB, 1) }
+    }
+    # last machine-readable line of an actions run: OK [...] | PARTIAL <n> | FAILED <reason> | BUSY | NONE
+    function Get-ActionResult([string]$out) {
+        $res = ''
+        foreach ($line in ($out -split "`r?`n")) { if ($line -match '^RESULT:\s*(.+?)\s*$') { $res = $Matches[1] } }
+        return $res
     }
 
     # small notification under the verdict (auto-hides)
@@ -353,10 +368,40 @@ try {
         @('Collecting Defender', 'gui.step.15', 97)
     )
 
+    # Output files of the child processes (%TEMP%\ramdoctor-<guid>.out/.err). Only files this window created are ever
+    # deleted. A file that the child or an antivirus scan still holds is retried a few times, then remembered and swept
+    # again by a timer, at the next task and when the window closes.
+    $script:tempLeft = New-Object System.Collections.ArrayList
+    $script:tempSweep = New-Object System.Windows.Forms.Timer
+    $script:tempSweep.Interval = 1000
+    function Sweep-TaskFiles {
+        foreach ($f in @($script:tempLeft)) {
+            try { if ([IO.File]::Exists($f)) { [IO.File]::Delete($f) } } catch { }
+            if (-not [IO.File]::Exists($f)) { $script:tempLeft.Remove($f) }
+        }
+        if ($script:tempLeft.Count -eq 0) { $script:tempSweep.Stop() }
+    }
+    $script:tempSweep.Add_Tick({ Sweep-TaskFiles })
+    function Remove-TaskFiles([string[]]$paths) {
+        foreach ($f in $paths) {
+            if (-not $f) { continue }
+            $gone = $false
+            for ($i = 0; $i -lt 6 -and -not $gone; $i++) {
+                try { if ([IO.File]::Exists($f)) { [IO.File]::Delete($f) } } catch { }
+                $gone = -not [IO.File]::Exists($f)
+                if (-not $gone) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
+            }
+            if (-not $gone -and -not $script:tempLeft.Contains($f)) { [void]$script:tempLeft.Add($f); $script:tempSweep.Start() }
+        }
+    }
+    # >0 while Invoke-Cli waits for a child (it keeps the window responsive with DoEvents): every button counts as busy then
+    $script:cliBusy = 0
+
     function Refresh-Buttons {
-        $busy = ($null -ne $script:proc -and -not $script:proc.HasExited)
+        $procBusy = ($null -ne $script:proc -and -not $script:proc.HasExited)
+        $busy = $procBusy -or ($script:cliBusy -gt 0)
         $btnScan.Enabled = (-not $busy)
-        $btnScan.Text = $(if ($busy -and $script:taskKind -eq 'scan') { Get-Text 'gui.btn.scanning' } else { Get-Text 'gui.btn.scan' })
+        $btnScan.Text = $(if ($procBusy -and $script:taskKind -eq 'scan') { Get-Text 'gui.btn.scanning' } else { Get-Text 'gui.btn.scan' })
         $has = ($null -ne $script:current)
         $btnQ.Enabled = ((-not $busy) -and $CanAct -and ($list.CheckedCount -gt 0) -and $has)
         $lblPick.Text = $(if ($list.Items.Count -gt 0) { Get-Text 'gui.find.pick' $list.CheckedCount $list.Items.Count } else { '' })
@@ -367,10 +412,7 @@ try {
         $btnShare.Enabled = ((-not $busy) -and $has)
         $acts.Visible = $has
         $find.Visible = ($list.Items.Count -gt 0)
-        $canRestore = $false
-        foreach ($bt in (Get-Batches)) {
-            try { $m = Get-Content -LiteralPath (Join-Path $bt.FullName 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json; if (-not $m.purgedAt -and -not $m.restoredAt) { $canRestore = $true; break } } catch { }
-        }
+        $canRestore = (@($script:batches | Where-Object { $_.state -eq 'restorable' }).Count -gt 0)
         $hasFiles = ((Get-QuarantinedStats).Count -gt 0)
         $btnRestore.Enabled = ((-not $busy) -and $CanAct -and $canRestore)
         $btnPurge.Enabled = ((-not $busy) -and $CanAct -and $hasFiles)
@@ -379,7 +421,9 @@ try {
     }
 
     function Start-Task([string]$kind, [string[]]$psArgs, [scriptblock]$onDone) {
-        $script:taskKind = $kind; $script:onDone = $onDone; $script:lineIdx = 0; $script:tick = 0
+        if (($null -ne $script:proc -and -not $script:proc.HasExited) -or $script:cliBusy -gt 0) { Add-Log "[busy] '$kind' ignored: another task is running"; return }
+        Sweep-TaskFiles
+        $script:taskKind = $kind; $script:onDone = $onDone; $script:lineIdx = 0; $script:tick = 0; $script:lastExit = $null
         $id = [guid]::NewGuid().ToString('N')
         $script:outFile = Join-Path $env:TEMP "ramdoctor-$id.out"
         $script:errFile = Join-Path $env:TEMP "ramdoctor-$id.err"
@@ -396,19 +440,29 @@ try {
     function Invoke-Cli([string[]]$psArgs, [int]$timeoutSec = 40, [hashtable]$envVars = @{}) {
         $id = [guid]::NewGuid().ToString('N')
         $o = Join-Path $env:TEMP "ramdoctor-$id.out"; $e = Join-Path $env:TEMP "ramdoctor-$id.err"
-        foreach ($k in $envVars.Keys) { if ($envVars[$k]) { [Environment]::SetEnvironmentVariable($k, [string]$envVars[$k], 'Process') } }
+        Sweep-TaskFiles
+        $script:cliBusy++
+        Refresh-Buttons   # the wait below pumps window messages: nothing else may be started meanwhile
         try {
-            $p = Start-Process -FilePath powershell.exe -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File') + $psArgs) -WindowStyle Hidden -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
-        } finally {
-            foreach ($k in $envVars.Keys) { [Environment]::SetEnvironmentVariable($k, $null, 'Process') }
+            foreach ($k in $envVars.Keys) { if ($envVars[$k]) { [Environment]::SetEnvironmentVariable($k, [string]$envVars[$k], 'Process') } }
+            try {
+                $p = Start-Process -FilePath powershell.exe -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File') + $psArgs) -WindowStyle Hidden -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+            } finally {
+                foreach ($k in $envVars.Keys) { [Environment]::SetEnvironmentVariable($k, $null, 'Process') }
+            }
+            $null = $p.Handle
+            $end = (Get-Date).AddSeconds($timeoutSec)
+            while (-not $p.HasExited -and (Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 60 }
+            if (-not $p.HasExited) { try { $p.Kill(); [void]$p.WaitForExit(3000) } catch { } }
+            $text = Read-Shared $o $true
+            $res = [pscustomobject]@{ Output = $text; ExitCode = $(if ($p.HasExited) { $p.ExitCode } else { -1 }) }
         }
-        $null = $p.Handle
-        $end = (Get-Date).AddSeconds($timeoutSec)
-        while (-not $p.HasExited -and (Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 60 }
-        if (-not $p.HasExited) { try { $p.Kill() } catch { } }
-        $text = Read-Shared $o $true
-        Remove-Item -LiteralPath $o, $e -Force -ErrorAction SilentlyContinue
-        [pscustomobject]@{ Output = $text; ExitCode = $(if ($p.HasExited) { $p.ExitCode } else { -1 }) }
+        finally {
+            Remove-TaskFiles @($o, $e)
+            $script:cliBusy--
+            Refresh-Buttons
+        }
+        return $res
     }
 
     function Handle-Line([string]$l) {
@@ -443,7 +497,8 @@ try {
         $err = (Read-Shared $script:errFile $u8).Trim()
         if ($err) { Add-Log ('[stderr] ' + $err.Substring(0, [Math]::Min(600, $err.Length))) }
         $script:lastOutput = $out
-        Remove-Item -LiteralPath $script:outFile, $script:errFile -Force -ErrorAction SilentlyContinue   # leave nothing behind in %TEMP%
+        $script:lastExit = $script:proc.ExitCode
+        Remove-TaskFiles @($script:outFile, $script:errFile)   # leave nothing behind in %TEMP%
         $script:proc = $null
         $cb = $script:onDone; $script:onDone = $null
         Refresh-Buttons
@@ -455,16 +510,28 @@ try {
     $timer.Add_Tick({ Guard { Poll-Task } })
 
     # ------------------------------------------------------------ results
-    function Get-LatestResult {
-        if (-not (Test-Path -LiteralPath $ReportsDir)) { return $null }
-        $p = Get-ChildItem -LiteralPath $ReportsDir -Filter 'Plan-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-        if (-not $p) { return $null }
-        $stamp = $p.BaseName.Substring('Plan-'.Length)
-        [pscustomobject]@{ Plan = $p.FullName; Html = (Join-Path $ReportsDir "RAMDoctor-$stamp.html"); Time = $p.LastWriteTime }
+    # One scan of THIS PC, found by its stamp (the scan prints "SCAN_STAMP: yyyyMMdd-HHmmss"; the window builds the file
+    # names from its own PC name, so no path has to survive the console code page). Plans of other PCs are never picked:
+    # the actions refuse them anyway.
+    function Get-ScanResult([string]$stamp) {
+        $plan = Join-Path $ReportsDir ('Plan-{0}-{1}.json' -f $env:COMPUTERNAME, $stamp)
+        if (-not (Test-Path -LiteralPath $plan -PathType Leaf)) { return $null }
+        [pscustomobject]@{ Plan = $plan; Html = (Join-Path $ReportsDir ('RAMDoctor-{0}-{1}.html' -f $env:COMPUTERNAME, $stamp)); Time = (Get-Item -LiteralPath $plan).LastWriteTime; Stamp = $stamp }
     }
+    function Get-LatestResults {   # this PC's scans, newest first
+        if (-not (Test-Path -LiteralPath $ReportsDir)) { return @() }
+        $rx = '^Plan-' + [regex]::Escape($env:COMPUTERNAME) + '-(\d{8}-\d{6})\.json$'
+        $stamps = @(Get-ChildItem -LiteralPath $ReportsDir -Filter 'Plan-*.json' -File -ErrorAction SilentlyContinue | ForEach-Object { $mt = [regex]::Match($_.Name, $rx); if ($mt.Success) { $mt.Groups[1].Value } } | Sort-Object -Descending)
+        return @($stamps | ForEach-Object { Get-ScanResult $_ } | Where-Object { $_ })
+    }
+    function Get-LatestResult { return (@(Get-LatestResults) | Select-Object -First 1) }
 
+    # Shows a plan. Returns $false (and changes nothing) when the plan cannot be read: a damaged file is set aside by
+    # Read-JsonSafe and must never break the window.
     function Load-Results($r, [bool]$previous) {
-        $plan = Get-Content -LiteralPath $r.Plan -Raw -Encoding UTF8 | ConvertFrom-Json
+        $rd = Read-JsonSafe -Path $r.Plan -MaxSchema 1 -Validate { param($x) $x.PSObject.Properties['verdict'] -and $x.PSObject.Properties['suspects'] }
+        if ($rd.Status -ne 'Ok' -and $rd.Status -ne 'Recovered') { Add-Log ("[plan] {0}: {1} {2}" -f [IO.Path]::GetFileName($r.Plan), $rd.Status, $rd.Message); return $false }
+        $plan = $rd.Data
         $script:current = $r
         $script:currentPlan = $plan
         $script:currentPrev = $previous
@@ -508,16 +575,23 @@ try {
         $info.Message = $hint
         [void]$info.FitHeight()
         Refresh-Buttons
+        return $true
     }
 
     function Scan-Done {
-        $r = Get-LatestResult
-        if (-not $r -or $r.Time -lt $script:scanStart.AddSeconds(-5)) {
+        $stamp = ''
+        foreach ($line in ($script:lastOutput -split "`r?`n")) { if ($line -match '^SCAN_STAMP:\s*(\d{8}-\d{6})\s*$') { $stamp = $Matches[1] } }
+        $r = $(if ($stamp) { Get-ScanResult $stamp } else { $null })
+        if (-not $r) {
             Set-Status 'gui.status.noscan' 0
             Info-Box (Get-Text 'gui.box.noscan') 'Warning'
             return
         }
-        Load-Results $r $false
+        if (-not (Load-Results $r $false)) {
+            Set-Status 'gui.status.noscan' 0
+            Info-Box (Get-Text 'store.plan.damaged.m') 'Warning'
+            return
+        }
         Set-Status 'gui.status.done' 100
     }
 
@@ -548,8 +622,17 @@ try {
         return $false
     }
 
-    # the redacted preview/summary files live in %TEMP% only while needed - remove them as soon as we are done
-    function Clear-ShareTemp { try { Remove-Item -LiteralPath (Join-Path $env:TEMP 'RAM-Doctor-share-preview') -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
+    # The redacted preview/summary files live in %TEMP% only while needed. The share script makes a fresh, randomly named
+    # private folder each time (RAM-Doctor-share-<random>) and prints its path; only those folders are removed, without
+    # ever following a link. The fixed folder of 1.0.x (RAM-Doctor-share-preview) is cleaned up the same safe way.
+    $script:shareDirs = New-Object System.Collections.ArrayList
+    function Add-ShareDir([string]$dir) {
+        if ($dir -and ([IO.Path]::GetFileName($dir.TrimEnd('\')) -like 'RAM-Doctor-share-*') -and -not $script:shareDirs.Contains($dir)) { [void]$script:shareDirs.Add($dir) }
+    }
+    function Clear-ShareTemp {
+        Add-ShareDir (Join-Path $env:TEMP 'RAM-Doctor-share-preview')
+        foreach ($d in @($script:shareDirs)) { if (Remove-StorePrivateDir $d) { $script:shareDirs.Remove($d) } }
+    }
 
     function Finish-Copy([string]$text) {
         Clear-ShareTemp
@@ -567,7 +650,7 @@ try {
     # ------------------------------------------------------------ dormant "share with my helper" feature
     # Everything below stays invisible unless RAM-Doctor-Share.ps1 -Action ShowProfile reports endpointConfigured=true.
     function Read-ShareProfile {
-        $s = [pscustomobject]@{ Configured = $false; Name = ''; UserId = ''; Helper = ''; EndpointConfigured = $false }
+        $s = [pscustomobject]@{ Configured = $false; Name = ''; UserId = ''; Helper = ''; EndpointConfigured = $false; Damaged = $false }
         if ($ShareForceConfigured) { $s.EndpointConfigured = $true; $s.Helper = (Get-Text 'gui.helper.demo'); return $s }
         if (-not (Test-Path -LiteralPath $ShareScript)) { return $s }
         try {
@@ -578,6 +661,7 @@ try {
                     try {
                         $j = $Matches[1] | ConvertFrom-Json
                         $s.Configured = [bool]$j.configured; $s.Name = [string]$j.name; $s.UserId = [string]$j.userId; $s.Helper = [string]$j.helper; $s.EndpointConfigured = [bool]$j.endpointConfigured
+                        $s.Damaged = [bool]($j.PSObject.Properties['damaged'] -and $j.damaged)   # the profile file could not be read: it was set aside
                         $done = $true
                     } catch { }
                 }
@@ -714,7 +798,7 @@ try {
         $r = Invoke-Cli $a 40
         $info = @{ Dir = ''; Sizes = @{} }
         foreach ($line in ($r.Output -split "`r?`n")) {
-            if ($line -match 'PREVIEW:\s*(.+)$') { $info.Dir = $Matches[1].Trim() }
+            if ($line -match 'PREVIEW:\s*(.+)$') { $info.Dir = $Matches[1].Trim(); Add-ShareDir $info.Dir }
             elseif ($line -match 'FILES:\s*(.+)$') {
                 foreach ($m in [regex]::Matches($Matches[1], '([\w\.\-]+)=([\d\.,]+)')) { $info.Sizes[$m.Groups[1].Value] = $m.Groups[2].Value }
             }
@@ -747,6 +831,8 @@ try {
             Start-Task 'quarantine' $argv {
                 $out = $script:lastOutput
                 $bad = Count-Problems $out
+                $res = Get-ActionResult $out
+                Update-Batches
                 if ($out -match 'Done\. Quarantine batch') {
                     Set-Status 'gui.status.qdone' 100
                     $msg = Get-Text 'gui.q.done.box'
@@ -754,6 +840,13 @@ try {
                     $list.Clear()
                     Show-Info 'Success' 'gui.q.done.t' 'gui.q.done.m'
                     Info-Box $msg
+                } elseif ($res -eq 'BUSY') {
+                    Set-Status 'store.status.busy' 0
+                    Info-Box (Get-Text 'store.busy.box') 'Warning'
+                } elseif ($res -like 'FAILED nosave*') {
+                    # stopped because the undo record could not be saved: whatever was done is recorded and can be undone
+                    Set-Status 'gui.status.qfail' 0
+                    Info-Box (Get-Text 'store.q.stopped.box') 'Warning'
                 } else {
                     Set-Status 'gui.status.qfail' 0
                     Info-Box (Get-Text 'gui.q.fail.box') 'Warning'
@@ -771,7 +864,7 @@ try {
                 Start-Task 'summary' ((Share-Args 'Summary') + @('-PlanPath', ('"{0}"' -f $script:current.Plan))) {
                     $text = ''
                     foreach ($line in ($script:lastOutput -split "`r?`n")) {
-                        if ($line -match 'SUMMARY:\s*(.+)$') { $p = $Matches[1].Trim(); if (Test-Path -LiteralPath $p) { $text = [IO.File]::ReadAllText($p, [Text.Encoding]::UTF8) } }
+                        if ($line -match 'SUMMARY:\s*(.+)$') { $p = $Matches[1].Trim(); Add-ShareDir (Split-Path -Parent $p); if (Test-Path -LiteralPath $p) { $text = [IO.File]::ReadAllText($p, [Text.Encoding]::UTF8) } }
                     }
                     if (-not $text) { Add-Log '[summary] helper script gave no file - using the built-in summary'; $text = Build-LocalSummary $script:currentPlan }
                     Finish-Copy $text
@@ -823,29 +916,46 @@ try {
         } })
 
     $btnRestore.Add_Click({ Guard {
-            $b = @(Get-Batches | Where-Object { $m = Get-Content (Join-Path $_.FullName 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json; -not $m.purgedAt -and -not $m.restoredAt }) | Select-Object -First 1
-            if (-not $b) { Info-Box (Get-Text 'gui.restore.none'); return }
+            Update-Batches   # the list printed by the actions script, newest first (by its sequence number, not the clock)
+            $b = @($script:batches | Where-Object { $_.state -eq 'restorable' }) | Select-Object -First 1
+            if (-not $b) { Refresh-Buttons; Info-Box (Get-Text 'gui.restore.none'); return }
             if (-not (Confirm-Box (Get-Text 'gui.restore.confirm') (Get-Text 'gui.restore.title') 'Question')) { return }
-            $argv = @(('"{0}"' -f $ActionsScript), '-Mode', 'Restore', '-Batch', $b.Name, '-Yes')
+            $argv = @(('"{0}"' -f $ActionsScript), '-Mode', 'Restore', '-Batch', [string]$b.name, '-Yes')
             if ($QuarantineDir) { $argv += @('-StoreDir', ('"{0}"' -f $QuarantineDir)) }
             if ($AllowNonAdmin) { $argv += '-AllowNonAdmin' }
             Set-Status 'gui.status.restoring' 50
             Start-Task 'restore' $argv {
-                if ($script:lastOutput -match 'Restore finished') { Set-Status 'gui.status.restored' 100; Info-Box (Get-Text 'gui.restore.done.box') }
+                $res = Get-ActionResult $script:lastOutput
+                Update-Batches
+                Refresh-Buttons
+                if ($res -like 'OK*') { Set-Status 'gui.status.restored' 100; Info-Box (Get-Text 'gui.restore.done.box') }
+                elseif ($res -match '^PARTIAL\s+(\d+)') { Set-Status 'restore.status.partial' 0; Info-Box (Get-Text 'restore.partial.box' $Matches[1]) 'Warning' }
+                elseif ($res -eq 'BUSY') { Set-Status 'store.status.busy' 0; Info-Box (Get-Text 'store.busy.box') 'Warning' }
+                elseif ($res -match '^FAILED (damaged|orphan)') { Set-Status 'gui.status.restorefail' 0; Info-Box (Get-Text 'restore.damaged.box') 'Warning' }
+                elseif ($res -eq 'FAILED toonew') { Set-Status 'gui.status.restorefail' 0; Info-Box (Get-Text 'restore.toonew.box') 'Warning' }
                 else { Set-Status 'gui.status.restorefail' 0; Info-Box (Get-Text 'gui.restore.fail.box') 'Warning' }
             }
         } })
 
     $btnPurge.Add_Click({ Guard {
+            Update-Batches
             $st = Get-QuarantinedStats
-            if ($st.Count -eq 0) { Info-Box (Get-Text 'gui.purge.none'); return }
+            if ($st.Count -eq 0) { Refresh-Buttons; Info-Box (Get-Text 'gui.purge.none'); return }
             $ok = Confirm-Box (Get-Text 'gui.purge.confirm' $st.Count $st.MB) (Get-Text 'gui.purge.title') 'Warning'
             if (-not $ok) { return }
             $argv = @(('"{0}"' -f $ActionsScript), '-Mode', 'Purge', '-OlderThanDays', '0', '-Yes')
             if ($QuarantineDir) { $argv += @('-StoreDir', ('"{0}"' -f $QuarantineDir)) }
             if ($AllowNonAdmin) { $argv += '-AllowNonAdmin' }
             Set-Status 'gui.status.purging' 50
-            Start-Task 'purge' $argv { Set-Status 'gui.status.purged' 100; Info-Box (Get-Text 'gui.purge.done.box') }
+            Start-Task 'purge' $argv {
+                $res = Get-ActionResult $script:lastOutput
+                Update-Batches
+                Refresh-Buttons
+                if ($res -like 'OK*') { Set-Status 'gui.status.purged' 100; Info-Box (Get-Text 'gui.purge.done.box') }
+                elseif ($res -eq 'NONE') { Set-Status 'gui.status.ready' 0; Info-Box (Get-Text 'gui.purge.none') }
+                elseif ($res -eq 'BUSY') { Set-Status 'store.status.busy' 0; Info-Box (Get-Text 'store.busy.box') 'Warning' }
+                else { Set-Status 'store.status.purgefail' 0; Info-Box (Get-Text 'store.purge.fail.box') 'Warning' }
+            }
         } })
 
     $btnClean.Add_Click({ Guard {
@@ -863,10 +973,17 @@ try {
 
     $form.Add_FormClosing({
             param($s, $e)
+            if ($script:cliBusy -gt 0) { $e.Cancel = $true; return }   # a short helper call is still running: it ends within seconds
             if ($script:proc -and -not $script:proc.HasExited) {
                 if ($script:taskKind -in 'scan', 'summary') { try { $script:proc.Kill() } catch { } }
                 else { $e.Cancel = $true; Info-Box (Get-Text 'gui.closing') 'Warning' }
             }
+        })
+    $form.Add_FormClosed({
+            # last sweep of what this window created: the output files of its child processes and the share previews
+            try { Clear-ShareTemp } catch { }
+            for ($i = 0; $i -lt 10 -and $script:tempLeft.Count -gt 0; $i++) { Sweep-TaskFiles; if ($script:tempLeft.Count -gt 0) { Start-Sleep -Milliseconds 200 } }
+            $script:tempSweep.Stop()
         })
 
     # ------------------------------------------------------------ developer helpers (screenshots / tests)
@@ -915,7 +1032,7 @@ try {
         Set-Status $script:statusKey -1 $script:statusArgs
         if ($script:infoMode -eq 'results' -and $script:current) {
             $ids = @($list.GetChecked() | ForEach-Object { [int]$_.Tag })   # keep the user's selection
-            Load-Results $script:current $script:currentPrev
+            [void](Load-Results $script:current $script:currentPrev)
             foreach ($it in $list.Items) { $it.Checked = ($ids -contains [int]$it.Tag) }
             $list.Invalidate()
         } else { Show-Info $script:infoLevel $script:infoTitleKey $script:infoMsgKey }
@@ -938,8 +1055,15 @@ try {
                 [Fluent.Win]::SetScrollTheme($page.Handle, $dark)
                 $script:share = Read-ShareProfile
                 Apply-ShareVisibility
-                $r = Get-LatestResult
-                if ($r) { Load-Results $r $true; Set-Status 'gui.status.last' 0 }
+                if ($script:share.Damaged) { Show-Toast 'Warning' (Get-Text 'store.share.damaged.t') (Get-Text 'store.share.damaged.m') }
+                Update-Batches
+                # the newest readable scan of this PC (a damaged plan is set aside and the one before it is shown)
+                $skipped = 0
+                foreach ($r in @(Get-LatestResults)) {
+                    if (Load-Results $r $true) { Set-Status 'gui.status.last' 0; break }
+                    $skipped++
+                }
+                if ($skipped -gt 0) { Show-Toast 'Warning' (Get-Text 'store.plan.damaged.t') (Get-Text 'store.plan.damaged.m') }
                 Refresh-Buttons
                 if ($TestScript) {
                     $script:t2 = New-Object System.Windows.Forms.Timer

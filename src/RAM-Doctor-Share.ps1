@@ -11,7 +11,8 @@
                    OPTIONAL (only needed if the helper's relay enforces one); it may also come from
                    $env:RAMDOC_SHARE_CODE (the name from $env:RAMDOC_SHARE_NAME) so it never sits on a command line.
     DeleteProfile
-    Preview        writes the redacted bundle to %TEMP%\RAM-Doctor-share-preview\ -> "PREVIEW: <dir>" + "FILES: ..."
+    Preview        writes the redacted bundle to a NEW private folder %TEMP%\RAM-Doctor-share-<random>\ (only
+                   administrators can change it when elevated; the caller deletes it) -> "PREVIEW: <dir>" + "FILES: ..."
     Share          uploads the bundle (protocol v1) -> "RESULT: OK <url>" | "RESULT: ERROR <code> <message>"
     Health         GET /v1/health of the configured relay
   Progress lines look like "[hh:mm:ss] message"; results are the machine-readable lines above.
@@ -44,7 +45,16 @@ if (-not $Root) { $Root = (Get-Location).Path }
 . (Join-Path $Root 'lib\Share.ps1')
 Set-UiLang $Lang
 if (-not $ConfigPath) { $ConfigPath = Join-Path $Root 'share.config.json' }
-if (-not $PreviewDir) { $PreviewDir = Join-Path $env:TEMP 'RAM-Doctor-share-preview' }
+# Summary / Preview write into -PreviewDir, or else into a fresh private folder (never a fixed name in %TEMP%: this
+# script normally runs elevated, and a fixed folder there could be replaced by a junction beforehand).
+function Get-OutputDir {
+    if ($PreviewDir) {
+        if (Test-Path -LiteralPath $PreviewDir) { [void](Remove-StorePrivateDir $PreviewDir) }
+        [void][IO.Directory]::CreateDirectory($PreviewDir)
+        return $PreviewDir
+    }
+    return (New-StorePrivateDir -Parent $env:TEMP -Prefix 'RAM-Doctor-share-')
+}
 
 function Say([string]$m) { Write-Output ('[{0:HH:mm:ss}] {1}' -f (Get-Date), $m) }
 function Fail([string]$code, [string]$message) { Write-Output ("RESULT: ERROR $code $message"); exit 1 }
@@ -67,22 +77,24 @@ try {
             if (-not $PlanPath -or -not (Test-Path -LiteralPath $PlanPath)) { Fail-Simple (Get-ShareMessage 'no-plan') }
             Say 'Building short summary ...'
             $text = New-ShareShortSummary -PlanPath $PlanPath -IncludeHostName:$IncludeHostName -Lang $Lang
-            New-Item -ItemType Directory -Force -Path $PreviewDir | Out-Null
-            $out = Join-Path $PreviewDir 'summary.txt'
+            $out = Join-Path (Get-OutputDir) 'summary.txt'
             [IO.File]::WriteAllText($out, $text, (New-Object System.Text.UTF8Encoding($true)))
             Write-Output "SUMMARY: $out"
             exit 0
         }
 
         'ShowProfile' {
-            $p = Get-ShareProfile -ProfileDir $ProfileDir
+            $st = Get-ShareProfileState -ProfileDir $ProfileDir
+            $p = $st.Profile
+            $damaged = ($st.Status -eq 'Damaged' -or $st.Status -eq 'TooNew')
+            if ($damaged) { Say "The profile file could not be read: $($st.Message)" }
             $epOk = [bool]($endpointUsed -and ($null -eq (Test-ShareEndpoint $endpointUsed)))
             if ($p) {
                 Write-Output ('PROFILE: configured=true name={0} userId={1} helper={2} endpointConfigured={3}' -f $p.displayName, $p.userId, $cfg.helperName, $epOk.ToString().ToLower())
                 Write-Output ('PROFILE_JSON: ' + ([ordered]@{ configured = $true; name = $p.displayName; userId = $p.userId; helper = $cfg.helperName; endpointConfigured = $epOk; hasCode = [bool]$p.codeProtected } | ConvertTo-Json -Compress))
             } else {
                 Write-Output ('PROFILE: configured=false name= userId= helper={0} endpointConfigured={1}' -f $cfg.helperName, $epOk.ToString().ToLower())
-                Write-Output ('PROFILE_JSON: ' + ([ordered]@{ configured = $false; name = ''; userId = ''; helper = $cfg.helperName; endpointConfigured = $epOk; hasCode = $false } | ConvertTo-Json -Compress))
+                Write-Output ('PROFILE_JSON: ' + ([ordered]@{ configured = $false; name = ''; userId = ''; helper = $cfg.helperName; endpointConfigured = $epOk; hasCode = $false; damaged = $damaged } | ConvertTo-Json -Compress))
             }
             exit 0
         }
@@ -115,10 +127,9 @@ try {
             $sizes = ($bundle.Files | ForEach-Object { '{0}={1}' -f $_.name, (Kb $_.content) }) -join ' '
 
             if ($Action -eq 'Preview') {
-                if (Test-Path -LiteralPath $PreviewDir) { Remove-Item -LiteralPath $PreviewDir -Recurse -Force -ErrorAction SilentlyContinue }
-                New-Item -ItemType Directory -Force -Path $PreviewDir | Out-Null
-                foreach ($f in $bundle.Files) { [IO.File]::WriteAllText((Join-Path $PreviewDir $f.name), $f.content, (New-Object System.Text.UTF8Encoding($true))) }
-                Write-Output "PREVIEW: $PreviewDir"
+                $dir = Get-OutputDir
+                foreach ($f in $bundle.Files) { [IO.File]::WriteAllText((Join-Path $dir $f.name), $f.content, (New-Object System.Text.UTF8Encoding($true))) }
+                Write-Output "PREVIEW: $dir"
                 Write-Output "FILES: $sizes"
                 exit 0
             }
@@ -126,19 +137,23 @@ try {
             # Share: the invite code is optional - it is sent only when one is stored (and readable).
             # Keep the body under the limit (drop the big html first).
             $codePlain = [string](Get-ShareInviteCode -Profile $shareProfile)
-            $json = New-ShareRequestJson -Profile $shareProfile -Code $codePlain -Bundle $bundle
+            $codeUnreadable = ([bool]$shareProfile.codeProtected -and -not $codePlain)   # DPAPI: saved on another Windows account?
+            if ($codeUnreadable) { Say 'The saved invite code cannot be read on this Windows account; sending without it.' }
+            # one id for this upload, the same on every retry: the relay then stores the report only once
+            $requestId = New-ShareRequestId
+            $json = New-ShareRequestJson -Profile $shareProfile -Code $codePlain -Bundle $bundle -RequestId $requestId
             if ((Get-ShareBodyBytes $json) -gt $cfg.maxBytes) {
                 Say 'Report is large: leaving out report.html'
                 $bundle.Files = @($bundle.Files | Where-Object { $_.name -ne 'report.html' })
-                $json = New-ShareRequestJson -Profile $shareProfile -Code $codePlain -Bundle $bundle
+                $json = New-ShareRequestJson -Profile $shareProfile -Code $codePlain -Bundle $bundle -RequestId $requestId
             }
             if ((Get-ShareBodyBytes $json) -gt $cfg.maxBytes) { $codePlain = $null; Fail '413' (Get-ShareMessage '413') }
             Say ('Upload size: {0} KB' -f ((Get-ShareBodyBytes $json) / 1KB).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture))
             if ($DryRun) { $codePlain = $null; Write-Output 'RESULT: OK dryrun'; exit 0 }
             Say 'Uploading ...'
-            $res = Send-ShareReport -Endpoint $endpointUsed -Json $json -CodeSent:([bool]$codePlain) -BackoffSeconds $BackoffSeconds
+            $res = Send-ShareReport -Endpoint $endpointUsed -Json $json -CodeSent:([bool]$codePlain) -CodeUnreadable:$codeUnreadable -BackoffSeconds $BackoffSeconds
             $json = $null; $codePlain = $null
-            if ($res.Ok) { Say 'Uploaded.'; Write-Output "RESULT: OK $($res.Url)"; exit 0 }
+            if ($res.Ok) { Say $(if ($res.Replayed) { 'Uploaded (the relay already had this upload from an earlier attempt).' } else { 'Uploaded.' }); Write-Output "RESULT: OK $($res.Url)"; exit 0 }
             Fail $res.Code $res.Message
         }
 

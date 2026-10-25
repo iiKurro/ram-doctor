@@ -34,7 +34,7 @@ BeforeAll {
         return [pscustomobject]@{ ExitCode = $code; Output = $text }
     }
     function New-ProfileDir { Join-Path $TestDrive ('prof-' + [guid]::NewGuid().ToString('N')) }
-    function Reset-Mock { $script:Mock.State.Requests.Clear(); $script:Mock.State.Counter = 0; $script:Mock.State.Mode = 'ok'; $script:Mock.State.RequireCode = $false }
+    function Reset-Mock { $script:Mock.State.Requests.Clear(); $script:Mock.State.Counter = 0; $script:Mock.State.Commits.Clear(); $script:Mock.State.Mode = 'ok'; $script:Mock.State.RequireCode = $false }
     function Save-TestProfile([string]$Dir, [string]$Name = 'Friend', [string]$InviteCode = '') {
         $env = @{ RAMDOC_SHARE_NAME = $Name; RAMDOC_SHARE_CODE = $InviteCode }
         $r = Invoke-ShareCli -CliArgs @('-Action', 'SaveProfile', '-ProfileDir', ('"{0}"' -f $Dir)) -EnvVars $env
@@ -139,6 +139,39 @@ Describe 'CLI: Preview' -Tag 'Integration' {
     }
 }
 
+Describe 'CLI: private output folders and a damaged profile (M3, M4)' -Tag 'Integration' {
+    It 'Preview and Summary without -PreviewDir use a fresh RAM-Doctor-share-<random> folder each time' {
+        $dirs = @()
+        try {
+            foreach ($i in 1, 2) {
+                $r = Invoke-ShareCli -CliArgs @('-Action', 'Preview', '-PlanPath', ('"{0}"' -f $script:files.Plan), '-ProfileDir', ('"{0}"' -f (New-ProfileDir)))
+                $r.ExitCode | Should -Be 0
+                $dirs += ([regex]::Match($r.Output, 'PREVIEW:\s*(.+?)\r?\n')).Groups[1].Value.Trim()
+            }
+            $s = Invoke-ShareCli -CliArgs @('-Action', 'Summary', '-PlanPath', ('"{0}"' -f $script:files.Plan))
+            $dirs += Split-Path -Parent ([regex]::Match($s.Output, 'SUMMARY:\s*(.+?)\r?\n')).Groups[1].Value.Trim()
+            foreach ($d in $dirs) { [IO.Path]::GetFileName($d) | Should -Match '^RAM-Doctor-share-[0-9a-f]{32}$' }
+            @($dirs | Select-Object -Unique).Count | Should -Be 3
+            Test-Path -LiteralPath (Join-Path $dirs[0] 'plan.json') | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $env:TEMP 'RAM-Doctor-share-preview') | Should -BeFalse -Because 'the fixed folder of 1.0.x is not used any more'
+        }
+        finally {
+            . (Join-Path $script:Repo 'src\lib\Store.ps1')
+            foreach ($d in $dirs) { [void](Remove-StorePrivateDir $d) }
+        }
+    }
+    It 'ShowProfile says "damaged" for an unreadable profile; SaveProfile then keeps the old userId' {
+        $d = New-ProfileDir
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+        [IO.File]::WriteAllText((Join-Path $d 'profile.json'), '{ "v": 1, "displayName": "Friend", "userId": "0a1b2c3d", "crea', (New-Object Text.UTF8Encoding($true)))
+        $show = Invoke-ShareCli -CliArgs @('-Action', 'ShowProfile', '-ProfileDir', ('"{0}"' -f $d))
+        $j = ($show.Output -split "`r?`n" | Where-Object { $_ -like 'PROFILE_JSON:*' }) -replace '^PROFILE_JSON:\s*', '' | ConvertFrom-Json
+        $j.configured | Should -BeFalse
+        $j.damaged | Should -BeTrue
+        (Invoke-ShareCli -CliArgs @('-Action', 'SaveProfile', '-Username', 'Friend', '-ProfileDir', ('"{0}"' -f $d))).ExitCode | Should -Be 0
+        (Invoke-ShareCli -CliArgs @('-Action', 'ShowProfile', '-ProfileDir', ('"{0}"' -f $d))).Output | Should -Match 'userId=0a1b2c3d'
+    }
+}
 Describe 'CLI: Share against the local mock relay' -Tag 'Integration' {
     BeforeEach { Reset-Mock; $script:pd = New-ProfileDir; Save-TestProfile -Dir $script:pd }
 
@@ -230,6 +263,45 @@ Describe 'CLI: Share against the local mock relay' -Tag 'Integration' {
         $r.ExitCode | Should -Be 1
         $r.Output | Should -Match 'RESULT: ERROR 401 المساعد فعّل رمز دعوة؛ اطلبه منه'
         $Mock.State.Requests.Count | Should -Be 1
+    }
+    It 'sends the same requestId on every retry: a lost answer does not store the report twice (M5)' {
+        $Mock.State.Mode = 'lostanswer'
+        $r = Invoke-Share $pd $files.Plan
+        $r.ExitCode | Should -Be 0 -Because $r.Output
+        $r.Output | Should -Match 'RESULT: OK https://'
+        $r.Output | Should -Match 'already had this upload'
+        $ids = @($Mock.State.Requests | Where-Object Path -eq '/v1/reports' | ForEach-Object { ($_.Body | ConvertFrom-Json).requestId })
+        $ids.Count | Should -Be 2
+        $ids[0] | Should -Match '^[A-Za-z0-9-]{16,64}$'
+        $ids[1] | Should -Be $ids[0]
+        $Mock.State.Commits.Count | Should -Be 1
+    }
+    It 'a new Share is a new upload with a new requestId' {
+        (Invoke-Share $pd $files.Plan).ExitCode | Should -Be 0
+        (Invoke-Share $pd $files.Plan).ExitCode | Should -Be 0
+        $ids = @($Mock.State.Requests | ForEach-Object { ($_.Body | ConvertFrom-Json).requestId })
+        $ids.Count | Should -Be 2
+        $ids[1] | Should -Not -Be $ids[0]
+        $Mock.State.Commits.Count | Should -Be 2
+    }
+    It '409 in_progress: waits Retry-After and asks again with the same requestId' {
+        $Mock.State.Mode = 'inprogress'
+        $r = Invoke-Share $pd $files.Plan
+        $r.ExitCode | Should -Be 0 -Because $r.Output
+        $ids = @($Mock.State.Requests | Where-Object Path -eq '/v1/reports' | ForEach-Object { ($_.Body | ConvertFrom-Json).requestId })
+        $ids.Count | Should -Be 2
+        $ids[1] | Should -Be $ids[0]
+        $Mock.State.Commits.Count | Should -Be 1
+    }
+    It 'a relay from before requestId (400 unknown_field) gets the same report once more without the field' {
+        $Mock.State.Mode = 'oldrelay'
+        $r = Invoke-Share $pd $files.Plan
+        $r.ExitCode | Should -Be 0 -Because $r.Output
+        $bodies = @($Mock.State.Requests | Where-Object Path -eq '/v1/reports' | ForEach-Object { $_.Body | ConvertFrom-Json })
+        $bodies.Count | Should -Be 2
+        $bodies[0].PSObject.Properties.Name | Should -Contain 'requestId'
+        $bodies[1].PSObject.Properties.Name | Should -Not -Contain 'requestId'
+        $bodies[1].files.Count | Should -Be $bodies[0].files.Count
     }
     It 'recovers from transient 5xx (500, 500, then OK)' {
         $Mock.State.Mode = 'flaky'
