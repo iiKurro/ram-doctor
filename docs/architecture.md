@@ -212,7 +212,15 @@ never written is listed as `damaged` / `orphan`: it cannot be restored, but its
 files can be purged. A record that exists but cannot be opened right now (held by
 another program) is `unreadable`: refused for now, never replaced by its older
 `.bak` and never overwritten. Quarantine, Restore and Purge hold a per-store lock; a
-second run answers `BUSY` (exit 4) and changes nothing. Actions log to
+second run answers `BUSY` (exit 4) and changes nothing. The lock's name comes
+from a random secret in `<store>\lock.id` that only SYSTEM and Administrators can
+read, and the secret is replaced before every release, so a non-elevated program
+cannot predict or squat the name. When elevated, batch folders, their `files`
+folder and every `manifest.json.tmp` are **created** with owner Administrators and
+SYSTEM + Administrators only (never protected afterwards), and a batch is trusted
+only if its folders and records have such an owner and no allow-rule, explicit or
+inherited, for anybody else (1.0.x batches, which inherit the store's permissions,
+pass). Actions log to
 `<store>\actions-<stamp>.log` (the newest 30 are kept).
 
 Every run ends with a machine-readable line for the window:

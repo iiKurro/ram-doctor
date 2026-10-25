@@ -64,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are handled; "Undo the last quarantine" picks the newest batch by a sequence
   number instead of the clock.
 - Two actions can no longer run on the quarantine store at the same time (per
-  store lock; the second one answers "busy"); the window ignores clicks while
+  store lock whose name a non-elevated program cannot know; the second one
+  answers "busy"); the window ignores clicks while
   it waits for a helper process.
 - The scan writes its report and plan crash-safe, never prunes the plan it just
   wrote (clock behind), and the window picks this PC's plan by its stamp. A damaged plan no longer breaks
@@ -78,6 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The redacted share preview is written to a fresh, randomly named private
   folder instead of a fixed folder in `%TEMP%` that an elevated process could
   be tricked into following (junction).
+- When elevated, batch folders and undo records are created with locked
+  permissions from the first moment, and a batch whose folders or records give
+  an allow-rule to anybody but SYSTEM / Administrators is not trusted.
 - The single-file edition no longer deletes the unpack folder of a copy that has
   been running for more than a day (`in-use.lock`).
 - The window retries deleting the output files of its helper processes and
