@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RAM Doctor — اعرف لماذا ذاكرتك ممتلئة | فاحص الذاكرة لويندوز</title>
-<meta name="description" content="أداة مجانية ومفتوحة المصدر بملف واحد: تكتشف أين تذهب ذاكرة جهازك حين لا يُظهر مدير المهام السبب. تسرّب في تعريف، ذاكرة خارج العمليات، أو برنامج متخفٍّ، مع تقرير عربي واضح وعزل قابل للتراجع.">
+<meta name="description" content="أداة مجانية ومفتوحة المصدر بملف واحد: تكتشف أين تذهب ذاكرة جهازك حين لا يُظهر مدير المهام السبب. تسرّب في تعريف، ذاكرة خارج العمليات، أو برنامج متخفٍّ، مع تقرير واضح بالعربية أو الإنجليزية وعزل قابل للتراجع.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b">
@@ -13,7 +13,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="RAM Doctor">
 <meta property="og:title" content="RAM Doctor — اعرف لماذا ذاكرتك ممتلئة">
-<meta property="og:description" content="ملف واحد، نقرتان، وتقرير عربي واضح يكشف أين تذهب الذاكرة. مجاني ومفتوح المصدر.">
+<meta property="og:description" content="ملف واحد، نقرتان، وتقرير واضح بالعربية أو الإنجليزية يكشف أين تذهب الذاكرة. مجاني ومفتوح المصدر.">
 <meta property="og:url" content="https://iikurro.github.io/ram-doctor/">
 <meta property="og:image" content="https://iikurro.github.io/ram-doctor/assets/og-image.png">
 <meta property="og:image:width" content="1200">
@@ -22,10 +22,10 @@
 <meta property="og:locale:alternate" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="RAM Doctor — اعرف لماذا ذاكرتك ممتلئة">
-<meta name="twitter:description" content="ملف واحد، نقرتان، وتقرير عربي واضح يكشف أين تذهب الذاكرة. مجاني ومفتوح المصدر.">
+<meta name="twitter:description" content="ملف واحد، نقرتان، وتقرير واضح بالعربية أو الإنجليزية يكشف أين تذهب الذاكرة. مجاني ومفتوح المصدر.">
 <meta name="twitter:image" content="https://iikurro.github.io/ram-doctor/assets/og-image.png">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"RAM Doctor","alternateName":"فاحص الذاكرة","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"1.0.0","inLanguage":["ar","en"],"description":"Free open-source Windows tool that finds where memory goes when Task Manager shows nothing: kernel pool leaks, hidden processes and suspicious files, with a reversible quarantine and an Arabic report.","downloadUrl":"https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat","url":"https://iikurro.github.io/ram-doctor/","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"7san","url":"https://github.com/iiKurro"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"RAM Doctor","alternateName":"فاحص الذاكرة","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"1.0.0","inLanguage":["ar","en"],"description":"Free open-source Windows tool that finds where memory goes when Task Manager shows nothing: kernel pool leaks, hidden processes and suspicious files, with a reversible quarantine and an Arabic or English report.","downloadUrl":"https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat","url":"https://iikurro.github.io/ram-doctor/","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"7san","url":"https://github.com/iiKurro"}}
 </script>
 <script>
 /* apply the saved theme before first paint (no flash) */
@@ -194,6 +194,7 @@ section.s{padding:5rem 0}
 /* Windows-11 window frame (title bar drawn in CSS) */
 .win{margin:0;border:1px solid var(--border);border-radius:.8rem;overflow:hidden;background:var(--card);box-shadow:var(--shadow)}
 .win-bar{display:flex;align-items:center;gap:.6rem;height:2.25rem;padding-inline:.8rem;background:var(--win-bar);color:var(--win-fg);font-size:.78rem;direction:rtl}
+:root[dir="ltr"] .win-bar{direction:ltr}   /* English mode: logo and title on the left, window buttons on the right */
 .win-bar svg.logo{width:16px;height:16px}
 .win-ctl{margin-inline-start:auto;display:flex;gap:1rem;direction:ltr;opacity:.8}
 .win-ctl i{display:block;width:10px;height:10px;position:relative}
@@ -421,7 +422,7 @@ footer{border-top:1px solid var(--border);padding:3rem 0 2.5rem;background:var(-
   <div class="wrap hero-inner">
     <span class="badge rv"><i></i><span data-i18n="hero.badge">مجاني · مفتوح المصدر · بدون تثبيت</span></span>
     <h1 class="display rv" id="h1" data-i18n="hero.h1">الذاكرة ممتلئة…<br>ومدير المهام لا يُظهر السبب؟</h1>
-    <p class="sub rv" data-i18n="hero.sub">افتح ملفًا واحدًا، واعرف خلال دقيقة أين تذهب ذاكرتك فعلًا: تسرّب في تعريف (Driver)، ذاكرة خارج كل العمليات، أو برنامج متخفٍّ. مع تقرير عربي واضح تقدر ترسله لمن يساعدك.</p>
+    <p class="sub rv" data-i18n="hero.sub">افتح ملفًا واحدًا، واعرف خلال دقيقة أين تذهب ذاكرتك فعلًا: تسرّب في تعريف (Driver)، ذاكرة خارج كل العمليات، أو برنامج متخفٍّ. مع تقرير واضح بالعربية أو الإنجليزية تقدر ترسله لمن يساعدك.</p>
 
     <div class="cta rv">
       <a class="key" id="dl" data-phase="idle" aria-busy="false" href="https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat" download="RAM-Doctor.bat" rel="noopener">
@@ -496,9 +497,9 @@ footer{border-top:1px solid var(--border);padding:3rem 0 2.5rem;background:var(-
         <p data-i18n="s3.b">انتظر نحو دقيقة. تظهر النتيجة بألوان واضحة، وتقدر تفتح التقرير الكامل أو تعزل ما يستحق.</p>
         <div class="vis" style="padding:.6rem">
           <figure class="win" style="width:100%">
-            <div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
-            <img class="img-light" src="assets/gui-light.png" width="940" height="740" loading="lazy" decoding="async" alt="نافذة فاحص الذاكرة بالوضع الفاتح" data-i18n-attr="alt:img.gui.l">
-            <img class="img-dark" src="assets/gui-dark.png" width="940" height="740" loading="lazy" decoding="async" alt="نافذة فاحص الذاكرة بالوضع الداكن" data-i18n-attr="alt:img.gui.d">
+            <div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span data-i18n="win.title">فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+            <img class="img-light" src="assets/gui-light.png" width="940" height="740" loading="lazy" decoding="async" alt="نافذة فاحص الذاكرة بالوضع الفاتح" data-i18n-attr="alt:img.gui.l;src:src.gui.l">
+            <img class="img-dark" src="assets/gui-dark.png" width="940" height="740" loading="lazy" decoding="async" alt="نافذة فاحص الذاكرة بالوضع الداكن" data-i18n-attr="alt:img.gui.d;src:src.gui.d">
           </figure>
         </div>
       </div>
@@ -521,8 +522,8 @@ footer{border-top:1px solid var(--border);padding:3rem 0 2.5rem;background:var(-
   <div class="wrap">
     <div class="s-head rv">
       <span class="kicker" data-i18n="act.k">من الداخل</span>
-      <h2 id="act-h" data-i18n="act.h">نافذة واحدة، ونتيجة بالعربي</h2>
-      <p data-i18n="act.p">تصميم يشبه ويندوز 11، يتبع الوضع الفاتح والداكن ولون التمييز عندك، وبأزرار كبيرة وواضحة.</p>
+      <h2 id="act-h" data-i18n="act.h">نافذة واحدة، وبلغتك</h2>
+      <p data-i18n="act.p">تصميم يشبه ويندوز 11، يتبع الوضع الفاتح والداكن ولون التمييز عندك، وبأزرار كبيرة وواضحة. بالعربية أو الإنجليزية، وبزر يبدّل اللغة فورًا.</p>
     </div>
     <div class="tabwrap rv">
       <div class="tabs" role="tablist" aria-label="Screens">
@@ -531,18 +532,18 @@ footer{border-top:1px solid var(--border);padding:3rem 0 2.5rem;background:var(-
         <button class="tab" role="tab" id="t3" aria-controls="p3" aria-selected="false" tabindex="-1" data-i18n="tab.3">تسرّب في تعريف</button>
       </div>
       <figure class="panel" id="p1" role="tabpanel" aria-labelledby="t1" style="margin:0">
-        <div class="win"><div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
-        <img src="assets/gui-progress.png" width="940" height="740" loading="lazy" decoding="async" alt="النافذة أثناء الفحص مع شريط التقدم" data-i18n-attr="alt:img.progress"></div>
+        <div class="win"><div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span data-i18n="win.title">فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+        <img src="assets/gui-progress.png" width="940" height="740" loading="lazy" decoding="async" alt="النافذة أثناء الفحص مع شريط التقدم" data-i18n-attr="alt:img.progress;src:src.progress"></div>
         <figcaption data-i18n="cap.1">شريط تقدّم واضح وخطوات مفهومة. لا تغلق النافذة حتى ينتهي الفحص.</figcaption>
       </figure>
       <figure class="panel" id="p2" role="tabpanel" aria-labelledby="t2" hidden style="margin:0">
-        <div class="win"><div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
-        <img src="assets/gui-clean.png" width="940" height="740" loading="lazy" decoding="async" alt="نتيجة فحص جهاز سليم" data-i18n-attr="alt:img.clean"></div>
+        <div class="win"><div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span data-i18n="win.title">فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+        <img src="assets/gui-clean.png" width="940" height="740" loading="lazy" decoding="async" alt="نتيجة فحص جهاز سليم" data-i18n-attr="alt:img.clean;src:src.clean"></div>
         <figcaption data-i18n="cap.2">إن لم يجد شيئًا فهو يقول ذلك صراحةً بدل أن يخيفك بلا سبب.</figcaption>
       </figure>
       <figure class="panel" id="p3" role="tabpanel" aria-labelledby="t3" hidden style="margin:0">
-        <div class="win"><div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
-        <img src="assets/gui-kernel.png" width="940" height="740" loading="lazy" decoding="async" alt="نتيجة تظهر تسربًا في ذاكرة النواة" data-i18n-attr="alt:img.kernel"></div>
+        <div class="win"><div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span data-i18n="win.title">فاحص الذاكرة - RAM Doctor</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
+        <img src="assets/gui-kernel.png" width="940" height="740" loading="lazy" decoding="async" alt="نتيجة تظهر تسربًا في ذاكرة النواة" data-i18n-attr="alt:img.kernel;src:src.kernel"></div>
         <figcaption data-i18n="cap.3">تسرّب في ذاكرة النواة: يحدد التقرير الوسم والتعريف المرجّح لتحديثه.</figcaption>
       </figure>
     </div>
@@ -622,11 +623,11 @@ footer{border-top:1px solid var(--border);padding:3rem 0 2.5rem;background:var(-
         <div class="shots">
           <figure class="win" style="margin:0">
             <div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span data-i18n="shot.share">مشاركة التقرير</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
-            <img src="assets/gui-share.png" loading="lazy" decoding="async" alt="نافذة مشاركة التقرير مع المساعد" data-i18n-attr="alt:img.share">
+            <img src="assets/gui-share.png" loading="lazy" decoding="async" alt="نافذة مشاركة التقرير مع المساعد" data-i18n-attr="alt:img.share;src:src.share">
           </figure>
           <figure class="win" style="margin:0">
             <div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span data-i18n="shot.profile">اختيار اسم المستخدم</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
-            <img src="assets/gui-profile.png" loading="lazy" decoding="async" alt="نافذة اختيار اسم المستخدم لمرة واحدة" data-i18n-attr="alt:img.profile">
+            <img src="assets/gui-profile.png" loading="lazy" decoding="async" alt="نافذة اختيار اسم المستخدم لمرة واحدة" data-i18n-attr="alt:img.profile;src:src.profile">
           </figure>
         </div>
       </article>
@@ -638,7 +639,7 @@ footer{border-top:1px solid var(--border);padding:3rem 0 2.5rem;background:var(-
       <article class="fcard rv">
         <div class="tile"><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg></div>
         <h3 data-i18n="f6.t">افتح ملف التقرير لإرساله</h3>
-        <p data-i18n="f6.b">التقرير الكامل ملف HTML عربي واضح، فيه بصمة SHA-256 لكل ملف مشبوه للتحقق منها في VirusTotal. زر واحد يفتح مكانه لترسله.</p>
+        <p data-i18n="f6.b">التقرير الكامل ملف HTML واضح (بالعربية أو الإنجليزية)، فيه بصمة SHA-256 لكل ملف مشبوه للتحقق منها في VirusTotal. زر واحد يفتح مكانه لترسله.</p>
       </article>
     </div>
   </div>
@@ -661,8 +662,8 @@ footer{border-top:1px solid var(--border);padding:3rem 0 2.5rem;background:var(-
     </div>
     <figure class="win browser rv" style="margin:0">
       <div class="win-bar"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span class="addr mono">RAMDoctor-PC-20260101-120000.html</span><span class="win-ctl" aria-hidden="true"><i></i><i></i><i></i></span></div>
-      <img class="img-light" src="assets/report-sample.png" width="1000" height="760" loading="lazy" decoding="async" alt="مثال على تقرير الفحص بالوضع الفاتح" data-i18n-attr="alt:img.rep.l">
-      <img class="img-dark" src="assets/report-sample-dark.png" width="1000" height="760" loading="lazy" decoding="async" alt="مثال على تقرير الفحص بالوضع الداكن" data-i18n-attr="alt:img.rep.d">
+      <img class="img-light" src="assets/report-sample.png" width="1000" height="760" loading="lazy" decoding="async" alt="مثال على تقرير الفحص بالوضع الفاتح" data-i18n-attr="alt:img.rep.l;src:src.rep.l">
+      <img class="img-dark" src="assets/report-sample-dark.png" width="1000" height="760" loading="lazy" decoding="async" alt="مثال على تقرير الفحص بالوضع الداكن" data-i18n-attr="alt:img.rep.d;src:src.rep.d">
     </figure>
   </div>
 </section>
@@ -794,7 +795,7 @@ var EN={
 's3.t':'Press “Start scan”','s3.b':'Wait about a minute. The result appears in clear colours, and you can open the full report or isolate what deserves it.',
 'chip.done':'Download complete','chip.open':'Open file','uac.t':'User Account Control','uac.q':'Do you want to allow this app to make changes to your device?','uac.pub':'Verified publisher: Microsoft Windows','uac.yes':'Yes','uac.no':'No',
 'img.gui.l':'The RAM Doctor window, light theme','img.gui.d':'The RAM Doctor window, dark theme','how.cta':'Download the tool now',
-'act.k':'Inside','act.h':'One window, results in Arabic','act.p':'Designed to feel like Windows 11: it follows light/dark mode and your accent colour, with big, clear buttons.',
+'act.k':'Inside','act.h':'One window, in your language','act.p':'Designed to feel like Windows 11: it follows light/dark mode and your accent colour, with big, clear buttons. English or Arabic, with a button that switches on the fly.',
 'tab.1':'During the scan','tab.2':'A healthy PC','tab.3':'A driver leak',
 'img.progress':'The window during a scan, with the progress bar','img.clean':'Scan result for a healthy PC','img.kernel':'A result showing a kernel memory leak',
 'cap.1':'A clear progress bar and understandable steps. Keep the window open until the scan ends.','cap.2':'When it finds nothing it says so plainly, instead of scaring you for no reason.','cap.3':'A kernel-memory leak: the report names the pool tag and the likely driver to update.',
@@ -811,11 +812,15 @@ var EN={
 'after.al':'After the scan','after.1':'Scan','after.2':'Read the result','after.3':'Press “Share” or copy the summary',
 'pr.s5.t':'The username you chose (only if you use Share)','pr.s5.b':'A tiny file that remembers your sharing nickname. One button in the window deletes it.',
 'f5.t':'Copy a ready-to-paste summary in one click','f5.b':'A short redacted summary (no Windows username or PC name) that you paste into any chat, so whoever helps you understands the situation at once.',
-'f6.t':'Open the report file to send it','f6.b':'The full report is a clear Arabic HTML file with a SHA-256 for each suspicious file, ready to check on VirusTotal. One button opens its location so you can send it.',
+'f6.t':'Open the report file to send it','f6.b':'The full report is a clear HTML file (English or Arabic) with a SHA-256 for each suspicious file, ready to check on VirusTotal. One button opens its location so you can send it.',
 'f7.t':'Light and fast','f7.b':'One file of about 340 KB that unpacks into a locked temp folder and cleans up on exit. The scan peaks at about 110 MB of RAM, runs at low priority and takes about a minute, with no installation.',
 'rep.k':'Report','rep.h':'One report that explains everything','rep.p':'After the scan a clean report is saved. It works offline: open it in your browser or send it to whoever is helping you.',
 'rep.1':'Where memory goes: programs, kernel, shared, unaccounted','rep.2':'Biggest consumers and fastest growers during the scan','rep.3':'Kernel pool tags and the likely driver','rep.4':'Suspicious files with reasons and a SHA-256','rep.5':'Suggested fixes in plain language',
 'img.rep.l':'Sample scan report, light theme','img.rep.d':'Sample scan report, dark theme',
+'win.title':'RAM Doctor',
+/* the screenshots follow the language: the English pictures live in assets/en/ (same names), the Arabic ones are the markup's own src */
+'src.gui.l':'assets/en/gui-light.png','src.gui.d':'assets/en/gui-dark.png','src.progress':'assets/en/gui-progress.png','src.clean':'assets/en/gui-clean.png','src.kernel':'assets/en/gui-kernel.png',
+'src.share':'assets/en/gui-share.png','src.profile':'assets/en/gui-profile.png','src.rep.l':'assets/en/report-sample.png','src.rep.d':'assets/en/report-sample-dark.png',
 'pr.k':'Privacy &amp; footprint','pr.h':'What does it save on your PC? Very little','pr.p':'Nothing hidden: these are all the files the tool may leave, and everything it never does.',
 'pr.save':'What it saves','pr.s1.t':'A report and a plan per scan','pr.s1.b':'About 45 KB per scan; only the newest 3 scans are kept. The “Clear tool reports” button removes them.',
 'pr.s2.t':'Quarantined files (only if you use quarantine)','pr.s2.b':'Restorable, or permanently deletable from the same window.',

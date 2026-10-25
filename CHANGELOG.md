@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **English interface.** The window, the HTML report, the texts the scan writes (observations, verdict, suspect reasons), the share
+  messages and the chat summary now exist in English (left-to-right) as well as Arabic (right-to-left). RAM Doctor opens in Arabic when the
+  Windows display language is Arabic and in English otherwise; `-Lang ar|en` on the window, the scan and the share script overrides it.
+  A language button in the window header switches the open window live (text, layout direction, mirrored frame; the findings and the
+  selection are kept). Nothing is saved: no settings file, no profile entry.
+- `src/lib/Strings.ps1`: the one string table (`ar` + `en`, `Get-Text 'key' args`). No other source file holds a user-facing literal.
+- The plan gets an additive `lang` field (`ar` or `en`); the schema is otherwise unchanged. Plans without it count as Arabic.
+- The English report keeps the inert-report contract (marker, one tiny script, no external URLs) and is accepted by the relay's validator.
+- English screenshots (`docs/assets/en/`) for the README and the website; the website shows them in English mode and keeps the Arabic
+  pictures in Arabic mode. `tests/gui/Make-Screenshots.ps1 -Lang en|ar` regenerates them (the report pictures with a headless Edge/Chrome).
+- Tests: `Strings.Tests.ps1` (both tables in step, no untranslated text, no stray literals), both languages in `Test-ReportSafety.ps1`,
+  the share client and CLI (`-Lang`), the plan `lang` field, and `tests/gui/Flow.Test.ps1` now runs the whole window flow in Arabic and in
+  English, including the live language switch.
+
+### Changed
+
+- The share client's `summary.md` omits the right-to-left block for English plans (the relay only keeps `<div dir="rtl">`).
+- Docs: Arabic is no longer described as the only language; the roadmap item "English interface" is done.
+
 ## [1.0.1] - 2026-10-25
 
 ### Added

@@ -10,7 +10,7 @@ Find your symptom, apply the fix. If nothing helps, open a
 * [The window says it is not running as administrator](#not-running-as-administrator)
 * [Nothing happens when I double-click](#nothing-happens-when-i-double-click)
 * [PowerShell Constrained Language Mode, AppLocker, WDAC](#constrained-language-mode-applocker-wdac)
-* [Arabic or other languages / locales](#arabic-or-other-languages--locales)
+* [Arabic, English and other locales](#arabic-english-and-other-locales)
 * [The scan is slow, or the progress bar seems stuck](#the-scan-is-slow-or-seems-stuck)
 * [The report says everything is fine but the RAM is still full](#the-report-says-everything-is-fine)
 * [Quarantine problems](#quarantine-problems)
@@ -89,11 +89,15 @@ Language Mode** (enforced by AppLocker or WDAC policies) `Add-Type` is blocked.
   `powershell -File src\RAM-Doctor.ps1`.
 * On managed corporate PCs, ask IT before running any tool of this kind.
 
-## Arabic or other languages / locales
+## Arabic, English and other locales
 
-* The window and the report are **Arabic (RTL)**; technical identifiers (pool
-  tags, process names, paths) stay in English. Console and log lines are English
-  ASCII on purpose, because Arabic is garbled in a classic console.
+* The window and the report come in **English (LTR)** and **Arabic (RTL)**. The
+  tool opens in Arabic when the Windows display language is Arabic and in English
+  otherwise; the globe button in the window header switches it live, and
+  `-Lang ar|en` forces one from the command line. The scan writes its report in
+  the language that was active when you pressed *Start scan*. Technical
+  identifiers (pool tags, process names, paths) stay in English. Console and log
+  lines are English ASCII on purpose, because Arabic is garbled in a classic console.
 * Memory counters are read through **locale-independent WMI classes**, and event
   logs are filtered by provider name and ID, so non-English Windows editions are
   expected to work. The project was developed and tested on English Windows 11,

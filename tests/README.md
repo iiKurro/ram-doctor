@@ -51,7 +51,9 @@ reproduce CI exactly.
 | `Actions.Tests.ps1` | quarantine -> restore -> purge on a harmless fixture, plus the safety invariants (other-PC plans refused, changed files skipped, protected files never moved) |
 | `Elevated.Tests.ps1` | **administrator only** (25 tests, skipped cleanly otherwise): the locked-down store at `C:\ProgramData\RAM-Doctor` (ACL, re-verification, junction / foreign-owner handling), the quarantine -> restore -> purge cycle on the real default store, forged-manifest refusals, service start-type changes (test services are created and deleted), the native-helper loader (ACL'd compiler folder, `csc.exe` fallback) |
 | `Gate.Tests.ps1` | proves the static gate catches what it claims to (12 planted problems, a planted `RAMDOC_` hook in a packed script, a release workflow that builds with `-DevHooks` or publishes anything but the two release files) and accepts a clean repository |
-| `Report.Tests.ps1` | the HTML report is inert and well-formed (wraps `fixtures/Test-ReportSafety.ps1`) |
+| `Report.Tests.ps1` | the HTML report is inert and well-formed, **in Arabic and in English** (wraps `fixtures/Test-ReportSafety.ps1`: 8 scenario/language pairs; English must have no Arabic text, `lang`/`dir` must match, no unresolved `[[key]]` or `{0}`) |
+| `Strings.Tests.ps1` | the one string table (`src/lib/Strings.ps1`): same keys and placeholders in `ar` and `en`, nothing untranslated, no Arabic inside `en`, every key used and every used key defined, no user-facing Arabic literal anywhere else in `src/`, and the language rule (`-Lang`, Windows UI language) |
+| `Contract.Tests.ps1` | the real report (Arabic **and** English) must pass the relay's validator, and the hand-written versions equal `build/VERSION` |
 | `share/` | the opt-in report-sharing feature (unit + integration against a local mock relay) |
 
 ## Tests that need an administrator session
@@ -87,7 +89,8 @@ Both carry a byte-identical payload and share the same secure-unpack code, so th
 | `build/Build-SingleFile.ps1 -Verify` | builds `dist/RAM-Doctor.bat` and `dist/SHA256SUMS.txt`, checks the release has no hooks, then unpacks the test variant's copy of the payload and compares every file with its source |
 | `build/Expand-SingleFile.ps1` | runs the real unpack command of a **test-variant** `.bat` in unpack-only mode (secure folder when elevated, a private temp folder otherwise) and compares the result with the sources (used by the tests; it refuses the release file, which has no unpack-only mode) |
 | `tests/Invoke-ElevatedTests.ps1` | runs every `Elevated`-tagged test; refuses to run unelevated (exit 2) and fails when fewer than 20 of them passed |
-| `tests/gui/Flow.Test.ps1` | optional end-to-end test of the window; needs an interactive desktop, so CI treats it as non-blocking |
+| `tests/gui/Flow.Test.ps1` | optional end-to-end test of the window, run in **both languages** (`-Lang en`, `-Lang ar`, default both): layout direction, a real scan written in the window language, the live language switch (and back), quarantine / restore / purge, share (dry run), clean-up. Needs an interactive desktop, so CI treats it as non-blocking |
+| `tests/gui/Make-Screenshots.ps1` | regenerates the pictures of the window and the report from synthetic data (`-Lang en` writes `docs/assets/en/`, `-Lang ar` writes `docs/assets/`); needs an interactive desktop and Edge or Chrome for the report pictures |
 
 ## The relay worker (Node)
 

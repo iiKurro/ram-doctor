@@ -14,8 +14,10 @@ never a public issue.
 * **False positives / false negatives** are the most valuable reports. Use the
   [false-positive form](https://github.com/iiKurro/ram-doctor/issues/new?template=false_positive.yml).
 * Bug reports and feature ideas via the other [issue forms](https://github.com/iiKurro/ram-doctor/issues/new/choose).
-* Documentation, translations (the UI and report are Arabic-first today; an
-  English UI is on the [roadmap](README.md#roadmap)), and tests.
+* Documentation, translations (the window, the report and the share messages
+  exist in Arabic and English; every text is in
+  [`src/lib/Strings.ps1`](src/lib/Strings.ps1), see
+  [Texts and languages](#texts-and-languages)), and tests.
 * Code, see below.
 
 Open an issue before large changes so we can agree on the approach.
@@ -30,6 +32,8 @@ src/                  the tool (this is what ships)
   lib/Native.cs       P/Invoke helpers (pool tags, PID probe, image names, tag search)
   lib/Fluent.cs       Windows 11 style WinForms controls
   lib/Report.ps1      HTML report builder
+  lib/Strings.ps1     the one string table (Arabic + English) and Get-Text
+  lib/Share.ps1       client of the optional Share button (redaction, bundle, upload)
 server/                the relay (Cloudflare Worker) behind the optional Share button
 build/Build-SingleFile.ps1   packs src/ into dist/RAM-Doctor.bat
 tests/                automated checks (also run by CI)
@@ -108,9 +112,9 @@ These exist because each one has bitten this project before.
 
 * Target **Windows PowerShell 5.1**. No ternary `?:`, no `??`, no `?.`, no
   `&&` / `||` pipeline chains.
-* Every `.ps1` is **UTF-8 with BOM** (the user-facing strings are Arabic;
-  without the BOM Windows PowerShell 5.1 reads them as ANSI and corrupts
-  them). Check your editor does not strip it.
+* Every `.ps1` is **UTF-8 with BOM** (`lib/Strings.ps1` holds Arabic text;
+  without the BOM Windows PowerShell 5.1 reads it as ANSI and corrupts it).
+  Check your editor does not strip it.
 * Wrap anything that may return one object in `@(...)` before using `.Count`:
   on a single `[pscustomobject]` `.Count` is `$null` in 5.1.
 * `$null | ForEach-Object { ... }` still runs the body once. Guard with `if`.
@@ -120,8 +124,11 @@ These exist because each one has bitten this project before.
   when a parameter called `$Plan` exists. Do not name a variable `$pid`.
 * Pass number lists to scripts started with `-File` as a **string**
   (`-Select 1,3`): a typed `[int[]]` parameter turns `1,2` into `12`.
-* Console and log lines are **English ASCII** (Arabic is garbled in conhost);
-  Arabic is for the GUI and the HTML report.
+* Console and log lines are **English ASCII** (Arabic is garbled in conhost),
+  whatever language the window uses; the translated texts are for the GUI, the
+  HTML report, the share messages and the copy-summary text.
+* **No user-facing literal outside `src/lib/Strings.ps1`**, see
+  [Texts and languages](#texts-and-languages).
 * **The scan never uses the network and there is no telemetry.** The only
   network code is the optional *Share with my helper* flow
   ([docs/sharing.md](docs/sharing.md)): it does nothing until the user presses
@@ -164,8 +171,37 @@ blocks that expand paths (a `)` in a file name breaks them), use `goto`.
   Worker must cover rate limiting, the 3-file whitelist, the 2 MB cap, report
   sanitising, name sanitising, the kill switch and (when enabled) invite codes. See [server/README.md](server/README.md) for how to run the
   Worker tests and [docs/sharing.md](docs/sharing.md) for the protocol.
-* Adding a detection signal? Give it a key, a weight, a reason string, and an
-  entry in [docs/how-detection-works.md](docs/how-detection-works.md).
+* Adding a detection signal? Give it a key, a weight, a reason string (a key in
+  both language tables, see below), and an entry in
+  [docs/how-detection-works.md](docs/how-detection-works.md).
+
+### Texts and languages
+
+Everything a person can read lives in **one** file, `src/lib/Strings.ps1`: an
+`ar` table and an `en` table with the same keys (`area.topic`, e.g.
+`obs.npp.high.t`, `rpt.sus.why`, `gui.btn.scan`, `share.msg.offline`). Code asks
+for a text with `Get-Text 'key' $arg0 $arg1` (templates use `{0}`, `{1}`;
+`\n` is a line break). The language is Arabic when the Windows display
+language is Arabic and English otherwise; every script that shows text takes
+`-Lang ar|en`, and the window has a button that switches it live. Nothing about
+the language is ever saved.
+
+* New or changed text: edit **both** tables in the same commit. Write English
+  without apostrophes (the tables are single-quoted strings) and keep a
+  template's placeholders identical in both languages.
+* The scan writes its observations, reasons and verdict **in the scan language**
+  and adds `"lang": "ar|en"` to the plan; the plan schema is otherwise
+  unchanged. Plans without `lang` (older releases) count as Arabic.
+* The report follows `$data.Lang` (`<html lang dir>`, Arabic RTL / English LTR)
+  and must keep the inert-report contract in both languages.
+* `tests/Strings.Tests.ps1` fails on a key missing in one language, different
+  placeholders, Arabic inside the English table, an untranslated (identical)
+  text, a key used in code but not defined, a defined key nobody uses, and any
+  Arabic literal outside `Strings.ps1`.
+* Layout: the window is mirrored by `RightToLeft` / `RightToLeftLayout`, and the
+  `Fluent.cs` controls draw correctly in both directions: do not hard-code
+  left/right, use the control's `RightToLeft` (see how `FList` / `FInfoBar`
+  do it).
 
 ## Commits and pull requests
 
