@@ -132,7 +132,7 @@ $script:ReportDarkTokens = @'
 --text:#ffffff;--text2:#cdcdcd;--text3:#a6a6a6;--accent:#60cdff;--accent-h:#78d6ff;--on-accent:#00131c;--accent-soft:#16384a;
 --ok:#6ccb5f;--ok-bg:#2a3a22;--ok-st:#3f5a33;--warn:#fce100;--warn-bg:#43391a;--warn-st:#6b5b1d;
 --bad:#ff99a4;--bad-bg:#442726;--bad-st:#6e3a3b;--info:#60cdff;--info-bg:#16384a;--info-st:#245a78;
---seg1:#4a9be8;--seg2:#2d5f94;--seg3:#9a82e6;--seg4:#f0aa3a;--seg5:#f06a60;--seg6:#7b8794;--seg7:#4a4f55;
+--seg1:#4a9be8;--seg2:#2d5f94;--seg3:#9a82e6;--seg4:#f0aa3a;--seg5:#f06a60;--seg6:#7b8794;--seg7:#4a4f55;--seg8:#3cc8b4;
 --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 14px rgba(0,0,0,.25);color-scheme:dark;
 '@
 
@@ -141,7 +141,7 @@ $script:ReportLightTokens = @'
 --text:#1a1a1a;--text2:#505050;--text3:#6b6b6b;--accent:#0067c0;--accent-h:#1a77c9;--on-accent:#ffffff;--accent-soft:#e8f1fa;
 --ok:#0f6b0f;--ok-bg:#dff6dd;--ok-st:#b6e2b3;--warn:#7a4a00;--warn-bg:#fff4ce;--warn-st:#f0d98a;
 --bad:#a8231b;--bad-bg:#fde7e9;--bad-st:#f2b4b9;--info:#005a9e;--info-bg:#e8f1fa;--info-st:#b6d4ee;
---seg1:#2f7fd1;--seg2:#9cc6ee;--seg3:#7a5cd1;--seg4:#e0961a;--seg5:#d9453a;--seg6:#9aa5b1;--seg7:#d4d8dd;
+--seg1:#2f7fd1;--seg2:#9cc6ee;--seg3:#7a5cd1;--seg4:#e0961a;--seg5:#d9453a;--seg6:#9aa5b1;--seg7:#d4d8dd;--seg8:#1a9e8f;
 --shadow:0 1px 2px rgba(0,0,0,.06),0 2px 10px rgba(0,0,0,.045);color-scheme:light;
 '@
 
@@ -234,7 +234,13 @@ h3{font-size:15px;margin:18px 0 8px;font-weight:650}
 .legend li{display:flex;align-items:center;gap:9px;font-size:13px}
 .legend .sw{width:12px;height:12px;border-radius:3px;flex:none}
 .legend .n{flex:1;color:var(--text2)}.legend .v{font-weight:650;font-variant-numeric:tabular-nums}.legend .p{color:var(--text3);font-size:12px;min-width:44px;text-align:end}
-.s1{background:var(--seg1)}.s2{background:var(--seg2)}.s3{background:var(--seg3)}.s4{background:var(--seg4)}.s5{background:var(--seg5)}.s6{background:var(--seg6)}.s7{background:var(--seg7)}
+.s1{background:var(--seg1)}.s2{background:var(--seg2)}.s3{background:var(--seg3)}.s4{background:var(--seg4)}.s5{background:var(--seg5)}.s6{background:var(--seg6)}.s7{background:var(--seg7)}.s8{background:var(--seg8)}
+/* why Task Manager does not show it: one row per part (name, value, explanation underneath) */
+.tml{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:12px}
+.tml li{display:grid;grid-template-columns:12px 1fr auto;gap:2px 10px;align-items:baseline}
+.tml .sw{width:12px;height:12px;border-radius:3px;align-self:center}
+.tml .n{font-weight:600}.tml .v{font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tml .d{grid-column:2/-1;color:var(--text2);font-size:13px;line-height:1.6}
 .note{color:var(--text2);font-size:13px;margin:12px 0 0}
 .formula{display:inline-block;direction:ltr;text-align:left;unicode-bidi:isolate;font:12.5px/1.6 var(--mono);background:var(--layer2);border:1px solid var(--stroke);border-radius:6px;padding:6px 12px;max-width:100%;overflow-wrap:anywhere}
 .grow{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:6px}
@@ -304,7 +310,7 @@ footer .wrap{display:flex;flex-wrap:wrap;gap:6px 18px;justify-content:space-betw
  body{background:#fff;font-size:11.5px;line-height:1.55}
  .appbar{position:static;backdrop-filter:none;background:#fff;border-bottom:2px solid #1a1a1a}.toc,.tools,.skip,.btn{display:none!important}
  .wrap{max-width:none;padding:0}
- .card,.kpi,.hero,details.sus,details.group,ol.steps li,tr,.legend li,.grow div{break-inside:avoid;box-shadow:none}
+ .card,.kpi,.hero,details.sus,details.group,ol.steps li,tr,.legend li,.tml li,.grow div{break-inside:avoid;box-shadow:none}
  section.blk{margin-top:16px}h2.sec{break-after:avoid}.tw{max-height:none;overflow:visible}th{position:static}
  summary .chev{display:none}details.sus,details.group{border-color:#bbb}
  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -405,7 +411,10 @@ function New-RamReportBody($d) {
     L "<div class='ttl'><h1>$(Get-Text 'rpt.h1')</h1><p>RAM Doctor <bdi dir='ltr'>v$(E $d.Version)</bdi> &middot; <bdi dir='ltr'>$(E $d.Created)</bdi></p></div>"
     L "<div class='tools'><button class='btn btn-icon' id='themeBtn' type='button' aria-label='$(Get-Text 'rpt.theme.dark')'><span class='ic-moon'>$(Ic 'moon')</span><span class='ic-sun'>$(Ic 'sun')</span></button><button class='btn' id='printBtn' type='button'>$(Ic 'print')<span>$(Rich (Get-Text 'rpt.print'))</span></button></div>"
     L '</div></header>'
-    $toc = "<a href='#overview'>$(Get-Text 'rpt.nav.overview')</a><a href='#memory'>$(Get-Text 'rpt.nav.memory')</a><a href='#consumers'>$(Get-Text 'rpt.nav.consumers')</a><a href='#pool'>$(Get-Text 'rpt.nav.pool')</a><a href='#suspects'>$(Get-Text 'rpt.nav.suspects')</a><a href='#hidden'>$(Get-Text 'rpt.nav.hidden')</a><a href='#drivers'>$(Get-Text 'rpt.nav.drivers')</a><a href='#evidence'>$(Get-Text 'rpt.nav.evidence')</a><a href='#next'>$(Get-Text 'rpt.nav.next')</a>"
+    # scans after 1.1.2 carry the breakdown of the memory that Task Manager does not show (memory.HiddenGB ...)
+    $hasBd = [bool]($m -and $m.PSObject.Properties['HiddenGB'] -and $null -ne $m.HiddenGB)
+    $tocTm = $(if ($hasBd) { "<a href='#taskmgr'>$(Get-Text 'rpt.nav.tm')</a>" } else { '' })
+    $toc = "<a href='#overview'>$(Get-Text 'rpt.nav.overview')</a>$tocTm<a href='#memory'>$(Get-Text 'rpt.nav.memory')</a><a href='#consumers'>$(Get-Text 'rpt.nav.consumers')</a><a href='#pool'>$(Get-Text 'rpt.nav.pool')</a><a href='#suspects'>$(Get-Text 'rpt.nav.suspects')</a><a href='#hidden'>$(Get-Text 'rpt.nav.hidden')</a><a href='#drivers'>$(Get-Text 'rpt.nav.drivers')</a><a href='#evidence'>$(Get-Text 'rpt.nav.evidence')</a><a href='#next'>$(Get-Text 'rpt.nav.next')</a>"
     L "<nav class='toc' aria-label='$(Get-Text 'rpt.nav.label')'><div class='wrap'>$toc</div></nav>"
     L '<main id="main" class="wrap">'
 
@@ -445,9 +454,48 @@ function New-RamReportBody($d) {
     L "<p class='fine'>$(Ic 'info') $(Get-Text 'rpt.fine')</p>"
     L '</div></section>'
 
+    # ---------------------------------------------------------------- why does Task Manager not show it? (the user's real question)
+    if ($hasBd) {
+        $priv = [double]$m.ProcPrivateGB
+        $drvKnown = -not ($m.PSObject.Properties['DriverReservedKnown'] -and -not $m.DriverReservedKnown)
+        $sharedDesc = Get-Text 'rpt.tm.shared.d'
+        $topSh = @($m.TopShared | Where-Object { $_ -and $_.name })
+        if ($topSh.Count -gt 0) {
+            $shItems = @($topSh | ForEach-Object { Get-Text 'sum.shared.item' ([string]$_.name) $_.count (Fx ([double]$_.sharedMB / 1024)) })
+            $sharedDesc += ' ' + (Get-Text 'rpt.tm.shared.top' ($shItems -join (Get-Text 'sep.list')))
+        }
+        if ($drvKnown) {
+            $drvDesc = Get-Text 'rpt.tm.drivers.d'
+            $cands = @($m.DriverReservedCandidates | Where-Object { $_ })
+            if ($cands.Count -gt 0 -and [double]$m.DriverReservedGB -ge 0.1) { $drvDesc += ' ' + (Get-Text 'rpt.tm.drivers.cand' ($cands -join (Get-Text 'sep.list'))) }
+        } else { $drvDesc = Get-Text 'rpt.tm.drivers.unknown' }
+        $parts = @(
+            @{ n = (Get-Text 'rpt.tm.private'); v = $priv; c = 's1'; d = (Get-Text 'rpt.tm.private.d'); show = $true },
+            @{ n = (Get-Text 'rpt.tm.shared'); v = [double]$m.SharedUniqueGB; c = 's2'; d = $sharedDesc; show = $true },
+            @{ n = (Get-Text 'rpt.tm.drivers'); v = [double]$m.DriverReservedGB; c = 's4'; d = $drvDesc; show = ((-not $drvKnown) -or [double]$m.DriverReservedGB -ge 0.01) },
+            @{ n = (Get-Text 'rpt.tm.kernel'); v = [double]$m.KernelPoolsGB; c = 's3'; d = (Get-Text 'rpt.tm.kernel.d' (Fx $m.NonPagedGB) (Fx $m.PagedResidentGB)); show = $true },
+            @{ n = (Get-Text 'rpt.tm.system'); v = [double]$m.SystemOtherGB; c = 's8'; d = (Get-Text 'rpt.tm.system.d'); show = $true },
+            @{ n = (Get-Text 'rpt.tm.unexpl'); v = [double]$m.UnexplainedGB; c = 's5'; d = (Get-Text 'rpt.tm.unexpl.d'); show = ([double]$m.UnexplainedGB -ge 0.05) }
+        )
+        $parts = @($parts | Where-Object { $_.show })
+        $barSum = ($parts | ForEach-Object { [math]::Max(0.0, $_.v) } | Measure-Object -Sum).Sum
+        if (-not $barSum -or $barSum -le 0) { $barSum = 1 }
+        L "<section id='taskmgr' class='blk' aria-labelledby='t-tm'><h2 class='sec' id='t-tm'>$(Ic 'eye')$(Get-Text 'rpt.tm.h')</h2><div class='card'>"
+        L "<p class='lead'>$(Rich (Get-Text 'rpt.tm.lead' ((Fx $priv) + ' GB') ((Fx $m.UsedGB) + ' GB') ((Fx $m.HiddenGB) + ' GB')))</p>"
+        L "<div class='stack' role='img' aria-label='$(E (Get-Text 'rpt.tm.bar'))'>"
+        foreach ($g in $parts) { if ($g.v -gt 0) { L "<i class='$($g.c)' style='flex:0 0 $(Fx (100 * $g.v / $barSum) '0.##')%' title='$(E $g.n): $(Fx $g.v) GB'></i>" } }
+        L "</div><ul class='tml'>"
+        foreach ($g in $parts) { L "<li><span class='sw $($g.c)'></span><span class='n'>$(Rich $g.n)</span><span class='v'>$(Val $g.v 'GB')</span><span class='d'>$(Rich $g.d)</span></li>" }
+        L '</ul>'
+        L "<p class='note'>$(Rich (Get-Text 'rpt.tm.standby' ((Fx $m.StandbyGB) + ' GB')))</p>"
+        L "<p class='note'>$(Rich (Get-Text 'rpt.tm.how' ((Fx $m.ProcSharedGB) + ' GB')))</p>"
+        L '</div></section>'
+    }
+
     # ---------------------------------------------------------------- KPI tiles
     $used = [double]$m.UsedGB; $usedPct = 100 * $used / $total
-    $npp = [double]$m.NonPagedGB; $pgd = [double]$m.PagedGB; $una = [double]$m.UnaccountedGB
+    # "not attributed": the corrected value when the scan has it (the 1.0-1.1 formula let double-counted shared memory hide driver reservations)
+    $npp = [double]$m.NonPagedGB; $pgd = [double]$m.PagedGB; $una = $(if ($hasBd) { [double]$m.UnattributedGB } else { [double]$m.UnaccountedGB })
     $commitPct = if ([double]$m.CommitLimitGB -gt 0) { 100 * [double]$m.CommittedGB / [double]$m.CommitLimitGB } else { 0 }
     $nppBad = [math]::Max(3.0, 0.12 * $total); $nppWarn = [math]::Max(1.5, 0.06 * $total)
     $unaBad = [math]::Max(4.0, 0.2 * $total); $unaWarn = [math]::Max(2.0, 0.1 * $total)
@@ -457,21 +505,40 @@ function New-RamReportBody($d) {
     L (Kpi (Get-Text 'rpt.kpi.used') (Val $used 'GB') (Get-Text 'rpt.kpi.used.sub' (Val $total 'GB') "<bdi dir='ltr'>$(Fx $usedPct '0')%</bdi>") $usedSt $usedPct)
     L (Kpi 'Non-paged pool' (Val $npp 'GB') (Rich (Get-Text 'rpt.kpi.npp.sub')) (KStatus $npp $nppWarn $nppBad) (100 * $npp / $nppBad))
     L (Kpi 'Paged pool' (Val $pgd 'GB') (Rich (Get-Text 'rpt.kpi.paged.sub')) (KStatus $pgd $nppWarn $nppBad) (100 * $pgd / $nppBad))
-    L (Kpi (Get-Text 'rpt.kpi.unacc') (Val $una 'GB') (Rich (Get-Text 'rpt.kpi.unacc.sub')) (KStatus $una $unaWarn $unaBad) (100 * $una / $unaBad))
+    $unaSub = Rich (Get-Text 'rpt.kpi.unacc.sub'); $unaSt = KStatus $una $unaWarn $unaBad
+    if ($hasBd -and [double]$m.DriverReservedGB -ge 0.05) {
+        $unaSub = Get-Text 'rpt.kpi.unacc.drv' (Val $m.DriverReservedGB 'GB')
+        if ($unaSt -eq 'ok' -and [double]$m.DriverReservedGB -ge 0.5) { $unaSt = 'warn' }   # the driver-reserved observation starts at 512 MB
+    }
+    L (Kpi (Get-Text 'rpt.kpi.unacc') (Val $una 'GB') $unaSub $unaSt (100 * $una / $unaBad))
     L (Kpi 'Committed' (Val $m.CommittedGB 'GB') (Get-Text 'rpt.kpi.commit.sub' (Val $m.CommitLimitGB 'GB') "<bdi dir='ltr'>$(Fx $commitPct '0')%</bdi>") $comSt $commitPct)
     L '</div>'
 
     # ---------------------------------------------------------------- memory map
     L "<section id='memory' class='blk' aria-labelledby='t-memory'><h2 class='sec' id='t-memory'>$(Ic 'layers')$(Get-Text 'rpt.mem.h')</h2><div class='card'>"
-    $segs = @(
-        @{ n = (Get-Text 'rpt.seg.proc'); v = [double]$m.ProcPrivateGB; c = 's1' },
-        @{ n = (Get-Text 'rpt.seg.shared'); v = [double]$m.ProcSharedGB; c = 's2' },
-        @{ n = (Get-Text 'rpt.seg.npp'); v = [double]$m.NonPagedGB; c = 's3' },
-        @{ n = (Get-Text 'rpt.seg.modified'); v = [double]$m.ModifiedGB; c = 's4' },
-        @{ n = (Get-Text 'rpt.seg.unacc'); v = [double]$m.UnaccountedGB; c = 's5' },
-        @{ n = (Get-Text 'rpt.seg.standby'); v = [double]$m.StandbyGB; c = 's6' },
-        @{ n = (Get-Text 'rpt.seg.free'); v = [double]$m.FreeGB; c = 's7' }
-    )
+    if ($hasBd) {
+        # every part counted once, so the map adds up to the installed memory Windows can use
+        $segs = @(
+            @{ n = (Get-Text 'rpt.seg.proc'); v = [double]$m.ProcPrivateGB; c = 's1' },
+            @{ n = (Get-Text 'rpt.tm.shared'); v = [double]$m.SharedUniqueGB; c = 's2' },
+            @{ n = (Get-Text 'rpt.tm.drivers'); v = [double]$m.DriverReservedGB; c = 's4' },
+            @{ n = (Get-Text 'rpt.tm.kernel'); v = [double]$m.KernelPoolsGB; c = 's3' },
+            @{ n = (Get-Text 'rpt.tm.system'); v = [double]$m.SystemOtherGB; c = 's8' },
+            @{ n = (Get-Text 'rpt.tm.unexpl'); v = [double]$m.UnexplainedGB; c = 's5' },
+            @{ n = (Get-Text 'rpt.seg.standby'); v = [double]$m.StandbyGB; c = 's6' },
+            @{ n = (Get-Text 'rpt.seg.free'); v = [double]$m.FreeGB; c = 's7' }
+        )
+    } else {
+        $segs = @(
+            @{ n = (Get-Text 'rpt.seg.proc'); v = [double]$m.ProcPrivateGB; c = 's1' },
+            @{ n = (Get-Text 'rpt.seg.shared'); v = [double]$m.ProcSharedGB; c = 's2' },
+            @{ n = (Get-Text 'rpt.seg.npp'); v = [double]$m.NonPagedGB; c = 's3' },
+            @{ n = (Get-Text 'rpt.seg.modified'); v = [double]$m.ModifiedGB; c = 's4' },
+            @{ n = (Get-Text 'rpt.seg.unacc'); v = [double]$m.UnaccountedGB; c = 's5' },
+            @{ n = (Get-Text 'rpt.seg.standby'); v = [double]$m.StandbyGB; c = 's6' },
+            @{ n = (Get-Text 'rpt.seg.free'); v = [double]$m.FreeGB; c = 's7' }
+        )
+    }
     $sum = ($segs | ForEach-Object { $_.v } | Measure-Object -Sum).Sum
     if (-not $sum -or $sum -le 0) { $sum = 1 }
     L "<div class='stack' role='img' aria-label='$(Get-Text 'rpt.mem.stack')'>"
@@ -479,8 +546,13 @@ function New-RamReportBody($d) {
     L '</div><ul class="legend">'
     foreach ($g in $segs) { L "<li><span class='sw $($g.c)'></span><span class='n'>$(Rich $g.n)</span><span class='v'>$(Val $g.v 'GB')</span><span class='p'><bdi dir='ltr'>$(Fx (100 * $g.v / $sum) '0.#')%</bdi></span></li>" }
     L '</ul>'
-    L "<p class='note'>$(Rich (Get-Text 'rpt.mem.note1'))</p>"
-    L "<p class='note' style='margin-bottom:4px'>$(Rich (Get-Text 'rpt.mem.note2'))</p><div class='formula'>Unaccounted = Used − Σ Working Sets − Non-paged − Modified</div>"
+    if ($hasBd) {
+        L "<p class='note'>$(Rich (Get-Text 'rpt.mem.note1.est'))</p>"
+        L "<p class='note' style='margin-bottom:4px'>$(Rich (Get-Text 'rpt.mem.note2'))</p><div class='formula'>Not attributed = Driver-reserved + max(0, Used − Σ Working Sets − Kernel pools − Cache − Driver code − Modified − Driver-reserved)</div>"
+    } else {
+        L "<p class='note'>$(Rich (Get-Text 'rpt.mem.note1'))</p>"
+        L "<p class='note' style='margin-bottom:4px'>$(Rich (Get-Text 'rpt.mem.note2'))</p><div class='formula'>Unaccounted = Used − Σ Working Sets − Non-paged − Modified</div>"
+    }
     L "<h3>$(Get-Text 'rpt.grow.h' (Bidi ([string]$m.WindowSec + ' s')))</h3>"
     L "<div class='grow'><div><span>Non-paged</span>$(Signed-Delta $m.NonPagedGrowthMB)</div><div><span>Paged</span>$(Signed-Delta $m.PagedGrowthMB)</div><div><span>Committed</span>$(Signed-Delta $m.CommitGrowthMB)</div><div><span>$(Get-Text 'rpt.grow.used')</span>$(Signed-Delta $m.UsedGrowthMB)</div></div>"
     L '</div></section>'
@@ -497,11 +569,16 @@ function New-RamReportBody($d) {
     L "<section id='consumers' class='blk' aria-labelledby='t-cons'><h2 class='sec' id='t-cons'>$(Ic 'chip')$(Get-Text 'rpt.cons.h')</h2>"
     L "<p class='lead'>$(Get-Text 'rpt.cons.lead')</p>"
     $byProg = @($d.ByProgram)
+    # scans after 1.1.2 also hold the shared part of each program's working sets (what the Task Manager column leaves out)
+    $hasShared = (@($byProg | Where-Object { $_ -and $_.PSObject.Properties['sharedMB'] }).Count -gt 0)
+    if ($hasShared) { L "<p class='lead'>$(Get-Text 'rpt.cons.shared')</p>" }
     $maxPriv = ($byProg | ForEach-Object { [double]$_.privMB } | Measure-Object -Maximum).Maximum; if (-not $maxPriv -or $maxPriv -le 0) { $maxPriv = 1 }
-    L "<div class='tw'><table><thead><tr><th>$(Get-Text 'rpt.th.program')</th><th class='num'>$(Get-Text 'rpt.th.processes')</th><th>$(Get-Text 'rpt.th.private')</th><th class='num'>Commit (MB)</th><th>$(Get-Text 'rpt.th.signature')</th></tr></thead><tbody>"
+    $thShared = $(if ($hasShared) { "<th class='num'>$(Get-Text 'rpt.th.shared')</th>" } else { '' })
+    L "<div class='tw'><table><thead><tr><th>$(Get-Text 'rpt.th.program')</th><th class='num'>$(Get-Text 'rpt.th.processes')</th><th>$(Get-Text 'rpt.th.private')</th>$thShared<th class='num'>Commit (MB)</th><th>$(Get-Text 'rpt.th.signature')</th></tr></thead><tbody>"
     foreach ($p in $byProg) {
         $w = Fx (100 * [double]$p.privMB / $maxPriv) '0.#'
-        L "<tr><td class='mono'>$(E $p.name)</td><td class='num'>$($p.count)</td><td class='bcell'><span class='bg' style='width:$w%'></span><span>$(Bidi ([string]$p.privMB))</span></td><td class='num'>$($p.commitMB)</td><td>$(TrustPill $p.trust $p.publisher)</td></tr>"
+        $tdShared = $(if ($hasShared) { "<td class='num'>$(if ($p.PSObject.Properties['sharedMB']) { E ([string]$p.sharedMB) } else { '-' })</td>" } else { '' })
+        L "<tr><td class='mono'>$(E $p.name)</td><td class='num'>$($p.count)</td><td class='bcell'><span class='bg' style='width:$w%'></span><span>$(Bidi ([string]$p.privMB))</span></td>$tdShared<td class='num'>$($p.commitMB)</td><td>$(TrustPill $p.trust $p.publisher)</td></tr>"
     }
     L '</tbody></table></div>'
     L "<details class='group' style='margin-top:12px'><summary>$(Get-Text 'rpt.top15')$(Chev)</summary><div class='sus-body'>"

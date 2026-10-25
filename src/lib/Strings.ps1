@@ -72,6 +72,26 @@ function Get-Text {
     return [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, $s, [object[]]$FormatArgs)
 }
 
+# The "where is the memory that Task Manager does not show" lines of the chat summaries (the copied summary and the window),
+# built from the memory object of a plan, in the language of the labels. A plan of an older release has no breakdown: no lines.
+function Get-HiddenMemoryLines {
+    param($Memory, [string]$Lang = '')
+    if (-not $Memory -or -not $Memory.PSObject.Properties['HiddenGB']) { return @() }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $n = { param($v) ([double]$v).ToString('0.##', $inv) }
+    $line = Get-Text 'sum.hidden' (& $n $Memory.HiddenGB) (& $n $Memory.SharedUniqueGB) (& $n $Memory.DriverReservedGB) (& $n $Memory.KernelPoolsGB) (& $n $Memory.SystemOtherGB) -Lang $Lang
+    if ([double]$Memory.UnexplainedGB -ge 0.05) { $line += Get-Text 'sum.hidden.unexpl' (& $n $Memory.UnexplainedGB) -Lang $Lang }
+    if ($Memory.PSObject.Properties['DriverReservedKnown'] -and -not $Memory.DriverReservedKnown) { $line += Get-Text 'sum.hidden.nodrv' -Lang $Lang }
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add($line)
+    $top = @($Memory.TopShared | Where-Object { $_ -and $_.name })
+    if ($top.Count -gt 0) {
+        $items = @($top | ForEach-Object { Get-Text 'sum.shared.item' ([string]$_.name) $_.count (& $n ([double]$_.sharedMB / 1024)) -Lang $Lang })
+        $out.Add((Get-Text 'sum.shared.top' ($items -join (Get-Text 'sep.list' -Lang $Lang)) -Lang $Lang))
+    }
+    return @($out)
+}
+
 $script:RdText = @{}
 
 # ------------------------------------------------------------------------------------------
@@ -120,7 +140,7 @@ $script:RdText['ar'] = @{
     'tag.etwb'                 = 'مخازن ETW لتتبّع الأحداث - نواة ويندوز'
     'tag.irp'                  = 'حزم طلبات الإدخال/الإخراج (IRP) - نواة ويندوز'
     'tag.mdl'                  = 'واصفات الذاكرة (MDL) - نواة ويندوز'
-    'tag.cont'                 = 'ذاكرة فيزيائية متجاورة محجوزة (غالبًا تعريف أجهزة)'
+    'tag.cont'                 = 'ذاكرة فيزيائية متجاورة محجوزة لتعريفات الأجهزة (خارج عدّاد Non-paged pool)'
     'tag.nvrm'                 = 'تعريف NVIDIA للشاشة (nvlddmkm.sys)'
     'tag.store'                = 'مدير المخزن / ضغط الذاكرة (Store Manager) - نواة ويندوز'
 
@@ -174,6 +194,11 @@ $script:RdText['ar'] = @{
     'obs.defthreat.b'          = 'آخر اكتشاف: {0}'
     'obs.standby.t'            = 'ذاكرة التخزين المؤقت (Standby/Cached)'
     'obs.standby.b'            = 'حوالي {0} GB. هذي ذاكرة مُخزَّنة للتسريع ويحرّرها ويندوز فورًا عند الحاجة، فهي ليست مشكلة حتى لو ظهرت كاستخدام.'
+    'obs.drvres.t'             = 'ذاكرة محجوزة من تعريف عتاد ({0} GB)'
+    'obs.drvres.high.t'        = 'تعريف عتاد يحجز ذاكرة أكثر فأكثر'
+    'obs.drvres.b'             = '{0} GB من الذاكرة يحجزها تعريف عتاد كذاكرة متجاورة (الوسم ConT). هذا تعريف جهاز وليس فيروسًا، ومدير المهام لا يعرضه تحت أي برنامج، ولا يدخل ضمن Non-paged pool. الوسم لا يسمّي التعريف، فهذه مرشّحات فقط: {1}. ما يساعد: حدّث تعريفات كرت الشاشة من موقع الشركة المصنّعة؛ وإن كانت الشاشة موصولة بكرت الشاشة المنفصل فعطّل كرت الشاشة المدمج غير المستخدم من الـ BIOS/UEFI؛ واحذف برامج الشاشات الافتراضية أو تسجيل الشاشة التي لا تستخدمها؛ ثم تأكّد بأداة RAMMap من Sysinternals (تبويب Use Counts، صف Driver Locked).'
+    'obs.drvres.grow'          = 'وزادت {0} MB خلال {1} ثانية، وقد يكون هذا تسرّبًا.'
+    'obs.drvres.nocand'        = 'لم يُعثر على تعريف شاشة أو تسجيل شاشة أو شاشة افتراضية، راجع جدول التعريفات غير التابعة لمايكروسوفت'
 
     # ---- scan: verdict headline
     'verdict.urgent'           = 'تم رصد مؤشرات تستحق التدقيق العاجل (قد تكون برمجية خبيثة)'
@@ -181,6 +206,17 @@ $script:RdText['ar'] = @{
     'verdict.unacc'            = 'جزء كبير من الذاكرة غير منسوب لأي عملية (ذاكرة مشتركة/محجوزة)'
     'verdict.medium'           = 'توجد ملاحظات متوسطة الخطورة، راجع القائمة'
     'verdict.ok'               = 'لا يوجد تسرّب أو مؤشر خبيث واضح في هذه اللحظة'
+    'verdict.drvres'           = 'السبب الأرجح: تعريف عتاد يحجز ذاكرة متزايدة ({0} GB وتكبر)'
+    'verdict.where'            = 'لا يوجد تسرّب: معظم الذاكرة التي لا يعرضها مدير المهام ({0} GB) هي {1} (نحو {2} GB) و{3} (نحو {4} GB)'
+    'verdict.where.one'        = 'لا يوجد تسرّب: معظم الذاكرة التي لا يعرضها مدير المهام ({0} GB) هي {1} (نحو {2} GB)'
+    'verdict.where.part'       = 'معظم الذاكرة التي لا يعرضها مدير المهام ({0} GB) هي {1} (نحو {2} GB) و{3} (نحو {4} GB)'
+    'verdict.where.part.one'   = 'معظم الذاكرة التي لا يعرضها مدير المهام ({0} GB) هي {1} (نحو {2} GB)'
+    'verdict.where.more'       = '؛ وتوجد ملاحظات أخرى بالأسفل'
+    'verdict.part.shared'      = 'ذاكرة مشتركة للبرامج المفتوحة'
+    'verdict.part.drivers'     = 'ذاكرة تحجزها تعريفات العتاد'
+    'verdict.part.kernel'      = 'ذاكرة نواة ويندوز'
+    'verdict.part.system'      = 'ذاكرة ويندوز المؤقتة للملفات وشيفرة التعريفات'
+    'verdict.part.unexpl'      = 'ذاكرة لا يفسّرها أي عدّاد'
 
     # ---- labels shared by the report, the window and the summaries
     'trust.os'                 = 'ويندوز (موقّع)'
@@ -216,6 +252,7 @@ $script:RdText['ar'] = @{
     'rpt.nav.drivers'          = 'التعريفات'
     'rpt.nav.evidence'         = 'أدلة إضافية'
     'rpt.nav.next'             = 'الخطوات'
+    'rpt.nav.tm'               = 'مدير المهام'
     'rpt.meta.label'           = 'معلومات الجهاز'
     'rpt.chip.host'            = 'الجهاز:'
     'rpt.chip.user'            = 'المستخدم:'
@@ -239,6 +276,7 @@ $script:RdText['ar'] = @{
     'rpt.kpi.paged.sub'        = 'ذاكرة النواة القابلة للترحيل · الطبيعي أقل من 1.5 GB تقريبًا'
     'rpt.kpi.unacc'            = 'غير منسوبة لعملية'
     'rpt.kpi.unacc.sub'        = 'خارج أي Working Set وخارج مجمّع النواة'
+    'rpt.kpi.unacc.drv'        = 'منها محجوزة من التعريفات: {0}'
     'rpt.kpi.commit.sub'       = 'الحد: {0} · {1}'
     'rpt.mem.h'                = 'أين تذهب الذاكرة؟'
     'rpt.seg.proc'             = 'عمليات (ذاكرة خاصة)'
@@ -251,6 +289,27 @@ $script:RdText['ar'] = @{
     'rpt.mem.stack'            = 'توزيع الذاكرة'
     'rpt.mem.note1'            = 'التقسيم تقريبي: قد تتكرر «الذاكرة المشتركة» بين عدة عمليات. وذاكرة Standby ليست مشكلة لأن ويندوز يحرّرها فورًا عند الحاجة.'
     'rpt.mem.note2'            = 'طريقة حساب «غير المنسوبة»:'
+    'rpt.mem.note1.est'        = 'هنا تُحسب الذاكرة المشتركة مرة واحدة (تقديرية، انظر أعلاه). وذاكرة Standby ليست مشكلة لأن ويندوز يحرّرها فورًا عند الحاجة.'
+    'rpt.tm.h'                 = 'لماذا لا يعرضها مدير المهام؟'
+    'rpt.tm.lead'              = 'عمود «الذاكرة» في مدير المهام يعرض الذاكرة الخاصة بكل برنامج فقط: {0}. ومن أصل {1} مستخدمة توجد {2} لا تظهر في هذا العمود، وهذا مكانها:'
+    'rpt.tm.bar'               = 'الذاكرة المستخدمة حسب النوع'
+    'rpt.tm.private'           = 'الذاكرة الخاصة بالبرامج'
+    'rpt.tm.private.d'         = 'هذا ما يعرضه مدير المهام.'
+    'rpt.tm.shared'            = 'ذاكرة مشتركة للبرامج المفتوحة (تقديرية)'
+    'rpt.tm.shared.d'          = 'ملفات البرامج (DLL) والذاكرة التي تتشاركها البرامج. مدير المهام لا يضعها في عمود الذاكرة. هذا طبيعي، وتعود الذاكرة عند إغلاق البرامج.'
+    'rpt.tm.shared.top'        = 'أكثر البرامج استخدامًا لها (يُحسب لكل برنامج كل ما يستخدمه، لذلك مجموعها أكبر من الإجمالي): {0}.'
+    'rpt.tm.drivers'           = 'محجوزة من تعريفات العتاد'
+    'rpt.tm.drivers.d'         = 'ذاكرة متجاورة حجزتها تعريفات الأجهزة (الوسم ConT). ليست فيروسًا. وهي خارج عدّادات ذاكرة النواة، فلا يعرضها مدير المهام ولا أرقام مجمّعات النواة.'
+    'rpt.tm.drivers.cand'      = 'الوسم لا يسمّي التعريف؛ المرشّحات: {0}.'
+    'rpt.tm.drivers.unknown'   = 'لم تُقَس: قراءة جدول الوسوم تحتاج صلاحيات المدير، لذلك تدخل الذاكرة المحجوزة من التعريفات (إن وُجدت) ضمن تقدير الذاكرة المشتركة.'
+    'rpt.tm.kernel'            = 'مجمّعات ذاكرة نواة ويندوز'
+    'rpt.tm.kernel.d'          = 'Non-paged pool بحجم {0} GB و Paged pool في الذاكرة بحجم {1} GB: ذاكرة ويندوز نفسه وتعريفاته.'
+    'rpt.tm.system'            = 'ملفات مؤقتة قيد الاستخدام وشيفرة التعريفات والصفحات المعدّلة'
+    'rpt.tm.system.d'          = 'ملفات يحتفظ بها ويندوز في ذاكرته المؤقتة، وشيفرة التعريفات في الذاكرة، وصفحات تنتظر الكتابة على القرص (Modified).'
+    'rpt.tm.unexpl'            = 'لا يفسّرها أي عدّاد'
+    'rpt.tm.unexpl.d'          = 'ما يتبقى حتى لو حُسبت كل صفحة مشتركة لكل برنامج على حدة: ذاكرة يقفلها تعريف ولا يسجّلها جدول الوسوم، أو AWE، أو RAM Disk، أو عملية مخفية. أداة RAMMap (تبويب Use Counts) تبيّن نوعها.'
+    'rpt.tm.standby'           = 'غير محسوبة كمستخدمة: ذاكرة ويندوز المؤقتة (Standby) بحجم {0}. يحتفظ فيها ويندوز بالملفات المستخدمة مؤخرًا ويحرّرها فورًا عندما يحتاج برنامج إلى الذاكرة، فهي ليست مشكلة.'
+    'rpt.tm.how'               = 'كيف تُقدَّر الذاكرة المشتركة: هي ما يتبقى من الذاكرة المستخدمة بعد طرح الذاكرة الخاصة ومجمّعات النواة والذاكرة المؤقتة وشيفرة التعريفات والصفحات المعدّلة والمحجوز من التعريفات، وبحدّ أقصى مجموع الأجزاء المشتركة لكل العمليات ({0})، وهذا المجموع يكرّر الصفحة لكل عملية تستخدمها. وتشمل أيضًا أجزاء صغيرة من النواة ليس لها عدّاد (مثل جداول الصفحات).'
     'rpt.grow.h'               = 'النمو خلال فترة الفحص ({0})'
     'rpt.grow.used'            = 'المستخدم'
     'rpt.obs.more'             = 'ملاحظات إضافية'
@@ -259,6 +318,8 @@ $script:RdText['ar'] = @{
     'rpt.th.program'           = 'البرنامج'
     'rpt.th.processes'         = 'العمليات'
     'rpt.th.private'           = 'ذاكرة خاصة (MB)'
+    'rpt.th.shared'            = 'مشتركة (MB)'
+    'rpt.cons.shared'          = 'المشتركة = ذاكرة يتشاركها البرنامج مع غيره (ملفات البرامج والأقسام المشتركة). تُحسب مرة لكل عملية تستخدمها، لذلك مجموع هذا العمود أكبر من الحقيقي. مدير المهام يعرض عمود الذاكرة الخاصة فقط.'
     'rpt.th.signature'         = 'التوقيع'
     'rpt.top15'                = 'أكبر 15 عملية بالتفصيل '
     'rpt.th.process'           = 'العملية'
@@ -529,6 +590,11 @@ $script:RdText['ar'] = @{
     'sum.sus.none'             = 'ملفات مشبوهة: لا يوجد'
     'sum.sus.low'              = 'ملفات منخفضة الخطورة فقط ({0}) - التفاصيل في التقرير'
     'sum.footer'               = 'RAM-Doctor {0} | وقت الفحص: {1}'
+    'sum.hidden'               = 'لا يعرضه مدير المهام: {0} GB = ذاكرة مشتركة للبرامج نحو {1} GB + محجوزة من التعريفات {2} GB + نواة ويندوز {3} GB + ذاكرة مؤقتة وغيرها {4} GB'
+    'sum.hidden.unexpl'        = ' + غير مفسَّرة {0} GB'
+    'sum.hidden.nodrv'         = ' (المحجوز من التعريفات لم يُقَس: افحص بصلاحيات المدير)'
+    'sum.shared.top'           = 'أكثر البرامج استخدامًا للذاكرة المشتركة: {0}'
+    'sum.shared.item'          = '{0} ({1} عملية) {2} GB'
 
     # ---- the guided tour (lib\Tour.ps1): header button, first-run banner, card buttons, one title + text per step
     'tour.btn'                 = 'طريقة الاستخدام'
@@ -639,7 +705,7 @@ $script:RdText['en'] = @{
     'tag.etwb'                 = 'ETW buffers for event tracing - Windows kernel'
     'tag.irp'                  = 'I/O request packets (IRP) - Windows kernel'
     'tag.mdl'                  = 'Memory descriptor lists (MDL) - Windows kernel'
-    'tag.cont'                 = 'Reserved physically contiguous memory (usually a hardware driver)'
+    'tag.cont'                 = 'Contiguous physical memory reserved for device drivers (outside the Non-paged pool counter)'
     'tag.nvrm'                 = 'NVIDIA display driver (nvlddmkm.sys)'
     'tag.store'                = 'Store Manager / memory compression - Windows kernel'
 
@@ -693,6 +759,11 @@ $script:RdText['en'] = @{
     'obs.defthreat.b'          = 'Latest detection: {0}'
     'obs.standby.t'            = 'Cached memory (Standby/Cached)'
     'obs.standby.b'            = 'About {0} GB. This is memory kept to speed things up and Windows frees it instantly when needed, so it is not a problem even though it shows as used.'
+    'obs.drvres.t'             = 'Memory reserved by a hardware driver ({0} GB)'
+    'obs.drvres.high.t'        = 'A hardware driver keeps reserving more memory'
+    'obs.drvres.b'             = '{0} GB of RAM is reserved by a hardware driver as contiguous memory (pool tag ConT). This is a device driver, not a virus; Task Manager does not show it under any program and it is not part of the Non-paged pool. The tag cannot name the driver, so these are only candidates: {1}. What helps: update the graphics drivers from the maker website; if the monitor is connected to the graphics card, disable the unused integrated graphics in the BIOS/UEFI; uninstall virtual display or screen recording software you do not use; then confirm in RAMMap from Sysinternals (Use Counts tab, Driver Locked row).'
+    'obs.drvres.grow'          = 'It grew by {0} MB in {1} seconds, which may be a leak.'
+    'obs.drvres.nocand'        = 'no graphics, screen recording or virtual display driver was found; see the table of non-Microsoft drivers'
 
     # ---- scan: verdict headline
     'verdict.urgent'           = 'Indicators that deserve urgent review were found (it may be malware)'
@@ -700,6 +771,17 @@ $script:RdText['en'] = @{
     'verdict.unacc'            = 'A large part of the memory is not attributed to any process (shared/reserved memory)'
     'verdict.medium'           = 'There are medium-severity findings; review the list'
     'verdict.ok'               = 'No clear leak or malicious indicator at this moment'
+    'verdict.drvres'           = 'Most likely cause: a hardware driver keeps reserving memory ({0} GB and growing)'
+    'verdict.where'            = 'No leak found: most of the memory Task Manager does not show ({0} GB) is {1} (~{2} GB) and {3} (~{4} GB)'
+    'verdict.where.one'        = 'No leak found: most of the memory Task Manager does not show ({0} GB) is {1} (~{2} GB)'
+    'verdict.where.part'       = 'Most of the memory Task Manager does not show ({0} GB) is {1} (~{2} GB) and {3} (~{4} GB)'
+    'verdict.where.part.one'   = 'Most of the memory Task Manager does not show ({0} GB) is {1} (~{2} GB)'
+    'verdict.where.more'       = '; other findings are listed below'
+    'verdict.part.shared'      = 'shared memory of open programs'
+    'verdict.part.drivers'     = 'memory reserved by hardware drivers'
+    'verdict.part.kernel'      = 'Windows kernel memory'
+    'verdict.part.system'      = 'the Windows file cache and driver code'
+    'verdict.part.unexpl'      = 'memory that no counter explains'
 
     # ---- labels shared by the report, the window and the summaries
     'trust.os'                 = 'Windows (signed)'
@@ -735,6 +817,7 @@ $script:RdText['en'] = @{
     'rpt.nav.drivers'          = 'Drivers'
     'rpt.nav.evidence'         = 'More evidence'
     'rpt.nav.next'             = 'Next steps'
+    'rpt.nav.tm'               = 'Task Manager'
     'rpt.meta.label'           = 'Device information'
     'rpt.chip.host'            = 'Device:'
     'rpt.chip.user'            = 'User:'
@@ -758,6 +841,7 @@ $script:RdText['en'] = @{
     'rpt.kpi.paged.sub'        = 'Swappable kernel memory · normal is below about 1.5 GB'
     'rpt.kpi.unacc'            = 'Not tied to a process'
     'rpt.kpi.unacc.sub'        = 'Outside any Working Set and outside the kernel pool'
+    'rpt.kpi.unacc.drv'        = 'of which reserved by drivers: {0}'
     'rpt.kpi.commit.sub'       = 'Limit: {0} · {1}'
     'rpt.mem.h'                = 'Where does the memory go?'
     'rpt.seg.proc'             = 'Processes (private memory)'
@@ -770,6 +854,27 @@ $script:RdText['en'] = @{
     'rpt.mem.stack'            = 'Memory distribution'
     'rpt.mem.note1'            = 'The split is approximate: "shared memory" may be counted in several processes. Standby memory is not a problem because Windows frees it instantly when needed.'
     'rpt.mem.note2'            = 'How "not attributed" is calculated:'
+    'rpt.mem.note1.est'        = 'Shared memory is counted once here (an estimate, see above). Standby memory is not a problem because Windows frees it instantly when needed.'
+    'rpt.tm.h'                 = 'Why does Task Manager not show it?'
+    'rpt.tm.lead'              = 'The Memory column of Task Manager shows only the private memory of each program: {0}. Of the {1} in use, {2} is not in that column. This is where it is:'
+    'rpt.tm.bar'               = 'Memory in use by kind'
+    'rpt.tm.private'           = 'Private memory of programs'
+    'rpt.tm.private.d'         = 'This is what Task Manager shows.'
+    'rpt.tm.shared'            = 'Shared memory of open programs (estimate)'
+    'rpt.tm.shared.d'          = 'Program files (DLLs) and memory that programs share. Task Manager leaves it out of its Memory column. This is normal; the memory comes back when the programs close.'
+    'rpt.tm.shared.top'        = 'Biggest users (each program is counted for everything it maps, so these add up to more than the total): {0}.'
+    'rpt.tm.drivers'           = 'Reserved by hardware drivers'
+    'rpt.tm.drivers.d'         = 'Contiguous memory that device drivers reserved (pool tag ConT). It is not a virus. It is outside the kernel pool counters, so neither Task Manager nor the pool figures show it.'
+    'rpt.tm.drivers.cand'      = 'The tag cannot name the driver; candidates: {0}.'
+    'rpt.tm.drivers.unknown'   = 'Not measured: reading the pool tag table needs administrator rights, so memory reserved by drivers (if any) is inside the shared estimate.'
+    'rpt.tm.kernel'            = 'Windows kernel pools'
+    'rpt.tm.kernel.d'          = 'Non-paged pool {0} GB + paged pool in RAM {1} GB: memory of Windows itself and its drivers.'
+    'rpt.tm.system'            = 'File cache in use, driver code, modified pages'
+    'rpt.tm.system.d'          = 'Files Windows keeps in its cache, driver code in RAM and pages waiting to be written to disk (Modified).'
+    'rpt.tm.unexpl'            = 'Not explained by any counter'
+    'rpt.tm.unexpl.d'          = 'What is left even if every shared page were counted once per program: memory locked by a driver that the tag table does not record, AWE, a RAM disk or a hidden process. RAMMap (Use Counts tab) shows which.'
+    'rpt.tm.standby'           = 'Not counted as in use: the Windows cache (Standby) of {0}. Windows keeps recently used files there and frees it at once when a program needs memory, so it is not a problem.'
+    'rpt.tm.how'               = 'How the shared figure is estimated: it is what is left of the memory in use after the private memory, the kernel pools, the cache, driver code, modified pages and the driver reservations are taken out, and at most the shared parts of all processes added up ({0}; that sum counts a page again for every process that uses it). It also holds small kernel structures that have no counter, such as page tables.'
     'rpt.grow.h'               = 'Growth during the scan window ({0})'
     'rpt.grow.used'            = 'Used'
     'rpt.obs.more'             = 'Additional notes'
@@ -778,6 +883,8 @@ $script:RdText['en'] = @{
     'rpt.th.program'           = 'Program'
     'rpt.th.processes'         = 'Processes'
     'rpt.th.private'           = 'Private memory (MB)'
+    'rpt.th.shared'            = 'Shared (MB)'
+    'rpt.cons.shared'          = 'Shared = memory a program shares with others (program files, shared sections). It is counted again for every process that uses it, so this column adds up to more than the real total. Task Manager shows only the private column.'
     'rpt.th.signature'         = 'Signature'
     'rpt.top15'                = 'The 15 biggest processes in detail '
     'rpt.th.process'           = 'Process'
@@ -1048,6 +1155,11 @@ $script:RdText['en'] = @{
     'sum.sus.none'             = 'Suspicious files: none'
     'sum.sus.low'              = 'Low-risk files only ({0}) - details are in the report'
     'sum.footer'               = 'RAM-Doctor {0} | Scan time: {1}'
+    'sum.hidden'               = 'Not shown by Task Manager: {0} GB = shared memory of programs ~{1} GB + reserved by drivers {2} GB + Windows kernel {3} GB + cache and other {4} GB'
+    'sum.hidden.unexpl'        = ' + not explained {0} GB'
+    'sum.hidden.nodrv'         = ' (driver reservations not measured: scan as administrator)'
+    'sum.shared.top'           = 'Biggest users of shared memory: {0}'
+    'sum.shared.item'          = '{0} ({1} processes) {2} GB'
 
     # ---- the guided tour (lib\Tour.ps1): header button, first-run banner, card buttons, one title + text per step
     'tour.btn'                 = 'How to use'

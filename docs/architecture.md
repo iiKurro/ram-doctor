@@ -48,7 +48,7 @@ flowchart TB
 | `src/RAM-Doctor-GUI.ps1` | The window. It contains **no scanning logic**: it starts the scan and the actions as child `powershell.exe` processes, parses their timestamped progress lines for the progress bar, and reads the plan file to show results. It also provides the *report location* and *copy summary for sending* buttons and the optional *Share with my helper* flow (hidden when `share.config.json` has no endpoint). |
 | `src/lib/Fluent.cs` | Windows 11 style WinForms controls (cards, buttons, list, progress, info bar) compiled with `Add-Type`. They draw correctly both right-to-left (Arabic) and left-to-right (English): every control reads its own `RightToLeft` when it paints. `FCoach` is the tour overlay: a per-pixel-alpha window laid over the client area that dims it, lights one control and draws the tour card; the card has the keyboard while the tour is open (Tab, Enter, Esc) and gives it back afterwards, and the keys, the mouse wheel and the clicks meant for the window never reach it. **Display scaling**: `Dpi.Enable` makes the process Per-Monitor V2 dpi-aware (falling back to per-monitor, then system awareness) before the first window exists, every size in the kit is written for 96 dpi and multiplied by `Theme.Scale` where it is used, fonts follow `Theme.FontScale`, and `DpiWatcher` reports `WM_DPICHANGED` so the window re-scales itself on another monitor. **Screen readers**: every control has an accessible role, name, state and default action (buttons, expanders with expanded/collapsed, check boxes, the progress bar with its value, info bars as text or alerts, the list's rows as check boxes, decorative icons hidden), and the tour card is a dialog with its texts and three buttons; each step is announced (UI Automation notification). |
 | `src/lib/Tour.ps1` | The optional guided tour of the window (coach marks): the step list, the card texts and placement, and the first-use offer on the `Ready to scan` bar. It only explains: it never starts a scan or an action and saves nothing. The overlay itself is `Fluent.FCoach` (below). |
-| `src/lib/Strings.ps1` | The one string table: an `ar` and an `en` table with the same keys, and `Get-Text` / `Set-UiLang` / `Get-UiLang`. No other source file holds a user-facing literal (checked by `tests/Strings.Tests.ps1`). |
+| `src/lib/Strings.ps1` | The one string table: an `ar` and an `en` table with the same keys, and `Get-Text` / `Set-UiLang` / `Get-UiLang`, plus `Get-HiddenMemoryLines` (the "not shown by Task Manager" lines that the window, the copied summary and the share client build from a plan). No other source file holds a user-facing literal (checked by `tests/Strings.Tests.ps1`). |
 | `src/RAM-Doctor.ps1` | The scan. Collects evidence, scores it, writes the report and the plan. Never modifies the system. |
 | `src/RAM-Doctor-Actions.ps1` | `Quarantine`, `Restore`, `Purge`, `List`. The only code that changes the system. |
 | `src/lib/Native.cs` | Read-only P/Invoke helpers (see below), compiled with `Add-Type` (C# 5). |
@@ -93,7 +93,12 @@ flowchart TB
 8. **Correlation**: items are grouped by file path into *suspects*, signals are
    merged, a persistence bonus is applied, risk is derived from the score.
    Windows/Microsoft-signed binaries are judged per item instead of per file.
-9. **Memory accounting and pool-tag mapping** (top tags to driver files).
+9. **Memory accounting and pool-tag mapping** (top tags to driver files): the
+   breakdown of the memory Task Manager does not show (`Get-MemoryBreakdown`:
+   shared estimate, driver-reserved contiguous memory from the `ConT` / `Cont`
+   tags, kernel pools, cache, unexplained), the shared working set per program,
+   and the candidate drivers for a reservation (see
+   [how-detection-works.md](how-detection-works.md#memory-accounting)).
 10. **Evidence**: Defender status and detections, Resource-Exhaustion events,
     Winlogon / IFEO / AppInit anomalies.
 11. **Observations and verdict**: rule-based, text in the scan language (Arabic or English, see [Language](#language)).
@@ -134,7 +139,15 @@ also what the optional upload bundle and the copied summary are derived from
   "observations": [ { "Level": "high|med|low|info", "Title": "...", "Body": "..." } ],
   "memory": { "TotalGB": 31.83, "UsedGB": 26.7, "NonPagedGB": 0.77, "PagedGB": 0.84,
               "UnaccountedGB": 0, "StandbyGB": 5.0, "CommittedGB": 43, "CommitLimitGB": 48.8,
-              "WindowSec": 37, "NonPagedGrowthMB": 0, "PagedGrowthMB": 0 /* ... */ },
+              "WindowSec": 37, "NonPagedGrowthMB": 0, "PagedGrowthMB": 0, /* ... */
+              // added after 1.1.2 (additive, optional for readers): where the memory Task Manager does not show is
+              "HiddenGB": 9.63,                 // Used - private working sets
+              "SharedUniqueGB": 4.47,           // shared memory of programs, each page once (estimate)
+              "DriverReservedGB": 2.26, "DriverReservedKnown": true, "DriverReservedGrowthMB": 0,   // contiguous, outside the pool counter
+              "KernelPoolsGB": 2.07, "SystemOtherGB": 0.83, "UnexplainedGB": 0,
+              "UnattributedGB": 2.26,           // corrected "not attributed" = DriverReserved + Unexplained (UnaccountedGB keeps the old formula)
+              "TopShared": [ { "name": "brave.exe", "count": 32, "sharedMB": 5240 } ],   // biggest shared working sets per program (summed)
+              "DriverReservedCandidates": [ "NVIDIA GeForce RTX 4070", "amdkmdag.sys" ] },
   "suspects": [
     {
       "id": 1, "risk": "High|Medium|Low", "score": 10,
@@ -163,6 +176,9 @@ Notes:
 * The plan contains full paths and command lines. It is **not redacted** on
   disk; see [privacy-and-safety.md](privacy-and-safety.md).
 * `Select` ids refer to `suspects[].id`.
+* The memory breakdown fields are additive: plans of 1.0.x / 1.1.x have none, and
+  every reader (report, window, copied summary, `summary.md`) falls back to the
+  old figures. `tests/PlanSchema.Tests.ps1` checks their types when present.
 
 ## Actions
 
@@ -262,7 +278,9 @@ local files. The GUI offers two buttons:
   report selected, so it can be attached to an e-mail or chat.
 * *Copy summary to send* (Arabic: نسخ ملخص للإرسال) puts a short **redacted**
   plain-text summary on the clipboard, to paste into a chat. Its labels are in the
-  window language.
+  window language. For scans after 1.1.2 it also says, in numbers, where the
+  memory that Task Manager does not show is and which programs hold the most
+  shared memory (the same lines as the window's verdict bar and `summary.md`).
 
 ## Optional: one-click Share with my helper
 
@@ -330,7 +348,7 @@ therefore:
   *minimised* console), no download;
 * with a header that says what it does.
 
-The cost is a larger file (about 590 KB); the benefit is that it can be audited
+The cost is a larger file (about 630 KB); the benefit is that it can be audited
 and diffed, and it triggers fewer heuristics.
 
 The release file has **no environment-controlled behaviour**: a check in

@@ -42,7 +42,7 @@ passwords, e-mail or chat history, and it does not capture network traffic.
 
 | Location | What | When | Size |
 | --- | --- | --- | --- |
-| `C:\ProgramData\RAM-Doctor-run\<random>\` | The unpacked scripts of the one-file release, in a folder only Administrators and SYSTEM can write to | While the window is open; deleted on exit | ~585 KB |
+| `C:\ProgramData\RAM-Doctor-run\<random>\` | The unpacked scripts of the one-file release, in a folder only Administrators and SYSTEM can write to | While the window is open; deleted on exit | ~625 KB |
 | `%TEMP%\ramdoctor-*.out/.err` | Output of the child processes | Deleted after each task | tiny |
 | `Desktop\RAM-Doctor-Reports\` | `RAMDoctor-<host>-<stamp>.html` and `Plan-<host>-<stamp>.json` | Every scan; the newest 3 scans are kept | ~45 KB per scan |
 | `C:\ProgramData\RAM-Doctor\` | `Quarantine\<batch>\files\*.quar`, `manifest.json`, `actions-<stamp>.log` | Only after a quarantine | size of the quarantined files |

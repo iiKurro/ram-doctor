@@ -1,7 +1,7 @@
 ﻿# ------------------------------------------------------------------------------------------
 #  Unit-level check of the "inert report" contract for src/lib/Report.ps1.
 #
-#  Renders the synthetic scenarios (leak / miner / clean) plus a HOSTILE variant (every free-text
+#  Renders the synthetic scenarios (leak / miner / clean / hidden) plus a HOSTILE variant (every free-text
 #  field stuffed with <script>, onerror=, javascript:, data:, external URLs) and asserts:
 #    (a) marker comment right after the doctype            <!-- ram-doctor-report vX.Y.Z -->
 #    (b) at most ONE inline <script>, <= 3 KB, no <script src>, no inline on*= handlers,
@@ -51,12 +51,16 @@ function Get-HostileData([string]$lg) {
     $d.Defender.RecentThreats = @([pscustomobject]@{ time = $evil; process = $evil; resources = $evil })
     $d.Exhaustion = @([pscustomobject]@{ time = $evil; message = $evil })
     $d.Hidden = @([pscustomobject]@{ Pid = 1; Live = $true; Image = $evil; IsWindowsImage = $false })
+    # the "why does Task Manager not show it" card: program names and driver candidates come from the PC
+    $d.ByProgram[0].sharedMB = $evil
+    $d.Memory.TopShared = @([pscustomobject]@{ name = $evil; count = $evil; sharedMB = 1024 })
+    $d.Memory.DriverReservedGB = 1.2; $d.Memory.DriverReservedCandidates = @($evil, $evil)
     return $d
 }
 
 $scenarios = New-Object System.Collections.Generic.List[object]
 foreach ($l in $Lang) {
-    foreach ($sc in 'leak', 'miner', 'clean') { $scenarios.Add(@{ Kind = $sc; Lang = $l; Data = (Get-DemoReportData -Scenario $sc -Lang $l) }) }
+    foreach ($sc in 'leak', 'miner', 'clean', 'hidden') { $scenarios.Add(@{ Kind = $sc; Lang = $l; Data = (Get-DemoReportData -Scenario $sc -Lang $l) }) }
     $scenarios.Add(@{ Kind = 'hostile'; Lang = $l; Data = (Get-HostileData $l) })
 }
 

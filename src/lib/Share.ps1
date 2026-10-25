@@ -15,7 +15,7 @@
 if (-not (Get-Command Get-Text -CommandType Function -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Strings.ps1') }
 if (-not (Get-Command Read-JsonSafe -CommandType Function -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Store.ps1') }   # crash-safe profile file
 
-$script:ShareToolVersion = '1.1.2'
+$script:ShareToolVersion = '1.1.3'
 $script:ShareReservedUserNames = @('public', 'default', 'default user', 'all users', 'defaultuser0', 'desktop.ini')
 # account names that are ordinary words: a whole-word search for them would damage the prose, so only the
 # C:\Users\<name> form is masked for these.
@@ -385,11 +385,14 @@ function New-ShareSummary {
 
     $m = $Plan.memory
     if ($m) {
+        # scans after 1.1.2 carry the breakdown of the memory Task Manager does not show, and a corrected "not attributed"
+        $hasBd = [bool]($m.PSObject.Properties['HiddenGB'] -and $null -ne $m.HiddenGB)
         [void]$sb.Append("## Memory$nl$nl| Metric | GB |$nl|---|---:|$nl")
         $rows = @(
             @('Total (usable)', 'TotalGB'), @('Used', 'UsedGB'), @('Available', 'AvailGB'), @('Standby (cache)', 'StandbyGB'), @('Modified', 'ModifiedGB'),
-            @('Process private', 'ProcPrivateGB'), @('Process shared', 'ProcSharedGB'), @('Kernel non-paged pool', 'NonPagedGB'), @('Kernel paged pool', 'PagedGB'),
-            @('Not attributed to any process', 'UnaccountedGB'), @('Committed', 'CommittedGB'), @('Commit limit', 'CommitLimitGB'))
+            @('Process private', 'ProcPrivateGB'), @($(if ($hasBd) { 'Process shared (summed over processes, pages counted again per process)' } else { 'Process shared' }), 'ProcSharedGB'),
+            @('Kernel non-paged pool', 'NonPagedGB'), @('Kernel paged pool', 'PagedGB'),
+            @('Not attributed to any process', $(if ($hasBd) { 'UnattributedGB' } else { 'UnaccountedGB' })), @('Committed', 'CommittedGB'), @('Commit limit', 'CommitLimitGB'))
         foreach ($r in $rows) { $v = $m.($r[1]); if ($null -ne $v) { [void]$sb.Append("| $($r[0]) | $(([double]$v).ToString('0.##', $inv)) |$nl") } }
         $g = @()
         if ($null -ne $m.NonPagedGrowthMB) { $g += "non-paged $($m.NonPagedGrowthMB) MB" }
@@ -398,6 +401,27 @@ function New-ShareSummary {
         if ($null -ne $m.UsedGrowthMB) { $g += "used $($m.UsedGrowthMB) MB" }
         if ($g.Count -gt 0) { [void]$sb.Append("$nl*Growth during the scan window ($($m.WindowSec) s): $($g -join ', ')*$nl") }
         [void]$sb.Append($nl)
+        if ($hasBd) {
+            $drvLabel = 'Reserved by hardware drivers (contiguous, pool tag ConT)'
+            if ($m.PSObject.Properties['DriverReservedKnown'] -and -not $m.DriverReservedKnown) { $drvLabel += ' - not measured (no administrator rights)' }
+            [void]$sb.Append("## Where the memory is that Task Manager does not show$nl$nl| Part | GB |$nl|---|---:|$nl")
+            foreach ($r in @(
+                    @('Not shown by Task Manager (used minus private)', 'HiddenGB'), @('Shared memory of open programs (estimate, each page once)', 'SharedUniqueGB'),
+                    @($drvLabel, 'DriverReservedGB'), @('Windows kernel pools (non-paged + paged in RAM)', 'KernelPoolsGB'),
+                    @('File cache in use, driver code, modified pages', 'SystemOtherGB'), @('Not explained by any counter', 'UnexplainedGB'))) {
+                $v = $m.($r[1]); if ($null -ne $v) { [void]$sb.Append("| $(ConvertTo-ShareMdCell $r[0]) | $(([double]$v).ToString('0.##', $inv)) |$nl") }
+            }
+            $top = @($m.TopShared | Where-Object { $_ -and $_.name })
+            if ($top.Count -gt 0) {
+                $items = @($top | ForEach-Object { '{0} ({1} processes) {2} GB' -f (ConvertTo-ShareMdCell $_.name), $_.count, (([double]$_.sharedMB / 1024).ToString('0.##', $inv)) })
+                [void]$sb.Append("$nl*Biggest users of shared memory (each program counted for everything it maps): $($items -join ', ')*$nl")
+            }
+            $cands = @($m.DriverReservedCandidates | Where-Object { $_ })
+            if ($cands.Count -gt 0 -and [double]$m.DriverReservedGB -ge 0.1) {
+                [void]$sb.Append("$nl*Driver-reserved memory, candidate drivers (the tag cannot name the driver): $((@($cands | ForEach-Object { ConvertTo-ShareMdCell $_ })) -join ', ')*$nl")
+            }
+            [void]$sb.Append($nl)
+        }
     }
 
     $obs = @($Plan.observations | Where-Object { $_ })
@@ -522,11 +546,15 @@ function New-ShareShortSummary {
     $num = { param($v) if ($null -eq $v -or "$v" -eq '') { '?' } else { ([double]$v).ToString('0.##', $inv) } }
     $riskKey = @{ High = 'level.high'; Medium = 'level.med'; Low = 'level.low' }
 
-    $headline = if ($plan.verdict -and $plan.verdict.Headline) { & $cut $plan.verdict.Headline 160 } else { '-' }
+    $headline = if ($plan.verdict -and $plan.verdict.Headline) { & $cut $plan.verdict.Headline 240 } else { '-' }   # the breakdown headline is long
     $m = $plan.memory
     $memLine = $null
+    $hiddenLines = @()
     if ($m) {
-        $memLine = Get-Text 'sum.mem' (& $num $m.UsedGB) (& $num $m.TotalGB) (& $num $m.NonPagedGB) (& $num $m.PagedGB) (& $num $m.UnaccountedGB) -Lang $sl
+        # the corrected "not attributed" when the scan has it (older plans: the value they carry)
+        $una = if ($m.PSObject.Properties['UnattributedGB'] -and $null -ne $m.UnattributedGB) { $m.UnattributedGB } else { $m.UnaccountedGB }
+        $memLine = Get-Text 'sum.mem' (& $num $m.UsedGB) (& $num $m.TotalGB) (& $num $m.NonPagedGB) (& $num $m.PagedGB) (& $num $una) -Lang $sl
+        $hiddenLines = @(Get-HiddenMemoryLines -Memory $m -Lang $sl | ForEach-Object { & $cut $_ 300 })
     }
     $obsAll = @($plan.observations | Where-Object { $_ -and $_.Level -ne 'info' -and $_.Title } | ForEach-Object { '- ' + (& $cut $_.Title 90) })
     $susAll = @($plan.suspects | Where-Object { $_ -and $_.risk -in 'High', 'Medium' } | ForEach-Object {
@@ -545,6 +573,7 @@ function New-ShareShortSummary {
         $l.Add((Get-Text 'sum.title' -Lang $sl))
         $l.Add((Get-Text 'sum.verdict' -Lang $sl) + $headline)
         if ($memLine) { $l.Add($memLine) }
+        foreach ($h in $hiddenLines) { $l.Add($h) }
         if ($hostLine) { $l.Add($hostLine) }
         if ($nObs -gt 0) { $l.Add((Get-Text 'sum.notes' -Lang $sl)); foreach ($o in ($obsAll | Select-Object -First $nObs)) { $l.Add($o) } }
         if ($nSus -gt 0) {

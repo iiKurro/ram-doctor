@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-25
+
+### Added
+
+- **"Where is my memory?" answered in numbers.** The scan splits the memory Task Manager does not show (its Memory column
+  holds only private working sets) into shared memory of open programs (an estimate that counts each page once), memory
+  reserved by hardware drivers, Windows kernel pools, cache / driver code / modified pages, and whatever no counter
+  explains. When there is no leak and no high finding, the verdict headline now says it, for example *"No leak found:
+  most of the memory Task Manager does not show (9.6 GB) is shared memory of open programs (~4.5 GB) and memory reserved
+  by hardware drivers (~2.3 GB)"*, in Arabic and English (without "No leak found" while a program is growing); security
+  findings follow below it. The window's verdict bar, the copied summary and the shared `summary.md` carry the same
+  numbers.
+- **Report card "Why does Task Manager not show it?"** right after the summary: the numbers, a stacked bar of the memory
+  in use, one plain sentence per part, the biggest users of shared memory and the candidate drivers. The memory map
+  below it now counts shared memory once, so it adds up to the usable RAM. The consumers table has a **Shared (MB)**
+  column (working set minus private, per program).
+- **New observation: memory reserved by a hardware driver.** Contiguous physical memory that drivers get from
+  `MmAllocateContiguousMemory` is recorded in the pool tag table (`ConT`) but is not part of the non-paged pool counter
+  and belongs to no process, so nothing showed it. Medium from 512 MB, high only from 2 GB when it also grows during the
+  scan. It is worded as a driver, not a virus, lists candidate drivers honestly (display adapters and graphics, capture
+  or virtual-display drivers that are not Microsoft's; the tag cannot name the driver) and the steps: update the
+  graphics drivers, disable an unused integrated GPU in the BIOS/UEFI, remove unused virtual display or capture software,
+  confirm in RAMMap.
+- Plan: additive `memory` fields `HiddenGB`, `SharedUniqueGB`, `DriverReservedGB`, `DriverReservedKnown`,
+  `DriverReservedGrowthMB`, `KernelPoolsGB`, `SystemOtherGB`, `UnexplainedGB`, `UnattributedGB`, `TopShared`,
+  `DriverReservedCandidates`. Plans of 1.0.x and 1.1.x still load everywhere.
+- Tests: the breakdown maths (including the double-counted shared working sets and clamping), the thresholds of the new
+  observation, the choice of the headline, the candidates, the report card in both languages, the new plan fields and
+  older plans, the summaries (and their redaction), and a demo scenario `hidden` modelled on the scan that started the
+  project (synthetic data).
+
+### Changed
+
+- The "not attributed to any process" figure is corrected: the old formula subtracted the working sets summed over all
+  processes, which counts a shared page once per process, so it could cancel out gigabytes of driver reservations and
+  say 0. The report, the summaries and the "memory outside any process" observations use the corrected value (driver
+  reservations measured on their own, plus what even the summed shared memory cannot cover); `UnaccountedGB` keeps the
+  old formula for older readers.
+- Observations of the same level keep the order in which they were found (memory explanations before security
+  findings), and pool tags are compared case-sensitively (`ConT` and `cont` are different tags).
+
 ## [1.1.2] - 2026-10-25
 
 ### Fixed
@@ -227,7 +268,8 @@ First public release.
 - Documentation, issue forms (including a false-positive form), CI and
   release workflows.
 
-[Unreleased]: https://github.com/iiKurro/ram-doctor/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/iiKurro/ram-doctor/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/iiKurro/ram-doctor/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/iiKurro/ram-doctor/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/iiKurro/ram-doctor/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/iiKurro/ram-doctor/compare/v1.0.1...v1.1.0

@@ -91,6 +91,64 @@ Describe 'Plan JSON contract' {
         }
     }
 
+    Context 'memory breakdown: additive fields of scans after 1.1.2' {
+        BeforeAll {
+            . (Join-Path (Get-RepoRoot) 'src\lib\Strings.ps1')   # Get-HiddenMemoryLines, what the window and the summaries read
+            # the memory object the scan writes now (numbers of the scan that started the project)
+            function Add-Breakdown($p) {
+                $p.memory = [pscustomobject]@{
+                    TotalGB = 31.11; UsedGB = 18.19; ProcPrivateGB = 8.56; ProcSharedGB = 9.88; NonPagedGB = 0.9; UnaccountedGB = 0
+                    HiddenGB = 9.63; SharedUniqueGB = 4.47; DriverReservedGB = 2.26; DriverReservedKnown = $true; DriverReservedGrowthMB = 0
+                    KernelPoolsGB = 2.07; SystemOtherGB = 0.83; UnexplainedGB = 0; UnattributedGB = 2.26
+                    TopShared = @([pscustomobject]@{ name = 'brave.exe'; count = 32; sharedMB = 5240 })
+                    DriverReservedCandidates = @('NVIDIA GeForce RTX 4070')
+                }
+                return $p
+            }
+        }
+        It 'accepts a plan with the breakdown, also after the JSON round trip' {
+            Test-RamPlan -Plan (Add-Breakdown (New-SyntheticPlan)) | Should -BeNullOrEmpty
+            Test-RamPlan -Plan (ConvertTo-RoundTrip (Add-Breakdown (New-SyntheticPlan))) | Should -BeNullOrEmpty
+        }
+        It 'keeps one shared-memory user and one candidate as arrays through the round trip (readers rely on .Count)' {
+            $p = ConvertTo-RoundTrip (Add-Breakdown (New-SyntheticPlan))
+            $p.memory.TopShared -is [System.Array] | Should -BeTrue
+            $p.memory.DriverReservedCandidates -is [System.Array] | Should -BeTrue
+            $p.memory.TopShared[0].name | Should -Be 'brave.exe'
+        }
+        It 'keeps the old field next to the corrected one (1.0-1.1 readers still find UnaccountedGB)' {
+            $p = ConvertTo-RoundTrip (Add-Breakdown (New-SyntheticPlan))
+            $p.memory.UnaccountedGB | Should -Be 0
+            $p.memory.UnattributedGB | Should -Be 2.26
+        }
+        It 'a plan of an older release (no breakdown) is still valid and its readers show no breakdown' {
+            $old = ConvertTo-RoundTrip (New-SyntheticPlan)
+            Test-RamPlan -Plan $old | Should -BeNullOrEmpty
+            @(Get-HiddenMemoryLines -Memory $old.memory).Count | Should -Be 0
+            $old.PSObject.Properties.Remove('memory')
+            Test-RamPlan -Plan $old | Should -BeNullOrEmpty
+            @(Get-HiddenMemoryLines -Memory $old.memory).Count | Should -Be 0
+        }
+        It 'the readers turn the breakdown into one line plus the biggest shared-memory users' {
+            $lines = @(Get-HiddenMemoryLines -Memory (ConvertTo-RoundTrip (Add-Breakdown (New-SyntheticPlan))).memory -Lang en)
+            $lines.Count | Should -Be 2
+            $lines[0] | Should -Match '^Not shown by Task Manager: 9\.63 GB'
+            $lines[1] | Should -Match 'brave\.exe \(32 processes\) 5\.12 GB'
+        }
+        It 'rejects <Case>' -ForEach @(
+            @{ Case = 'a negative part'; Mutate = { param($p) $p.memory.SharedUniqueGB = -1 }; Expect = 'SharedUniqueGB must not be negative' }
+            @{ Case = 'a part that is not a number'; Mutate = { param($p) $p.memory.HiddenGB = 'a lot' }; Expect = 'HiddenGB must be a number' }
+            @{ Case = 'DriverReservedKnown that is not a boolean'; Mutate = { param($p) $p.memory.DriverReservedKnown = 'yes' }; Expect = 'DriverReservedKnown must be a boolean' }
+            @{ Case = 'TopShared that is not an array'; Mutate = { param($p) $p.memory.TopShared = 'brave' }; Expect = 'TopShared must be an array' }
+            @{ Case = 'a TopShared entry without a name'; Mutate = { param($p) $p.memory.TopShared = @([pscustomobject]@{ count = 1; sharedMB = 2 }) }; Expect = "TopShared[0]: missing 'name'" }
+            @{ Case = 'candidates that are not strings'; Mutate = { param($p) $p.memory.DriverReservedCandidates = @(1, 2) }; Expect = 'DriverReservedCandidates must contain strings only' }
+        ) {
+            $p = ConvertTo-RoundTrip (Add-Breakdown (New-SyntheticPlan))
+            & $Mutate $p
+            (@(Test-RamPlan -Plan $p) -join ' | ') | Should -Match ([regex]::Escape($Expect))
+        }
+    }
+
     Context 'fixture plans in tests\fixtures (if the engine provides any)' {
         # a plain loop instead of -ForEach: Pester 6 refuses an empty -ForEach array
         It 'every plan*.json fixture satisfies the contract' -Skip:($script:FixturePlans.Count -eq 0) {
