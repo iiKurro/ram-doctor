@@ -537,6 +537,25 @@ Describe 'Enter-StoreSecretLock (a lock name nobody can predict)' {
         Exit-StoreSecretLock $again
     }
 
+    It 'never switches to the path-derived name while lock.id exists but cannot be read: it answers Busy' {
+        $dir = New-CaseDir 'secret-held'
+        $first = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 0 -TrustedOwners @()
+        $first.Status | Should -Be 'Ok'
+        $fs = [IO.File]::Open((Join-Path $dir 'lock.id'), 'Open', 'Read', 'None')   # a scanner holds the secret file
+        try {
+            $second = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 1500 -TrustedOwners @()
+            $second.Status | Should -Be 'Busy' -Because 'a second, path-derived name would let two copies hold the lock'
+            $second.Mutex | Should -BeNullOrEmpty
+            $second.Message | Should -Match 'cannot be read'
+        }
+        finally { $fs.Dispose() }
+        Exit-StoreSecretLock $first
+        $again = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 2000 -TrustedOwners @()
+        $again.Status | Should -Be 'Ok'
+        $again.SecretName | Should -BeTrue
+        Exit-StoreSecretLock $again
+    }
+
     It 'falls back to the path-derived name when the folder does not exist (yet)' {
         $missing = Join-Path $script:Work ('no-such-' + [guid]::NewGuid().ToString('N'))
         $h = Enter-StoreSecretLock -Prefix 'test' -Dir $missing -TimeoutMs 0 -TrustedOwners @()

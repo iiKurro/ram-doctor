@@ -529,8 +529,11 @@ function New-StoreLockSecret {
 }
 
 function Enter-StoreSecretLock {
-    <# Like Enter-StoreLock, for the lock of the folder -Dir (it must already exist): Status Ok | Busy. When the secret
-       cannot be read or created, the folder's path-derived name is used (Get-StoreLockName), as a safe fallback. #>
+    <# Like Enter-StoreLock, for the lock of the folder -Dir (it must already exist): Status Ok | Busy. The folder's
+       path-derived name (Get-StoreLockName) is used ONLY when there is no lock.id and none can be created (a folder this
+       process cannot write, or that does not exist): every copy in that situation agrees on it. While lock.id exists
+       but cannot be read (another copy is replacing it, a scanner holds it) we wait and then answer Busy: switching to a
+       second name would let two copies hold "the" lock at the same time. #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Prefix,
@@ -542,8 +545,14 @@ function Enter-StoreSecretLock {
     $more = @{}
     if ($PSBoundParameters.ContainsKey('TrustedOwners')) { $more['TrustedOwners'] = @($TrustedOwners) }
     $end = (Get-Date).AddMilliseconds($TimeoutMs)
-    for ($round = 0; $round -lt 10; $round++) {
+    $idFile = Join-Path $Dir 'lock.id'
+    $rotations = 0
+    while ($true) {
         $secret = Read-StoreLockSecret $Dir $FileSecurity
+        if (-not $secret -and [IO.File]::Exists($idFile)) {
+            if ((Get-Date) -lt $end) { Start-Sleep -Milliseconds 100; continue }
+            return [pscustomobject]@{ Status = 'Busy'; Name = ''; Mutex = $null; Scope = ''; Guarded = $true; Abandoned = $false; Message = 'the lock name cannot be read right now'; Dir = $Dir; FileSecurity = $FileSecurity; SecretName = $true }
+        }
         $name = if ($secret) { $Prefix + '-' + $secret.Substring(0, 40) } else { Get-StoreLockName -Prefix $Prefix -Path $Dir }
         $left = [int][Math]::Max(0, ($end - (Get-Date)).TotalMilliseconds)
         $h = Enter-StoreLock -Name $name -TimeoutMs $left @more
@@ -553,8 +562,11 @@ function Enter-StoreSecretLock {
         if ($h.Status -ne 'Ok' -or -not $secret) { return $h }
         if ((Read-StoreLockSecret $Dir $FileSecurity) -eq $secret) { return $h }   # still the current name: ours
         Exit-StoreLock $h                                                         # the holder rotated it while we waited
+        $rotations++
+        if ($rotations -ge 10) {
+            return [pscustomobject]@{ Status = 'Busy'; Name = ''; Mutex = $null; Scope = ''; Guarded = $true; Abandoned = $false; Message = 'the lock name kept changing'; Dir = $Dir; FileSecurity = $FileSecurity; SecretName = $true }
+        }
     }
-    return [pscustomobject]@{ Status = 'Busy'; Name = ''; Mutex = $null; Scope = ''; Guarded = $true; Abandoned = $false; Message = 'the lock name kept changing'; Dir = $Dir; FileSecurity = $FileSecurity; SecretName = $true }
 }
 
 function Exit-StoreSecretLock {
