@@ -18,16 +18,16 @@ foreach ($start in 'en', 'ar') {
     $log = Join-Path $work 'steps.log'
     $inner = Join-Path $work 'inner.test.ps1'
     $body = @'
-$log = '__LOG__'
-$form.Add_FormClosed({ Add-Content $log 'CLOSED' })
+$script:lsLog = '__LOG__'   # handlers run later in the window's script scope: a plain $log would not exist there
+$form.Add_FormClosed({ Add-Content $script:lsLog 'CLOSED' })
 $script:lsStep = 0
 $script:lsTimer = New-Object System.Windows.Forms.Timer
 $script:lsTimer.Interval = 1500
 $script:lsTimer.Add_Tick({
     $script:lsStep++
     $state = 'lang=' + (Get-UiLang) + ' visible=' + $form.Visible + ' mirrored=' + $form.RightToLeftLayout
-    if ($script:lsStep -le 3) { Add-Content $log ('step ' + $script:lsStep + ': ' + $state); $btnLang.PerformClick() }
-    else { Add-Content $log ('final: ' + $state); $script:lsTimer.Stop(); $form.Close() }
+    if ($script:lsStep -le 3) { Add-Content $script:lsLog ('step ' + $script:lsStep + ': ' + $state); $btnLang.PerformClick() }
+    else { Add-Content $script:lsLog ('final: ' + $state); $script:lsTimer.Stop(); $form.Close() }
 })
 $script:lsTimer.Start()
 '@
