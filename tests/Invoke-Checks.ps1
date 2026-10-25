@@ -93,7 +93,9 @@ $skipDirs = '\.git', 'dist', 'node_modules', '\.wrangler', 'results'
 $allFiles = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object {
         $rel = $_.FullName.Substring($Root.Length)
         $ok = $true
-        foreach ($d in $skipDirs) { if ($rel -match ('^\\' + $d + '\\')) { $ok = $false; break } }
+        # '.git' is a folder in a clone but a one-line FILE in a git worktree / submodule (it names the real folder, so it
+        # contains the local user name): both are skipped
+        foreach ($d in $skipDirs) { if ($rel -match ('^\\' + $d + '(\\|$)')) { $ok = $false; break } }
         if ($rel -match '\\node_modules\\|\\\.wrangler\\|\\wrangler\.local\.toml$') { $ok = $false }   # generated / account-specific, git-ignored
         $ok
     })

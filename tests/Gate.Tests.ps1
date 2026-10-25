@@ -104,6 +104,15 @@ Describe 'Invoke-Checks gate' {
         }
         finally { Remove-Item -LiteralPath $r -Recurse -Force -ErrorAction SilentlyContinue }
     }
+
+    It 'ignores the .git FILE of a git worktree (a pointer to the real folder, it holds the local path)' {
+        $r = New-MiniRepo
+        try {
+            [IO.File]::WriteAllText((Join-Path $r '.git'), "gitdir: C:/Users/$env:USERNAME/GitHub/example/.git/worktrees/example`n", $script:Utf8NoBom)
+            (Invoke-Gate $r).ExitCode | Should -Be 0
+        }
+        finally { Remove-Item -LiteralPath $r -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 Describe 'Invoke-Checks gate: the release file and the release workflow' {
