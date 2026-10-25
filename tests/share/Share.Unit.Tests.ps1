@@ -5,6 +5,7 @@ BeforeAll {
     $script:Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
     . (Join-Path $script:Repo 'src\lib\Share.ps1')
     . (Join-Path $PSScriptRoot 'Fixtures.ps1')
+    $script:ToolVersion = (Get-Content -LiteralPath (Join-Path $script:Repo 'build\VERSION') -Raw).Trim()
 
     
 
@@ -35,9 +36,9 @@ Describe 'Folder slug' -Tag 'Unit' {
 }
 
 Describe 'Config and endpoint' -Tag 'Unit' {
-    It 'shipped config is dormant (empty endpoint)' {
+    It 'shipped config is either dormant (empty endpoint) or names an https relay' {
         $cfg = Get-ShareConfig -Path (Join-Path $script:Repo 'src\share.config.json')
-        $cfg.endpoint | Should -Be ''
+        $cfg.endpoint | Should -Match '^(|https://[A-Za-z0-9.-]+(/.*)?)$'
         $cfg.maxBytes | Should -Be 2000000
     }
     It 'missing/invalid config degrades to defaults' {
@@ -300,7 +301,7 @@ Describe 'Short chat summary (offline)' -Tag 'Unit' {
         $t | Should -Match '\[عالٍ\] svch0st\.exe \(Unsigned\)'
         $t | Should -Match ('sha256:' + $f2.Sha.Substring(0, 12))
         $t | Should -Not -Match ($f2.Sha)           # only the short prefix
-        $t | Should -Match 'RAM-Doctor 1\.0\.0 \| وقت الفحص: 2026-01-01 12:00:00'
+        $t | Should -Match ('RAM-Doctor ' + [regex]::Escape($script:ToolVersion) + ' \| وقت الفحص: 2026-01-01 12:00:00')
     }
     It 'omits info-level observations and the host unless asked' {
         $t = New-ShareShortSummary -PlanPath $f2.Plan
@@ -316,7 +317,7 @@ Describe 'Short chat summary (offline)' -Tag 'Unit' {
         $t = New-ShareShortSummary -PlanPath $big.Plan
         $t.Length | Should -BeLessOrEqual 1500
         $t | Should -Match 'تقرير RAM Doctor'
-        $t | Should -Match 'RAM-Doctor 1\.0\.0'
+        $t | Should -Match ('RAM-Doctor ' + [regex]::Escape($script:ToolVersion))
     }
     It 'honours a smaller -MaxChars' {
         (New-ShareShortSummary -PlanPath $big.Plan -MaxChars 600).Length | Should -BeLessOrEqual 600
