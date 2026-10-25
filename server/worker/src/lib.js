@@ -977,14 +977,24 @@ async function postReport(request, env, deps, now) {
   const declared = parseInt(request.headers.get('content-length') || '', 10);
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new HttpError(413, 'too_large');
 
-  // Per-IP brake first (every POST counts, even invalid ones and retries). The per-user limit is checked after the
-  // payload is validated and counted only after a successful commit, so neither garbage that guesses a userId nor a
-  // GitHub outage can burn somebody's quota.
+  // Per-IP brake first: checked before any work, and every POST counts (also invalid ones) - except a retry that is
+  // answered from an existing requestId record (a replay or 409 in_progress costs no work and stores nothing). The
+  // per-user limit is checked after the payload is validated and counted only after a successful commit, so neither
+  // garbage that guesses a userId nor a GitHub outage can burn somebody's quota.
   const ip = (request.headers.get('CF-Connecting-IP') || 'unknown').slice(0, 64);
-  const ipRate = await rateHit(env.RATE, 'ip:' + ip, { hour: LIMITS.perIpPerHour, day: LIMITS.perIpPerDay }, now);
+  const ipKey = 'ip:' + ip;
+  const ipRate = await rateCheck(env.RATE, ipKey, { hour: LIMITS.perIpPerHour, day: LIMITS.perIpPerDay }, now);
   if (ipRate.error && openMode) throw new HttpError(503, 'unavailable');
   if (!ipRate.ok) throw new HttpError(429, 'rate_limited', { retryAfter: ipRate.retryAfter });
+  const attempt = { countIp: true };
+  try {
+    return await acceptReport(request, env, deps, now, mode, openMode, attempt);
+  } finally {
+    if (attempt.countIp) await rateCount(env.RATE, ipKey, now);
+  }
+}
 
+async function acceptReport(request, env, deps, now, mode, openMode, attempt) {
   const raw = await readLimited(request, MAX_BODY_BYTES);
 
   let parsed;
@@ -1029,13 +1039,18 @@ async function postReport(request, env, deps, now) {
       rqKey = '';
     }
     if (prev.state === 'done') {
+      attempt.countIp = false;
       log('report_replay', { userId: p.userId });
       return okResponse(env, prev.folder, true);
     }
     if (prev.state === 'pending') {
-      if (now - prev.at < PENDING_STALE_MS) throw new HttpError(409, 'in_progress', { retryAfter: IN_PROGRESS_RETRY_SECONDS });
+      if (now - prev.at < PENDING_STALE_MS) {
+        attempt.countIp = false;
+        throw new HttpError(409, 'in_progress', { retryAfter: IN_PROGRESS_RETRY_SECONDS });
+      }
       // The first attempt never finished. Did its commit land?
       if (await folderExists(env, deps, prev.folder)) {
+        attempt.countIp = false;
         await quietly(() => writeRequest(kv, rqKey, 'done', prev.folder, now));
         log('report_replay', { userId: p.userId, confirmed: true });
         return okResponse(env, prev.folder, true);

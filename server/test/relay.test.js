@@ -1450,3 +1450,33 @@ test('folderExists only ever asks for a path the relay itself would build', asyn
   await assert.rejects(folderExists(ENV, { fetch: gh.fetch }, 'reports/friend-one-0a1b2c3d/' + STAMP), HttpError);
   assert.equal(gh.calls.length, 1);
 });
+test('a retry answered from the requestId record (replay or 409 in_progress) costs no per-IP quota; new uploads still do', async () => {
+  const kv = makeKv();
+  const env = openEnv(kv);
+  const headers = { 'CF-Connecting-IP': '198.51.100.77' };
+  const ipCount = () => JSON.parse(kv.store.get('ip:198.51.100.77')).h[1];
+  const first = await post(payload({ requestId: REQ_ID }), env, mockGithub(), { headers });
+  assert.equal(first.res.status, 200);
+  assert.equal(ipCount(), 1);
+  for (let i = 0; i < LIMITS.perIpPerHour + 2; i++) {
+    const again = await post(payload({ requestId: REQ_ID }), env, mockGithub(), { headers }, NOW + 1000 * (i + 1));
+    assert.equal(again.res.status, 200, 'replay ' + (i + 1));
+    assert.equal(again.json.replayed, true);
+  }
+  assert.equal(ipCount(), 1, 'replays are not counted');
+  // a pending record (first attempt still committing): 409 answers are not counted either
+  const other = 'rq:0a1b2c3d:' + REQ_ID.replace('3f2b', '5f2b');
+  kv.store.set(other, JSON.stringify({ s: 'pending', f: 'reports/friend-one-0a1b2c3d/' + STAMP + '-abc123', t: NOW }));
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await post(payload({ requestId: REQ_ID.replace('3f2b', '5f2b') }), env, mockGithub(), { headers }, NOW + 2000)).res.status, 409);
+  }
+  assert.equal(ipCount(), 1);
+  // everything else still counts, invalid requests included, until the cap
+  assert.equal((await post(payload({ userId: 'nope' }), env, mockGithub(), { headers })).res.status, 400);
+  assert.equal(ipCount(), 2);
+  for (let i = 0; i < LIMITS.perIpPerHour - 2; i++) {
+    assert.equal((await post(payload({ requestId: REQ_ID.replace('3f2b', '6f2' + i) }), env, mockGithub(), { headers })).res.status, 200, 'new upload ' + (i + 1));
+  }
+  assert.equal(ipCount(), LIMITS.perIpPerHour);
+  assert.equal((await post(payload(), env, mockGithub(), { headers })).res.status, 429);
+});

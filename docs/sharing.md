@@ -48,7 +48,7 @@
 * يرسل التطبيق مع كل رفع **معرّف طلب** عشوائيًا (`requestId`، من 16 إلى 64 حرفًا من `A-Z a-z 0-9 -`) ويعيده كما هو في كل إعادة محاولة لهذا الرفع.
   إن كان الخادم قد حفظ التقرير وضاع الرد فقط، تحصل إعادة المحاولة على الرد الأول نفسه (`"replayed": true`) ولا يُحفظ شيء مرتين.
 * إن كانت المحاولة الأولى ما زالت تُحفظ، تحصل إعادة المحاولة على `409 in_progress` مع `Retry-After` (بالثواني).
-* الرفع الفاشل (مثل عطل في GitHub) **لا يُحسب** من حصة المستخدم اليومية؛ يُحسب فقط ما حُفظ فعلًا. أما حدّ الـ IP فيحسب كل محاولة.
+* الرفع الفاشل (مثل عطل في GitHub) **لا يُحسب** من حصة المستخدم اليومية؛ يُحسب فقط ما حُفظ فعلًا. أما حدّ الـ IP فيحسب كل محاولة، إلا إعادة المحاولة التي يُرد عليها بنتيجة المحاولة الأولى (`replayed` أو `409`).
 * لكل رفع مجلد خاص به: `<الوقت بتوقيت UTC>-<6 أحرف عشوائية>`، فلا يختلط رفعان في الثانية نفسها ولا يحلّ أحدهما محل الآخر.
 * النسخ التي لا ترسل معرّف طلب (1.0.x) تعمل كما كانت: كل طلب منها رفع جديد. وإن كان الخادم أقدم من هذا الحقل فيرد `400 unknown_field`،
   فيعيد التطبيق إرسال التقرير نفسه مرة واحدة بدونه.
@@ -109,7 +109,7 @@ Your file list and the contents of your documents are never sent.
   (`"replayed": true`) and nothing is committed twice.
 * While the first attempt is still being stored, a retry gets `409 in_progress` with `Retry-After` (seconds).
 * A failed upload (for example while GitHub is down) does **not** count against the per-user limit; only stored uploads do. The per-IP
-  limit counts every attempt.
+  limit counts every attempt, except a retry answered from the first one (`replayed` or `409`).
 * Every upload gets its own folder, `<UTC time>-<6 random characters>`, so two uploads in the same second never mix or replace each other.
 * Clients that send no request id (1.0.x) keep working: each of their requests is a new upload. A relay from before this field
   answers `400 unknown_field`; the app then sends the same report once more without it.

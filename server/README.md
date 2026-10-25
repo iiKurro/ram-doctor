@@ -28,7 +28,7 @@
 | الطبقة | ما تفعله |
 |---|---|
 | لا مسار قراءة | الخادم **يكتب فقط**. لا قائمة، لا تنزيل، لا حذف، لا تعديل. أسوأ ما يفعله غريب: إرسال تقارير مزعجة محدودة العدد. |
-| تحديد المعدل (KV) | لكل IP: 6 في الساعة و20 في اليوم (كل محاولة تُحسب قبل أي عمل). لكل معرّف مستخدم: 10 في الساعة و20 مجلدًا في اليوم، **تُحسب بعد الحفظ الناجح فقط** (عطل GitHub لا يستهلك حصة أحد). **إجباري في الوضع المفتوح**: إن لم يوجد KV يرد الخادم `503` (يفشل مغلقًا). |
+| تحديد المعدل (KV) | لكل IP: 6 في الساعة و20 في اليوم (يُفحص قبل أي عمل وتُحسب كل محاولة، إلا إعادة المحاولة التي يُرد عليها من سجل `requestId`). لكل معرّف مستخدم: 10 في الساعة و20 مجلدًا في اليوم، **تُحسب بعد الحفظ الناجح فقط** (عطل GitHub لا يستهلك حصة أحد). **إجباري في الوضع المفتوح**: إن لم يوجد KV يرد الخادم `503` (يفشل مغلقًا). |
 | إعادة المحاولة بلا تكرار | إن أرسل التطبيق `requestId` (اختياري) فالطلب نفسه مرة ثانية يحصل على الرد الأول (`"replayed": true`) دون حفظ ثانٍ؛ وأثناء الحفظ الأول `409 in_progress`. إن ضاع رد GitHub على تحديث الفرع، يسأل الخادم GitHub هل وصل المجلد قبل أن يعدّ الرفع فاشلًا. لكل رفع مجلد `<الوقت>-<6 أحرف عشوائية>` فلا يحلّ رفع محل آخر. |
 | مفتاح إيقاف | المتغير `DISABLED=1` يوقف الاستقبال فورًا. |
 | مخطط صارم | حقول معروفة فقط، 3 أسماء ملفات فقط، حدود أحجام، ‎`plan.json` يجب أن يكون JSON سليمًا بعمق/حجم محدودين. |
@@ -128,7 +128,7 @@ A tiny Cloudflare Worker (free tier) that receives a **redacted** RAM Doctor rep
 | Layer | What it does |
 |---|---|
 | No read route | The Worker only **appends**. No list, download, delete or modify route exists. The worst a stranger can do is send rate-limited junk. |
-| KV rate limits | Per IP: 6/hour and 20/day (every attempt counts, before any work). Per userId: 10/hour and 20 folders/day, **counted only after a successful commit** (a GitHub outage costs nobody their quota). **Mandatory in open mode**: without the KV binding it answers `503` (fails closed), except `/v1/health`. |
+| KV rate limits | Per IP: 6/hour and 20/day (checked before any work; every attempt counts except a retry answered from its `requestId` record). Per userId: 10/hour and 20 folders/day, **counted only after a successful commit** (a GitHub outage costs nobody their quota). **Mandatory in open mode**: without the KV binding it answers `503` (fails closed), except `/v1/health`. |
 | Safe retries | When the client sends the optional `requestId`, the same request again gets the first answer (`"replayed": true`) and no second commit; while the first one is still committing it gets `409 in_progress`. If GitHub's answer to the ref update is lost, the relay checks whether the folder landed before calling the upload failed. Every upload gets its own `<stamp>-<6 random chars>` folder, so none can replace another. |
 | Kill switch | `DISABLED=1` makes uploads answer `503` immediately. |
 | Strict schema | Known fields only, exactly three file names, size caps (summary 128 KB, report 512 KB, plan 512 KB, body 2 MB), `plan.json` must be a JSON object with the expected keys and bounded depth/size. |
