@@ -22,6 +22,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `TRADEMARKS.md`: the name "RAM Doctor" and the logo are not covered by the
   licence and may not be used for other builds.
+- `src/lib/Store.ps1`: crash-safe JSON storage (`Write-JsonAtomic`,
+  `Read-JsonSafe` with `.bak` fallback and a `schema` field; 1.0.x files are
+  read as schema 1) and an inter-process lock (`Use-StoreLock`). Not used by
+  the scripts yet.
+- Relay: optional `requestId`. The same id again returns the first answer
+  (`"replayed": true`) instead of committing a second time; a retry during the
+  first commit gets `409 in_progress`.
+
+### Fixed
+
+- Relay: a failed upload (GitHub error) no longer counts against the per-user
+  limit; the quota is counted only after a successful commit.
+- Relay: two uploads of one user in the same second no longer share a folder
+  (the second silently replaced the first). Folders are now
+  `<yyyyMMdd-HHmmss>-<6 random chars>`; the data repo's `index.yml` template
+  understands both forms.
+- Relay: when GitHub's answer to the final ref update is lost, the relay checks
+  whether the commit landed instead of answering `502` (which made clients
+  upload the report again).
 
 ## [1.0.1] - 2026-10-25
 

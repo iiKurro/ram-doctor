@@ -5,14 +5,18 @@ import assert from 'node:assert/strict';
 import worker from '../worker/src/index.js';
 import {
   handle, slugify, validatePayload, parseInviteCodes, checkInvite, timingSafeEqualBytes, utcStamp, rateHit,
+  rateCheck, rateCount, folderSuffix, folderExists,
   commitFiles, sanitizeSummary, checkPlanJson, checkReportHtml, authMode,
   HttpError, LIMITS, MAX_BODY_BYTES, MAX_FILE_BYTES, FILE_CAPS, MAX_SCRIPT_BYTES,
+  REQUEST_TTL_SECONDS, PENDING_STALE_MS, IN_PROGRESS_RETRY_SECONDS,
 } from '../worker/src/lib.js';
 
 const TOKEN = 'github_pat_TEST_TOKEN_DO_NOT_LEAK'; // allow-secret-scan (fake value for tests)
 const CODE = 'RD-TEST-CODE-0001';
 const NOW = Date.UTC(2026, 9, 24, 10, 15, 0); // 2026-10-24T10:15:00Z
 const STAMP = '20261024-101500';
+const FOLDER_RE = new RegExp('^reports/friend-one-0a1b2c3d/' + STAMP + '-[a-z0-9]{6}$');
+const REQ_ID = '3f2b8c1e-9d4a-4b7e-a6c5-0e1f2a3b4c5d';
 const VT64 = 'a1b2c3d4'.repeat(8);
 
 const BASE_ENV = Object.freeze({
@@ -121,22 +125,31 @@ function mockGithub(opts) {
 
 function makeKv(failing) {
   const store = new Map();
+  const ttl = new Map();
   return {
     store,
+    ttl,
     async get(k) {
       if (failing) throw new Error('kv down');
       return store.has(k) ? store.get(k) : null;
     },
-    async put(k, v) {
+    async put(k, v, opts) {
       if (failing) throw new Error('kv down');
       store.set(k, v);
+      ttl.set(k, opts && opts.expirationTtl);
+    },
+    async delete(k) {
+      if (failing) throw new Error('kv down');
+      store.delete(k);
+      ttl.delete(k);
     },
   };
 }
 
-async function post(body, env, gh, extra, nowMs) {
+async function post(body, env, gh, extra, nowMs, moreDeps) {
   const g = gh || mockGithub();
-  const res = await handle(req(body, extra), env || ENV, { fetch: g.fetch, now: () => (nowMs === undefined ? NOW : nowMs) });
+  const deps = Object.assign({ fetch: g.fetch, now: () => (nowMs === undefined ? NOW : nowMs) }, moreDeps || {});
+  const res = await handle(req(body, extra), env || ENV, deps);
   let json = null;
   try {
     json = await res.clone().json();
@@ -225,6 +238,12 @@ const INVALID = [
   ['code not a string', { code: 123 }, 'code'],
   ['code with space', { code: 'a b' }, 'code'],
   ['code too long', { code: 'x'.repeat(129) }, 'code'],
+  ['requestId too short', { requestId: 'abc-123' }, 'requestId'],
+  ['requestId too long', { requestId: 'a'.repeat(65) }, 'requestId'],
+  ['requestId empty', { requestId: '' }, 'requestId'],
+  ['requestId with path characters', { requestId: '../../etc/passwd-0001' }, 'requestId'],
+  ['requestId with a space', { requestId: '3f2b8c1e 9d4a 4b7e a6c5' }, 'requestId'],
+  ['requestId not a string', { requestId: 1234567890123456 }, 'requestId'],
   ['extra top-level field', { extra: 1 }, 'unknown_field'],
   ['tool missing', { tool: undefined }, 'tool'],
   ['tool wrong name', { tool: { name: 'Other', version: '1.0.0' } }, 'tool'],
@@ -420,16 +439,26 @@ test('utcStamp uses UTC and fixed width', () => {
   assert.equal(utcStamp(NOW), STAMP);
 });
 
-test('every path sent to GitHub is inside reports/<slug>-<userId>/<stamp>/ (Arabic name => "user")', async () => {
+test('every path sent to GitHub is inside reports/<slug>-<userId>/<stamp>-<suffix>/ (Arabic name => "user")', async () => {
   const a = await post(payload({ displayName: 'علي حسن' }));
   assert.equal(a.res.status, 200);
+  assert.match(a.json.folder, new RegExp('^reports/user-0a1b2c3d/' + STAMP + '-[a-z0-9]{6}$'));
   const trees = a.gh.calls.filter((c) => c.path === '/git/trees');
   assert.equal(trees.length, 1);
   for (const e of trees[0].body.tree) {
-    assert.ok(e.path.startsWith('reports/user-0a1b2c3d/' + STAMP + '/'), e.path);
+    assert.ok(e.path.startsWith(a.json.folder + '/'), e.path);
     assert.ok(!e.path.includes('..'));
   }
-  assert.equal(a.json.folder, 'reports/user-0a1b2c3d/' + STAMP);
+});
+
+test('folderSuffix: 6 characters from [a-z0-9], different every time', () => {
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) {
+    const s = folderSuffix();
+    assert.match(s, /^[a-z0-9]{6}$/);
+    seen.add(s);
+  }
+  assert.ok(seen.size > 190, 'suffixes repeat far too often: ' + seen.size);
 });
 
 test('commitFiles refuses an unsafe path even if validation were bypassed', async () => {
@@ -673,11 +702,13 @@ test('a token saved with stray whitespace or invisible characters is cleaned bef
 test('atomic commit: ref -> commit -> blobs -> tree(base_tree) -> commit -> ref update (not forced)', async () => {
   const { res, json, gh } = await post(payload());
   assert.equal(res.status, 200);
+  assert.match(json.folder, FOLDER_RE);
   assert.deepEqual(json, {
     ok: true,
-    folder: 'reports/friend-one-0a1b2c3d/' + STAMP,
-    url: 'https://github.com/iiKurro/ram-doctor-reports/tree/main/reports/friend-one-0a1b2c3d/' + STAMP,
+    folder: json.folder,
+    url: 'https://github.com/iiKurro/ram-doctor-reports/tree/main/' + json.folder,
   });
+  const leaf = json.folder.split('/').pop();
 
   const seq = gh.calls.map((c) => c.method + ' ' + c.path.replace(/[0-9a-f]{40}$/, '<sha>'));
   assert.deepEqual(seq, [
@@ -714,7 +745,7 @@ test('atomic commit: ref -> commit -> blobs -> tree(base_tree) -> commit -> ref 
 
   const tree = gh.calls.find((c) => c.path === '/git/trees').body;
   assert.equal(tree.base_tree, sha('e', 1));
-  const prefix = 'reports/friend-one-0a1b2c3d/' + STAMP + '/';
+  const prefix = json.folder + '/';
   assert.deepEqual(tree.tree.map((t) => t.path), ['summary.md', 'report.html', 'plan.json', 'meta.json'].map((n) => prefix + n));
   assert.deepEqual(tree.tree.map((t) => t.sha), [sha('b', 1), sha('b', 2), sha('b', 3), sha('b', 4)]);
   for (const t of tree.tree) {
@@ -723,7 +754,7 @@ test('atomic commit: ref -> commit -> blobs -> tree(base_tree) -> commit -> ref 
   }
 
   const commit = gh.calls.find((c) => c.path === '/git/commits').body;
-  assert.equal(commit.message, 'report: Friend One 0a1b2c3d ' + STAMP);
+  assert.equal(commit.message, 'report: Friend One 0a1b2c3d ' + leaf);
   assert.equal(commit.tree, sha('c', 1));
   assert.deepEqual(commit.parents, [sha('a', 1)]);
   assert.equal(commit.author.name, 'ram-doctor-relay[bot]');
@@ -1101,6 +1132,7 @@ test('summary sanitiser, plan checker and schema validator are linear on hostile
   timed('schema: huge displayName', () => validatePayload(payload({ displayName: 'x'.repeat(1000000) })));
   timed('schema: huge host', () => validatePayload(payload({ host: 'x'.repeat(1000000) })));
   timed('schema: huge code', () => validatePayload(payload({ code: 'x'.repeat(1000000) })));
+  timed('schema: huge requestId', () => validatePayload(payload({ requestId: 'a'.repeat(1000000) })));
   timed('schema: huge version', () => validatePayload(payload({ tool: { name: 'RAM-Doctor', version: '1.'.repeat(500000) } })));
   const big = validatePayload(withFile('report.html', 'a'.repeat(FILE_CAPS['report.html'] + 1)));
   assert.equal(big.status, 413);
@@ -1115,4 +1147,306 @@ test('end to end: a hostile 500 KB report.html is rejected quickly with 400 repo
   assert.equal(r.res.status, 400);
   assert.deepEqual(r.json, { ok: false, error: 'report_rejected', field: 'report.html' });
   assert.equal(r.gh.calls.length, 0);
+});
+// ------------------------------------------------------------------------------------------------ retries: requestId, quota after commit, unique folders
+
+const RQ_KEY = 'rq:0a1b2c3d:' + REQ_ID;
+const patches = (gh) => gh.calls.filter((c) => c.method === 'PATCH').length;
+const userCount = (kv) => (kv.store.has('u:0a1b2c3d') ? JSON.parse(kv.store.get('u:0a1b2c3d')).h[1] : 0);
+
+test('requestId: the same id twice => ONE commit; the second answer repeats the first folder (replayed: true)', async () => {
+  const kv = makeKv();
+  const env = openEnv(kv);
+  const gh = mockGithub();
+  const first = await post(payload({ requestId: REQ_ID }), env, gh);
+  assert.equal(first.res.status, 200);
+  assert.match(first.json.folder, FOLDER_RE);
+  assert.equal(first.json.replayed, undefined);
+  assert.equal(patches(gh), 1);
+
+  const again = await post(payload({ requestId: REQ_ID }), env, gh, undefined, NOW + 5000);
+  assert.equal(again.res.status, 200);
+  assert.deepEqual(again.json, Object.assign({}, first.json, { replayed: true }));
+  assert.equal(patches(gh), 1, 'no second commit');
+  assert.equal(gh.calls.filter((c) => c.path === '/git/blobs').length, 4, 'nothing was uploaded twice');
+  assert.equal(userCount(kv), 1, 'the per-user quota counted the upload once');
+  const rec = JSON.parse(kv.store.get(RQ_KEY));
+  assert.equal(rec.s, 'done');
+  assert.equal(rec.f, first.json.folder);
+  assert.equal(kv.ttl.get(RQ_KEY), REQUEST_TTL_SECONDS);
+
+  // another requestId, or the same requestId of another user, is a new upload
+  const other = await post(payload({ requestId: REQ_ID.replace('3f2b', '4f2b') }), env, gh);
+  assert.equal(other.res.status, 200);
+  assert.notEqual(other.json.folder, first.json.folder);
+  const otherUser = await post(payload({ requestId: REQ_ID, userId: 'ffff0000' }), env, gh);
+  assert.equal(otherUser.res.status, 200);
+  assert.equal(otherUser.json.replayed, undefined);
+  assert.equal(patches(gh), 3);
+});
+
+test('requestId: a retry while the first attempt is still committing => 409 in_progress + Retry-After, never a second commit', async () => {
+  const kv = makeKv();
+  const env = openEnv(kv);
+  const base = mockGithub();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let patchSeen;
+  const patchCalled = new Promise((r) => { patchSeen = r; });
+  const gated = {
+    calls: base.calls,
+    fetch: async (url, init) => {
+      if (init && init.method === 'PATCH') {
+        patchSeen();
+        await gate;
+      }
+      return base.fetch(url, init);
+    },
+  };
+  const firstP = post(payload({ requestId: REQ_ID }), env, gated);
+  await patchCalled;
+  const second = await post(payload({ requestId: REQ_ID }), env, gated, undefined, NOW + 3000);
+  assert.equal(second.res.status, 409);
+  assert.deepEqual(second.json, { ok: false, error: 'in_progress' });
+  assert.equal(second.res.headers.get('retry-after'), String(IN_PROGRESS_RETRY_SECONDS));
+  release();
+  const first = await firstP;
+  assert.equal(first.res.status, 200);
+  const third = await post(payload({ requestId: REQ_ID }), env, gated, undefined, NOW + 20000);
+  assert.equal(third.res.status, 200);
+  assert.equal(third.json.replayed, true);
+  assert.equal(third.json.folder, first.json.folder);
+  assert.equal(patches(base), 1);
+  assert.equal(userCount(kv), 1);
+});
+
+test('a 502 from GitHub costs no per-user quota, and frees the requestId for an immediate retry', async () => {
+  const kv = makeKv();
+  const env = openEnv(kv);
+  const down = () => mockGithub({ override: (c) => (c.path === '/git/blobs' ? new Response('{"message":"boom"}', { status: 502 }) : null) });
+  const r = await post(payload({ requestId: REQ_ID }), env, down());
+  assert.equal(r.res.status, 502);
+  assert.deepEqual(r.json, { ok: false, error: 'upstream_error' });
+  assert.equal(kv.store.has('u:0a1b2c3d'), false, 'no per-user quota spent');
+  assert.equal(kv.store.has(RQ_KEY), false, 'the requestId is free again');
+
+  // a whole hour of failures (old clients, from many IPs) still leaves the full quota
+  for (let i = 0; i < LIMITS.perUserPerHour; i++) {
+    assert.equal((await post(payload(), env, down(), { headers: ipHdr(100 + i) })).res.status, 502);
+  }
+  assert.equal(userCount(kv), 0);
+  for (let i = 0; i < LIMITS.perUserPerHour; i++) {
+    assert.equal((await post(payload(), env, mockGithub(), { headers: ipHdr(200 + i) })).res.status, 200, 'upload ' + (i + 1));
+  }
+  assert.equal(userCount(kv), LIMITS.perUserPerHour);
+  assert.equal((await post(payload(), env, mockGithub(), { headers: ipHdr(300) })).res.status, 429);
+
+  // the IP flood cap still counts every attempt BEFORE any work, failures included
+  const ipKv = makeKv();
+  const ipEnv = openEnv(ipKv);
+  for (let i = 0; i < LIMITS.perIpPerHour; i++) assert.equal((await post(payload(), ipEnv, down())).res.status, 502);
+  const gh = mockGithub();
+  assert.equal((await post(payload(), ipEnv, gh)).res.status, 429);
+  assert.equal(gh.calls.length, 0);
+});
+
+test('two uploads of one user in the same second => two folders, both committed, nothing replaced', async () => {
+  const env = openEnv();
+  const gh = mockGithub();
+  const a = await post(payload(), env, gh);
+  const b = await post(payload(), env, gh);
+  assert.equal(a.res.status, 200);
+  assert.equal(b.res.status, 200);
+  assert.match(a.json.folder, FOLDER_RE);
+  assert.match(b.json.folder, FOLDER_RE);
+  assert.notEqual(a.json.folder, b.json.folder);
+  const trees = gh.calls.filter((c) => c.path === '/git/trees').map((c) => c.body.tree.map((t) => t.path));
+  assert.equal(trees.length, 2);
+  assert.ok(trees[0].every((p) => p.startsWith(a.json.folder + '/')));
+  assert.ok(trees[1].every((p) => p.startsWith(b.json.folder + '/')));
+  assert.equal(patches(gh), 2);
+});
+
+test('old clients (no requestId) keep working: every POST is a new upload, nothing is remembered', async () => {
+  const kv = makeKv();
+  const env = openEnv(kv);
+  const gh = mockGithub();
+  const body = payload();
+  delete body.code;
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'requestId'), false);
+  const a = await post(body, env, gh);
+  const b = await post(body, env, gh);
+  assert.equal(a.res.status, 200);
+  assert.equal(b.res.status, 200);
+  assert.deepEqual(Object.keys(a.json).sort(), ['folder', 'ok', 'url']);
+  assert.notEqual(a.json.folder, b.json.folder);
+  assert.equal(patches(gh), 2);
+  assert.ok(![...kv.store.keys()].some((k) => k.startsWith('rq:')));
+  // code mode without KV: a requestId is accepted (and cannot be honoured without KV)
+  const c = await post(payload({ requestId: REQ_ID }));
+  assert.equal(c.res.status, 200);
+});
+
+test('a stale "pending" (the first attempt died): GitHub decides between a replay and a fresh upload', async () => {
+  const stale = (folder) => JSON.stringify({ s: 'pending', f: folder, t: NOW - PENDING_STALE_MS - 1000 });
+  const oldFolder = 'reports/friend-one-0a1b2c3d/' + STAMP + '-abc123';
+
+  // it landed: replay it, no second commit
+  const kv = makeKv();
+  kv.store.set(RQ_KEY, stale(oldFolder));
+  const landed = mockGithub({ override: (c) => (c.method === 'GET' && c.path.startsWith('/contents/') ? new Response('{"type":"file"}', { status: 200 }) : null) });
+  const r = await post(payload({ requestId: REQ_ID }), openEnv(kv), landed);
+  assert.equal(r.res.status, 200);
+  assert.equal(r.json.folder, oldFolder);
+  assert.equal(r.json.replayed, true);
+  assert.deepEqual(landed.calls.map((c) => c.method + ' ' + c.path), ['GET /contents/' + oldFolder + '/meta.json']);
+  assert.equal(JSON.parse(kv.store.get(RQ_KEY)).s, 'done');
+
+  // it did not land: a fresh upload in a NEW folder
+  const kv2 = makeKv();
+  kv2.store.set(RQ_KEY, stale(oldFolder));
+  const gh2 = mockGithub();
+  const r2 = await post(payload({ requestId: REQ_ID }), openEnv(kv2), gh2);
+  assert.equal(r2.res.status, 200);
+  assert.equal(r2.json.replayed, undefined);
+  assert.notEqual(r2.json.folder, oldFolder);
+  assert.equal(patches(gh2), 1);
+
+  // a pending mark that is not stale yet: 409, GitHub not even asked
+  const kv3 = makeKv();
+  kv3.store.set(RQ_KEY, JSON.stringify({ s: 'pending', f: oldFolder, t: NOW - 1000 }));
+  const gh3 = mockGithub();
+  assert.equal((await post(payload({ requestId: REQ_ID }), openEnv(kv3), gh3)).res.status, 409);
+  assert.equal(gh3.calls.length, 0);
+
+  // GitHub cannot answer: 502, and the log names the step without the user's folder
+  const kv4 = makeKv();
+  kv4.store.set(RQ_KEY, stale(oldFolder));
+  const cap = captureConsole();
+  let r4;
+  try {
+    r4 = await post(payload({ requestId: REQ_ID }), openEnv(kv4), mockGithub({ override: () => new Response('x', { status: 500 }) }));
+  } finally {
+    cap.restore();
+  }
+  assert.equal(r4.res.status, 502);
+  const logs = cap.lines.join('\n');
+  assert.ok(logs.includes('GET /contents/<folder>'), logs);
+  assert.ok(!logs.includes('friend-one'), 'the folder name must not be logged');
+
+  // a stored record that does not look like ours is ignored (treated as no record)
+  const kv5 = makeKv();
+  kv5.store.set(RQ_KEY, JSON.stringify({ s: 'done', f: '../../.github/workflows', t: NOW }));
+  const r5 = await post(payload({ requestId: REQ_ID }), openEnv(kv5), mockGithub());
+  assert.equal(r5.res.status, 200);
+  assert.equal(r5.json.replayed, undefined);
+  assert.match(r5.json.folder, FOLDER_RE);
+});
+
+test('a ref update whose answer was lost is confirmed on GitHub instead of being reported as a failure', async () => {
+  const lostAnswer = (contentsStatus) => mockGithub({
+    override: (c) => {
+      if (c.method === 'PATCH') throw new TypeError('socket hang up'); // the update reached GitHub, its answer did not
+      if (c.method === 'GET' && c.path.startsWith('/contents/')) return new Response('{"message":"x"}', { status: contentsStatus });
+      return null;
+    },
+  });
+
+  // GitHub has it: 200, counted once, requestId done
+  const kv = makeKv();
+  const r = await post(payload({ requestId: REQ_ID }), openEnv(kv), lostAnswer(200));
+  assert.equal(r.res.status, 200);
+  assert.match(r.json.folder, FOLDER_RE);
+  assert.equal(userCount(kv), 1);
+  assert.equal(JSON.parse(kv.store.get(RQ_KEY)).s, 'done');
+  // old clients profit too: no 502, so no retry and no duplicate
+  assert.equal((await post(payload(), openEnv(makeKv()), lostAnswer(200))).res.status, 200);
+
+  // GitHub does not have it: an ordinary 502 that costs nothing and frees the requestId
+  const kv2 = makeKv();
+  const r2 = await post(payload({ requestId: REQ_ID }), openEnv(kv2), lostAnswer(404));
+  assert.equal(r2.res.status, 502);
+  assert.equal(userCount(kv2), 0);
+  assert.equal(kv2.store.has(RQ_KEY), false);
+
+  // GitHub cannot say: 502, the "pending" mark stays so a quick retry waits (409) instead of committing again
+  const kv3 = makeKv();
+  const r3 = await post(payload({ requestId: REQ_ID }), openEnv(kv3), lostAnswer(500));
+  assert.equal(r3.res.status, 502);
+  assert.equal(JSON.parse(kv3.store.get(RQ_KEY)).s, 'pending');
+  const gh = mockGithub();
+  assert.equal((await post(payload({ requestId: REQ_ID }), openEnv(kv3), gh, undefined, NOW + 5000)).res.status, 409);
+  assert.equal(gh.calls.length, 0);
+  // a definite "no" from the ref update (422 twice) is never second-guessed
+  const kv4 = makeKv();
+  const no = mockGithub({ heads: [sha('a', 1), sha('a', 2)], patch: [422, 422] });
+  assert.equal((await post(payload({ requestId: REQ_ID }), openEnv(kv4), no)).res.status, 502);
+  assert.ok(!no.calls.some((c) => c.path.startsWith('/contents/')));
+  assert.equal(kv4.store.has(RQ_KEY), false);
+});
+
+test('KV trouble with the request record: open mode fails closed (503), code mode uploads without idempotency', async () => {
+  const flaky = () => {
+    const kv = makeKv();
+    const get = kv.get;
+    const put = kv.put;
+    kv.get = async (k) => { if (k.startsWith('rq:')) throw new Error('kv down'); return get(k); };
+    kv.put = async (k, v, o) => { if (k.startsWith('rq:')) throw new Error('kv down'); return put(k, v, o); };
+    return kv;
+  };
+  const gh = mockGithub();
+  const open = await post(payload({ requestId: REQ_ID }), openEnv(flaky()), gh);
+  assert.equal(open.res.status, 503);
+  assert.deepEqual(open.json, { ok: false, error: 'unavailable' });
+  assert.equal(gh.calls.length, 0);
+  const code = await post(payload({ requestId: REQ_ID }), Object.assign({}, ENV, { RATE: flaky() }));
+  assert.equal(code.res.status, 200);
+});
+
+test('the Worker keeps an accepted upload alive with ctx.waitUntil (default export wires it)', async () => {
+  const waited = [];
+  const r = await post(payload({ requestId: REQ_ID }), openEnv(), mockGithub(), undefined, undefined, { waitUntil: (p) => waited.push(p) });
+  assert.equal(r.res.status, 200);
+  assert.equal(waited.length, 1);
+  await Promise.all(waited);
+
+  const gh = mockGithub();
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = gh.fetch; // the default export has no deps: GitHub calls go through the global fetch
+  const fromCtx = [];
+  try {
+    const res = await worker.fetch(req(payload()), openEnv(), { waitUntil: (p) => fromCtx.push(p) });
+    assert.equal(res.status, 200);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+  assert.equal(fromCtx.length, 1);
+  await Promise.all(fromCtx);
+  // and nothing is registered for requests that never reach the commit
+  const none = [];
+  await post(payload({ userId: 'nope' }), openEnv(), mockGithub(), undefined, undefined, { waitUntil: (p) => none.push(p) });
+  assert.equal(none.length, 0);
+});
+
+test('rateCheck only looks, rateCount only counts', async () => {
+  const kv = makeKv();
+  const lim = { hour: 1, day: 5 };
+  assert.deepEqual(await rateCheck(kv, 'k', lim, NOW), { ok: true });
+  assert.equal(kv.store.size, 0, 'rateCheck writes nothing');
+  assert.deepEqual(await rateCount(kv, 'k', NOW), { ok: true });
+  assert.deepEqual(await rateCount(kv, 'k', NOW), { ok: true }, 'counting never refuses: the event already happened');
+  assert.equal(JSON.parse(kv.store.get('k')).h[1], 2);
+  const blocked = await rateCheck(kv, 'k', lim, NOW);
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.retryAfter, 2700);
+  assert.deepEqual(await rateCheck(undefined, 'k', lim, NOW), { ok: true, unbound: true });
+  assert.deepEqual(await rateCount(makeKv(true), 'k', NOW), { ok: true, error: true });
+});
+
+test('folderExists only ever asks for a path the relay itself would build', async () => {
+  const gh = mockGithub();
+  assert.equal(await folderExists(ENV, { fetch: gh.fetch }, 'reports/friend-one-0a1b2c3d/' + STAMP + '-abc123'), false);
+  await assert.rejects(folderExists(ENV, { fetch: gh.fetch }, 'reports/../../.github'), (e) => e instanceof HttpError && e.status === 500);
+  await assert.rejects(folderExists(ENV, { fetch: gh.fetch }, 'reports/friend-one-0a1b2c3d/' + STAMP), HttpError);
+  assert.equal(gh.calls.length, 1);
 });

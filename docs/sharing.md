@@ -30,8 +30,7 @@
 | `report.html` | التقرير الكامل (بدون سكربتات خارجية أو اتصال بالإنترنت) |
 | `plan.json` | نتيجة الفحص بصيغة مقروءة آليًا (الحكم، الملفات المشبوهة، أرقام الذاكرة) |
 
-الحدود: summary.md ≤ 128 KB، 
-eport.html ≤ 512 KB، plan.json ≤ 512 KB، والطلب كله ≤ 2 MB. الروابط المكتوبة كنص في التقرير (أسطر أوامر المشتبه بهم) مقبولة؛ أما الروابط الفعّالة (href/src/url()) فمقيّدة بـ VirusTotal وGitHub فقط.
+الحدود: `summary.md` ≤ 128 KB، `report.html` ≤ 512 KB، `plan.json` ≤ 512 KB، والطلب كله ≤ 2 MB. الروابط المكتوبة كنص في التقرير (أسطر أوامر المشتبه بهم) مقبولة؛ أما الروابط الفعّالة (href/src/url()) فمقيّدة بـ VirusTotal وGitHub فقط.
 
 ### ما الذي يُحذف قبل الإرسال؟
 
@@ -44,6 +43,15 @@ eport.html ≤ 512 KB، plan.json ≤ 512 KB، والطلب كله ≤ 2 MB. ا�
 * التقارير تُحفظ في مستودع GitHub **خاص** يقرؤه المساعد وحده. الخادم نفسه **لا يملك أي مسار قراءة**.
 * **حذف بياناتك:** اطلب من المساعد حذف مجلد `reports/<اسمك>-<معرّفك>` (يراه في المستودع). يمكنه أيضًا إزالته من السجل نهائيًا بـ `git filter-repo`.
 
+### إعادة المحاولة لا تحفظ التقرير مرتين
+
+* يمكن أن يحمل كل رفع **معرّف طلب** عشوائيًا (`requestId`، من 16 إلى 64 حرفًا من `A-Z a-z 0-9 -`) يُرسل كما هو في كل إعادة محاولة لهذا الرفع.
+  إن كان الخادم قد حفظ التقرير وضاع الرد فقط، تحصل إعادة المحاولة على الرد الأول نفسه (`"replayed": true`) ولا يُحفظ شيء مرتين.
+* إن كانت المحاولة الأولى ما زالت تُحفظ، تحصل إعادة المحاولة على `409 in_progress` مع `Retry-After` (بالثواني).
+* الرفع الفاشل (مثل عطل في GitHub) **لا يُحسب** من حصة المستخدم اليومية؛ يُحسب فقط ما حُفظ فعلًا. أما حدّ الـ IP فيحسب كل محاولة.
+* لكل رفع مجلد خاص به: `<الوقت بتوقيت UTC>-<6 أحرف عشوائية>`، فلا يختلط رفعان في الثانية نفسها ولا يحلّ أحدهما محل الآخر.
+* النسخ التي لا ترسل معرّف طلب (1.0.x) تعمل كما كانت: كل طلب منها رفع جديد.
+
 ### للمساعد (قراءة الملفات بأمان)
 
 * افتح **`summary.md`** على GitHub أولًا؛ هو آمن للعرض (يُنظَّف قبل الحفظ).
@@ -53,9 +61,9 @@ eport.html ≤ 512 KB، plan.json ≤ 512 KB، والطلب كله ≤ 2 MB. ا�
 
 ### ملخص نموذج الأمان
 
-لا مسار قراءة · مفتاح GitHub دقيق لمستودع واحد فقط · تحديد معدل (6/ساعة و20/يوم لكل IP، 10/ساعة و20/يوم لكل مستخدم) ·
+لا مسار قراءة · مفتاح GitHub دقيق لمستودع واحد فقط · تحديد معدل (6/ساعة و20/يوم لكل IP، 10/ساعة و20/يوم لكل مستخدم تُحسب فيها الرفعات المحفوظة فقط) ·
 مخطط صارم وأحجام محدودة · تنظيف `summary.md` · قبول `report.html` الخامل فقط · كل المسارات تُبنى من أجزاء مُتحقَّق منها (لا اجتياز مسارات) ·
-وقت المجلد من ساعة الخادم · لا أسرار ولا محتوى في السجلات. التفاصيل في [`server/README.md`](../server/README.md#نموذج-التهديد-بصراحة).
+اسم المجلد من ساعة الخادم مع لاحقة عشوائية · إعادة المحاولة بالمعرّف نفسه لا تكرر الحفظ · لا أسرار ولا محتوى في السجلات. التفاصيل في [`server/README.md`](../server/README.md#نموذج-التهديد-بصراحة).
 
 ---
 
@@ -80,9 +88,6 @@ Three text files only (the server adds a fourth, `meta.json`):
 | `report.html` | the full report (no external scripts or network access) |
 | `plan.json` | machine-readable scan result (verdict, suspects, memory numbers) |
 
-Limits: summary.md <= 128 KB, 
-eport.html <= 512 KB, plan.json <= 512 KB, whole request <= 2 MB. URLs shown as plain text inside the report (a suspect's command line) are fine; *active* links (href/src/url()) are limited to VirusTotal and GitHub.
-
 Limits: `summary.md` <= 128 KB, `report.html` <= 512 KB, `plan.json` <= 512 KB, whole request <= 2 MB. URLs shown as plain text inside the report (a suspect's command line) are fine; *active* links (`href`/`src`/`url()`) are limited to VirusTotal and GitHub.
 
 ### What is redacted before it leaves your PC
@@ -96,6 +101,17 @@ Your file list and the contents of your documents are never sent.
 * Reports live in a **private** GitHub repository only the helper can read. The relay itself has **no read route at all**.
 * **Delete your data:** ask the helper to remove the folder `reports/<your-name>-<your-id>` (they can see it in the repository); they can also purge it from history with `git filter-repo`.
 
+### Retries never store a report twice
+
+* An upload may carry a random **request id** (`requestId`, 16-64 characters from `A-Z a-z 0-9 -`) that is sent unchanged on every
+  retry of that upload. If the relay already stored the report and only its answer was lost, the retry gets the first answer again
+  (`"replayed": true`) and nothing is committed twice.
+* While the first attempt is still being stored, a retry gets `409 in_progress` with `Retry-After` (seconds).
+* A failed upload (for example while GitHub is down) does **not** count against the per-user limit; only stored uploads do. The per-IP
+  limit counts every attempt.
+* Every upload gets its own folder, `<UTC time>-<6 random characters>`, so two uploads in the same second never mix or replace each other.
+* Clients that send no request id (1.0.x) keep working: each of their requests is a new upload.
+
 ### For the helper (reading uploads safely)
 
 * Open **`summary.md`** on GitHub first; it is safe to render (sanitised on arrival).
@@ -106,6 +122,7 @@ Your file list and the contents of your documents are never sent.
 
 ### Security model in one paragraph
 
-No read route · a fine-grained GitHub token for one repository only · rate limits (6/hour and 20/day per IP, 10/hour and 20/day per user) ·
-strict schema and size caps · `summary.md` sanitised · only inert `report.html` accepted · every path built from validated parts (no traversal) ·
-folder time taken from the server clock · no secrets or contents in logs. Details: [`server/README.md`](../server/README.md#threat-model-honest-version).
+No read route · a fine-grained GitHub token for one repository only · rate limits (6/hour and 20/day per IP, 10/hour and 20/day per user,
+counting stored uploads only) · strict schema and size caps · `summary.md` sanitised · only inert `report.html` accepted · every path built
+from validated parts (no traversal) · folder name from the server clock plus a random suffix · a retry with the same request id is never
+stored twice · no secrets or contents in logs. Details: [`server/README.md`](../server/README.md#threat-model-honest-version).
