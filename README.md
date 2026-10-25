@@ -98,6 +98,10 @@ give you and points you to the next tool when needed.
 
 ## Quick start
 
+> **First time?** Read the illustrated [How to use guide](https://iikurro.github.io/ram-doctor/guide.html), or press
+> **How to use** at the top of the window for a 1-minute tour that lights up and explains each part. The tour
+> does not scan or change anything, and the window offers it by itself the first time.
+
 1. **Download** [`RAM-Doctor.bat`](https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat)
    from the [latest release](https://github.com/iiKurro/ram-doctor/releases/latest).
    Optionally verify it: `Get-FileHash .\RAM-Doctor.bat -Algorithm SHA256`
@@ -361,7 +365,8 @@ ram-doctor/
 │  ├─ RAM-Doctor-Actions.ps1    quarantine / restore / purge / list
 │  └─ lib/
 │     ├─ Native.cs              read-only P/Invoke helpers (pool tags, PID probe, ...)
-│     ├─ Fluent.cs              Windows 11 style WinForms controls
+│     ├─ Fluent.cs              Windows 11 style WinForms controls (including the tour overlay)
+│     ├─ Tour.ps1               the guided tour of the window
 │     └─ Report.ps1             HTML report builder
 ├─ server/                      relay (Cloudflare Worker) behind the Share button
 ├─ build/Build-SingleFile.ps1   packs src/ into dist/RAM-Doctor.bat

@@ -153,11 +153,15 @@ namespace Fluent
             return p;
         }
 
-        // colour behind a control: cards paint Card, everything else sits on the window colour
+        // colour behind a control: cards paint Card, info bars their tint, everything else sits on the window colour
         public static Color Backdrop(Control c)
         {
             for (Control p = c.Parent; p != null; p = p.Parent)
+            {
                 if (p is FCard) return Card;
+                FInfoBar bar = p as FInfoBar;
+                if (bar != null) { Color bg, ic; string gl; FInfoBar.Palette(bar.Level, out bg, out ic, out gl); return bg; }
+            }
             return Window;
         }
 
@@ -214,8 +218,18 @@ namespace Fluent
         struct RECT { public int Left, Top, Right, Bottom; }
         [DllImport("dwmapi.dll")]
         static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out RECT rect, int size);
+        [DllImport("user32.dll")]
+        static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
 
         static int Rgb(Color c) { return c.R | (c.G << 8) | (c.B << 16); }
+
+        // a window's rectangle in screen pixels; unlike the client-coordinate helpers it is never mirrored (right-to-left layout)
+        public static Rectangle ScreenRect(IntPtr h)
+        {
+            RECT r;
+            if (h != IntPtr.Zero && GetWindowRect(h, out r)) return Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
+            return Rectangle.Empty;
+        }
 
         // visible window rectangle in screen pixels (without the invisible resize border / shadow)
         public static Rectangle FrameBounds(IntPtr h)
@@ -433,6 +447,7 @@ namespace Fluent
         FLevel level = FLevel.Info;
         string title = "", message = "";
         public bool AutoFit = true;
+        public int ReserveEnd;   // pixels kept free at the far end (right, or left when right-to-left) for buttons placed on the bar
 
         public FInfoBar()
         {
@@ -455,7 +470,7 @@ namespace Fluent
         {
             using (Graphics g = CreateGraphics())
             {
-                int tw = Math.Max(60, Width - Pad * 2 - IconCol);
+                int tw = Math.Max(60, Width - Pad * 2 - IconCol - ReserveEnd);
                 int th = Math.Max(20, Theme.MeasureWrapped(g, title, Theme.Semi(11.5f), tw));
                 int mh = message.Length > 0 ? Theme.MeasureWrapped(g, message, Theme.UI(10f, FontStyle.Regular), tw) : 0;
                 int h = (Pad - 2) + th + (mh > 0 ? 6 + mh : 0) + (Pad - 2);
@@ -491,8 +506,8 @@ namespace Fluent
                 using (SolidBrush b = new SolidBrush(bg)) g.FillPath(b, p);
                 using (Pen pen = new Pen(border, 1f)) g.DrawPath(pen, p);
             }
-            int tw = Math.Max(60, Width - Pad * 2 - IconCol);
-            int tx = rtl ? Pad : Pad + IconCol;
+            int tw = Math.Max(60, Width - Pad * 2 - IconCol - ReserveEnd);
+            int tx = rtl ? Pad + ReserveEnd : Pad + IconCol;
             int ix = rtl ? Width - Pad - 22 : Pad;
             Font tf = Theme.Semi(11.5f), mf = Theme.UI(10f, FontStyle.Regular);
             int th = Math.Max(20, Theme.MeasureWrapped(g, title, tf, tw));
@@ -844,5 +859,449 @@ namespace Fluent
                 using (SolidBrush sb = new SolidBrush(Theme.Track)) g.FillPath(sb, sp);
             }
         }
+    }
+
+    // ------------------------------------------------------------------ coach marks (the guided tour, see lib\Tour.ps1)
+    // A borderless per-pixel-alpha ("layered") window that the tour lays exactly over the main window's client area. It dims
+    // the window, keeps a lit hole with an accent ring around one control, and draws the tour card (step counter, title,
+    // text, Back / Next / Skip). It never takes the focus (WS_EX_NOACTIVATE). While it is shown, a message filter swallows
+    // the keys and the mouse wheel meant for the main window and reports them through CoachKey / CoachWheel, so nothing
+    // underneath can be typed into; the hole is painted with alpha 1 (invisible, but it still catches clicks), so nothing
+    // underneath can be clicked either. The tour logic (steps, texts, where the card goes) lives in PowerShell.
+    public class FCoach : Form, IMessageFilter
+    {
+        [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, ref PT dst, ref SZ size, IntPtr hdcSrc, ref PT src, int key, ref BLEND blend, int flags);
+        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+        [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr child);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+        [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+        [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+        [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BMI info, uint usage, out IntPtr bits, IntPtr section, uint offset);
+
+        [StructLayout(LayoutKind.Sequential)] struct PT { public int X, Y; public PT(int x, int y) { X = x; Y = y; } }
+        [StructLayout(LayoutKind.Sequential)] struct SZ { public int W, H; public SZ(int w, int h) { W = w; H = h; } }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte Op, Flags, Alpha, Format; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct BMI
+        {
+            public int Size, Width, Height; public short Planes, Bits;
+            public int Compression, SizeImage, XPels, YPels, ClrUsed, ClrImportant, Color0;
+        }
+
+        // ---- what the card shows (set by the tour, then call Render)
+        public string Title = "", Body = "", Note = "", Counter = "", BackText = "", NextText = "", SkipText = "", Glyph = "";
+        public bool Rtl, CanBack = true;
+        public int StepIndex, StepCount;
+        public Rectangle Hole = Rectangle.Empty;   // lit area in client coordinates; Empty = nothing lit (the card stands alone)
+        public Point CardLocation;                 // top-left corner of the card in client coordinates (see MeasureCard)
+        public int CardWidth = 384;                // at 96 dpi; multiplied by Scale
+        public bool Animate = SystemInformation.UIEffectsEnabled;
+        public byte DimAlpha;
+
+        public event EventHandler NextClick, BackClick, SkipClick;
+        public event KeyEventHandler CoachKey;
+        public event MouseEventHandler CoachWheel;
+
+        enum Hit { None, Skip, Back, Next }
+        struct Lay { public Size Card; public Rectangle Badge, Counter, Dots, TitleR, BodyR, NoteIcon, NoteR, Skip, Back, Next; }
+
+        float scale = 1f;
+        bool filterOn, shown;
+        Hit hot = Hit.None, pressed = Hit.None;
+        Lay lay;
+        Bitmap content;                        // the card, drawn opaque (ClearType text needs an opaque surface)
+        IntPtr memDc = IntPtr.Zero, dib = IntPtr.Zero, oldObj = IntPtr.Zero, bits = IntPtr.Zero;
+        Bitmap surface;                        // premultiplied ARGB view of the DIB that UpdateLayeredWindow shows
+        Size surfaceSize = Size.Empty;
+        readonly Timer anim = new Timer();
+        readonly System.Diagnostics.Stopwatch clock = new System.Diagnostics.Stopwatch();
+        Rectangle curHole = Rectangle.Empty, fromHole = Rectangle.Empty, toHole = Rectangle.Empty;
+        Point curCard, fromCard, toCard;
+        byte curAlpha = 255;
+        bool fading;
+        const int MoveMs = 190, FadeMs = 160;
+
+        public FCoach()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            DimAlpha = Theme.Dark ? (byte)150 : (byte)120;
+            anim.Interval = 15;
+            anim.Tick += delegate { try { Step(); } catch (Exception ex) { Fail(ex); } };
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x00080000 | 0x08000000 | 0x00000080;   // WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                return cp;
+            }
+        }
+        protected override bool ShowWithoutActivation { get { return true; } }
+        protected override void OnPaintBackground(PaintEventArgs e) { }   // a layered window shows what UpdateLayeredWindow gave it
+        protected override void OnPaint(PaintEventArgs e) { }
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x0021) { m.Result = (IntPtr)3; return; }   // WM_MOUSEACTIVATE -> MA_NOACTIVATE: a click never steals the focus
+            base.WndProc(ref m);
+        }
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            try { using (Graphics g = CreateGraphics()) scale = Math.Max(1f, g.DpiX / 96f); } catch { scale = 1f; }
+        }
+
+        public float DpiScale { get { return scale; } }
+        public string LastError = "";   // set when drawing failed on a timer or mouse event (nothing to throw to there); the tour then closes
+        void Fail(Exception ex) { anim.Stop(); LastError = ex.Message; }
+        public Rectangle CardBounds { get { return new Rectangle(toCard, lay.Card); } }   // where the card ends up (client coordinates)
+        public Rectangle NextBounds { get { return Offset(lay.Next); } }
+        public Rectangle BackBounds { get { return Offset(lay.Back); } }
+        public Rectangle SkipBounds { get { return Offset(lay.Skip); } }
+        Rectangle Offset(Rectangle r) { if (r.IsEmpty) return r; r.Offset(toCard); return r; }
+        int P(float v) { return (int)Math.Round(v * scale); }
+
+        // ---- showing and hiding
+        public void Attach(Form owner)
+        {
+            Owner = owner;
+            if (!filterOn) { Application.AddMessageFilter(this); filterOn = true; }
+        }
+        public void Detach()
+        {
+            if (filterOn) { Application.RemoveMessageFilter(this); filterOn = false; }
+            anim.Stop();
+        }
+        protected override void OnFormClosed(FormClosedEventArgs e) { Detach(); base.OnFormClosed(e); }
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) { Detach(); anim.Dispose(); if (content != null) { content.Dispose(); content = null; } }
+            FreeSurface();
+            base.Dispose(disposing);
+        }
+
+        // keys and wheel turns aimed at the owner window (or at this one) are reported here and never reach the owner
+        public bool PreFilterMessage(ref Message m)
+        {
+            int msg = m.Msg;
+            bool key = msg >= 0x0100 && msg <= 0x0103;   // WM_KEYDOWN, WM_KEYUP, WM_CHAR, WM_DEADCHAR (Alt combinations stay with Windows)
+            bool wheel = msg == 0x020A;
+            if (!key && !wheel) return false;
+            if (IsDisposed || !Visible || Owner == null || !Owner.IsHandleCreated) return false;
+            IntPtr o = Owner.Handle;
+            if (m.HWnd != o && m.HWnd != Handle && !IsChild(o, m.HWnd)) return false;
+            try
+            {
+                if (msg == 0x0100 && CoachKey != null) CoachKey(this, new KeyEventArgs(((Keys)(int)(long)m.WParam & Keys.KeyCode) | ModifierKeys));
+                if (wheel && CoachWheel != null) CoachWheel(this, new MouseEventArgs(MouseButtons.None, 0, 0, 0, (short)(((long)m.WParam >> 16) & 0xFFFF)));
+            }
+            catch { }
+            return true;
+        }
+
+        // ---- card layout (all sizes follow Scale; right-to-left mirrors every rectangle)
+        Font CounterFont { get { return Theme.UI(9f, FontStyle.Regular); } }
+        Font TitleFont { get { return Theme.Semi(13f); } }
+        Font BodyFont { get { return Theme.UI(10f, FontStyle.Regular); } }
+        Font ButtonFont { get { return Theme.Semi(10f); } }
+        Font NoteFont { get { return Theme.UI(9.5f, FontStyle.Regular); } }
+
+        public Size MeasureCard()
+        {
+            using (Bitmap b = new Bitmap(4, 4))
+            using (Graphics g = Graphics.FromImage(b)) { g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit; lay = CardLayout(g); }
+            return lay.Card;
+        }
+
+        Lay CardLayout(Graphics g)
+        {
+            Lay l = new Lay();
+            int w = P(CardWidth);
+            int pad = P(20), badge = P(36), gap = P(12);
+            int textX = pad + badge + gap, textW = Math.Max(P(60), w - textX - pad);
+            int dot = P(6), dgap = P(5);
+            int dotsW = StepCount > 1 ? StepCount * dot + (StepCount - 1) * dgap : 0;
+            int counterH = Math.Max(P(16), TextRenderer.MeasureText(g, "Ag", CounterFont).Height);
+            l.Counter = new Rectangle(textX, pad, Math.Max(P(40), textW - dotsW - P(10)), counterH);
+            l.Dots = new Rectangle(w - pad - dotsW, pad + (counterH - dot) / 2, dotsW, dot);
+            int titleH = Math.Max(P(20), Theme.MeasureWrapped(g, Title, TitleFont, textW));
+            l.TitleR = new Rectangle(textX, l.Counter.Bottom + P(2), textW, titleH);
+            l.Badge = new Rectangle(pad, pad + P(2), badge, badge);
+            int top = Math.Max(l.Badge.Bottom, l.TitleR.Bottom) + P(12);
+            int bodyW = w - pad * 2;
+            int bodyH = Body.Length > 0 ? Theme.MeasureWrapped(g, Body, BodyFont, bodyW) + P(2) : 0;
+            l.BodyR = new Rectangle(pad, top, bodyW, bodyH);
+            int textBottom = l.BodyR.Bottom;
+            if (Note.Length > 0)   // a quieter line under the text, with an info icon ("this part appears after a scan")
+            {
+                int iw = P(16), ig = P(6);
+                int noteH = Math.Max(iw, Theme.MeasureWrapped(g, Note, NoteFont, bodyW - iw - ig) + P(2));
+                l.NoteIcon = new Rectangle(pad, l.BodyR.Bottom + P(10), iw, iw);
+                l.NoteR = new Rectangle(pad + iw + ig, l.BodyR.Bottom + P(10), bodyW - iw - ig, noteH);
+                textBottom = l.NoteR.Bottom;
+            }
+            int by = textBottom + P(20), bh = P(34);
+            int nextW = Math.Max(P(96), Theme.MeasureWidth(g, NextText, ButtonFont) + P(32));
+            int backW = Math.Max(P(84), Theme.MeasureWidth(g, BackText, ButtonFont) + P(28));
+            int skipW = Theme.MeasureWidth(g, SkipText, ButtonFont) + P(20);
+            l.Next = new Rectangle(w - pad - nextW, by, nextW, bh);
+            l.Back = CanBack ? new Rectangle(l.Next.X - P(8) - backW, by, backW, bh) : Rectangle.Empty;
+            l.Skip = SkipText.Length > 0 ? new Rectangle(pad - P(10), by, skipW, bh) : Rectangle.Empty;
+            l.Card = new Size(w, by + bh + P(18));
+            if (Rtl)
+            {
+                l.Badge = Mirror(l.Badge, w); l.Counter = Mirror(l.Counter, w); l.Dots = Mirror(l.Dots, w); l.TitleR = Mirror(l.TitleR, w);
+                l.BodyR = Mirror(l.BodyR, w); l.NoteIcon = Mirror(l.NoteIcon, w); l.NoteR = Mirror(l.NoteR, w); l.Skip = Mirror(l.Skip, w); l.Back = Mirror(l.Back, w); l.Next = Mirror(l.Next, w);
+            }
+            return l;
+        }
+        static Rectangle Mirror(Rectangle r, int w) { if (r.IsEmpty) return r; return new Rectangle(w - r.Right, r.Y, r.Width, r.Height); }
+
+        Bitmap DrawContent()
+        {
+            Bitmap b;
+            using (Bitmap probe = new Bitmap(4, 4))
+            using (Graphics pg = Graphics.FromImage(probe)) { pg.TextRenderingHint = TextRenderingHint.AntiAliasGridFit; lay = CardLayout(pg); }
+            b = new Bitmap(Math.Max(1, lay.Card.Width), Math.Max(1, lay.Card.Height), System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+            using (Graphics g = Graphics.FromImage(b))
+            {
+                g.Clear(Theme.Card);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;   // GDI text on an off-screen bitmap is too heavy without it
+                // icon badge, tinted with the accent
+                using (GraphicsPath bp = Theme.RoundRect(new RectangleF(lay.Badge.X, lay.Badge.Y, lay.Badge.Width, lay.Badge.Height), P(9)))
+                using (SolidBrush bb = new SolidBrush(Theme.Mix(Theme.Card, Theme.Accent, Theme.Dark ? 0.22 : 0.12))) g.FillPath(bb, bp);
+                Theme.DrawGlyph(g, Glyph, P(18), lay.Badge, Theme.Accent);
+                // step counter and progress dots
+                Theme.DrawText(g, Counter, CounterFont, lay.Counter, Theme.SubText, Rtl, Rtl, false, false);
+                int dot = P(6), dgap = P(5);
+                for (int i = 0; i < StepCount && StepCount > 1; i++)
+                {
+                    int x = Rtl ? lay.Dots.Right - (i + 1) * dot - i * dgap : lay.Dots.X + i * (dot + dgap);
+                    Color c = i == StepIndex ? Theme.Accent : (i < StepIndex ? Theme.Mix(Theme.Accent, Theme.Card, 0.55) : Theme.Track);
+                    using (SolidBrush db = new SolidBrush(c)) g.FillEllipse(db, x, lay.Dots.Y, dot, dot);
+                }
+                Theme.DrawText(g, Title, TitleFont, lay.TitleR, Theme.Text, Rtl, Rtl, false, true);
+                Theme.DrawText(g, Body, BodyFont, lay.BodyR, Theme.Mix(Theme.Text, Theme.Card, 0.12), Rtl, Rtl, false, true);
+                if (Note.Length > 0)
+                {
+                    Theme.DrawGlyph(g, "\uE946", P(14), lay.NoteIcon, Theme.Accent);
+                    Theme.DrawText(g, Note, NoteFont, lay.NoteR, Theme.SubText, Rtl, Rtl, false, true);
+                }
+                // buttons
+                if (!lay.Skip.IsEmpty)
+                {
+                    if (hot == Hit.Skip) using (GraphicsPath sp = Theme.RoundRect(R(lay.Skip), P(4))) using (SolidBrush sb = new SolidBrush(pressed == Hit.Skip ? Theme.BtnPressed : Theme.RowHover)) g.FillPath(sb, sp);
+                    Theme.DrawText(g, SkipText, ButtonFont, lay.Skip, hot == Hit.Skip ? Theme.Text : Theme.SubText, Rtl, false, true, false);
+                }
+                if (!lay.Back.IsEmpty)
+                {
+                    Color f = pressed == Hit.Back ? Theme.BtnPressed : (hot == Hit.Back ? Theme.BtnHover : Theme.BtnFill);
+                    using (GraphicsPath p = Theme.RoundRect(R(lay.Back), P(4)))
+                    {
+                        using (SolidBrush fb = new SolidBrush(f)) g.FillPath(fb, p);
+                        using (Pen pen = new Pen(Theme.BtnBorder, 1f)) g.DrawPath(pen, p);
+                    }
+                    Theme.DrawText(g, BackText, ButtonFont, lay.Back, Theme.Text, Rtl, false, true, false);
+                }
+                Color nf = pressed == Hit.Next ? Theme.AccentPressed : (hot == Hit.Next ? Theme.AccentHover : Theme.Accent);
+                using (GraphicsPath np = Theme.RoundRect(R(lay.Next), P(4)))
+                using (SolidBrush nb = new SolidBrush(nf)) g.FillPath(nb, np);
+                Theme.DrawText(g, NextText, ButtonFont, lay.Next, Theme.AccentText, Rtl, false, true, false);
+            }
+            return b;
+        }
+        static RectangleF R(Rectangle r) { return new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1f, r.Height - 1f); }
+
+        // ---- drawing: build the card, then move (animated or not) to Hole / CardLocation
+        public void Render(bool animate)
+        {
+            toHole = Hole; toCard = CardLocation;
+            pressed = Hit.None;   // a press never carries over to another step; hover follows where the mouse really is
+            hot = Hit.None;
+            MeasureCard();
+            if (IsHandleCreated && Visible)
+            {
+                Point m = PointToClient(MousePosition);
+                if (ClientRectangle.Contains(m)) hot = HitAt(m, toCard);
+            }
+            if (content != null) content.Dispose();
+            content = DrawContent();
+            if (fading) return;   // the fade-in keeps running and ends on the new targets
+            if (animate && Animate && shown)
+            {
+                fromHole = curHole; fromCard = curCard;
+                if (fromHole.IsEmpty || toHole.IsEmpty) fromHole = toHole;
+                clock.Reset(); clock.Start(); anim.Start();
+                Step();
+            }
+            else if (!anim.Enabled)
+            {
+                curHole = toHole; curCard = toCard;
+                Frame();
+            }
+        }
+
+        // the first frame after Show: fade in (when the user allows animations)
+        public void Present()
+        {
+            curHole = toHole = Hole; curCard = toCard = CardLocation;
+            if (content == null) content = DrawContent();
+            shown = true;
+            if (Animate) { fading = true; curAlpha = 0; fromHole = toHole; fromCard = toCard; clock.Reset(); clock.Start(); anim.Start(); }
+            Frame();
+        }
+
+        void Step()
+        {
+            double t = Math.Min(1.0, clock.ElapsedMilliseconds / (double)(fading ? FadeMs : MoveMs));
+            double e = 1 - Math.Pow(1 - t, 3);   // ease-out
+            curHole = toHole.IsEmpty ? toHole : new Rectangle(L(fromHole.X, toHole.X, e), L(fromHole.Y, toHole.Y, e), L(fromHole.Width, toHole.Width, e), L(fromHole.Height, toHole.Height, e));
+            curCard = new Point(L(fromCard.X, toCard.X, e), L(fromCard.Y, toCard.Y, e));
+            if (fading) curAlpha = (byte)Math.Round(255 * e);
+            if (t >= 1) { anim.Stop(); clock.Stop(); fading = false; curAlpha = 255; curHole = toHole; curCard = toCard; }
+            Frame();
+        }
+        static int L(int a, int b, double e) { return (int)Math.Round(a + (b - a) * e); }
+
+        void Frame()
+        {
+            if (!shown || !IsHandleCreated || IsDisposed || Width < 1 || Height < 1) return;   // nothing on screen before Present()
+            EnsureSurface();
+            if (surface == null) return;
+            using (Graphics g = Graphics.FromImage(surface))
+            {
+                g.CompositingMode = CompositingMode.SourceCopy;
+                g.Clear(Color.FromArgb(DimAlpha, 0, 0, 0));
+                if (!curHole.IsEmpty)
+                {
+                    float rad = P(8);
+                    using (GraphicsPath hp = Theme.RoundRect(new RectangleF(curHole.X, curHole.Y, curHole.Width, curHole.Height), rad))
+                    using (SolidBrush hb = new SolidBrush(Color.FromArgb(1, 0, 0, 0))) g.FillPath(hb, hp);   // looks clear, still catches clicks
+                    g.CompositingMode = CompositingMode.SourceOver;
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    RectangleF ring = new RectangleF(curHole.X - 0.5f, curHole.Y - 0.5f, curHole.Width + 1f, curHole.Height + 1f);
+                    using (GraphicsPath rp = Theme.RoundRect(ring, rad + 0.5f))
+                    {
+                        using (Pen glow = new Pen(Color.FromArgb(70, Theme.Accent), P(6))) g.DrawPath(glow, rp);
+                        using (Pen pen = new Pen(Theme.Accent, Math.Max(2f, P(2)))) g.DrawPath(pen, rp);
+                    }
+                }
+                g.CompositingMode = CompositingMode.SourceOver;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                if (content != null)
+                {
+                    Rectangle c = new Rectangle(curCard, content.Size);
+                    float rad = P(8);
+                    int sh = P(10);
+                    for (int i = sh; i >= 1; i--)   // soft shadow, a little below the card
+                        using (GraphicsPath sp = Theme.RoundRect(new RectangleF(c.X - i, c.Y - i + P(4), c.Width + 2 * i, c.Height + 2 * i), rad + i))
+                        using (SolidBrush sb = new SolidBrush(Color.FromArgb(Theme.Dark ? 12 : 8, 0, 0, 0))) g.FillPath(sb, sp);
+                    using (GraphicsPath cp = Theme.RoundRect(new RectangleF(c.X + 0.5f, c.Y + 0.5f, c.Width - 1f, c.Height - 1f), rad))
+                    {
+                        using (SolidBrush cb = new SolidBrush(Theme.Card)) g.FillPath(cb, cp);
+                        using (GraphicsPath clip = Theme.RoundRect(new RectangleF(c.X + 1.5f, c.Y + 1.5f, c.Width - 3f, c.Height - 3f), rad - 1f))
+                        {
+                            g.SetClip(clip);
+                            g.DrawImageUnscaled(content, c.X, c.Y);
+                            g.ResetClip();
+                        }
+                        using (Pen bp = new Pen(Theme.Dark ? Theme.Mix(Theme.CardBorder, Theme.Text, 0.12) : Theme.CardBorder, 1f)) g.DrawPath(bp, cp);
+                    }
+                }
+            }
+            Push(curAlpha);
+        }
+
+        void EnsureSurface()
+        {
+            Size s = ClientSize;
+            if (s == surfaceSize && surface != null) return;
+            FreeSurface();
+            if (s.Width < 1 || s.Height < 1) return;
+            IntPtr screen = GetDC(IntPtr.Zero);
+            try
+            {
+                BMI bi = new BMI();
+                bi.Size = 40; bi.Width = s.Width; bi.Height = -s.Height; bi.Planes = 1; bi.Bits = 32;   // top-down 32-bit DIB
+                bi.Compression = 0; bi.SizeImage = 0; bi.XPels = 0; bi.YPels = 0; bi.ClrUsed = 0; bi.ClrImportant = 0; bi.Color0 = 0;
+                dib = CreateDIBSection(screen, ref bi, 0, out bits, IntPtr.Zero, 0);
+                if (dib == IntPtr.Zero) return;
+                memDc = CreateCompatibleDC(screen);
+                oldObj = SelectObject(memDc, dib);
+                surface = new Bitmap(s.Width, s.Height, s.Width * 4, System.Drawing.Imaging.PixelFormat.Format32bppPArgb, bits);
+                surfaceSize = s;
+            }
+            finally { ReleaseDC(IntPtr.Zero, screen); }
+        }
+
+        void FreeSurface()
+        {
+            if (surface != null) { surface.Dispose(); surface = null; }
+            if (memDc != IntPtr.Zero) { SelectObject(memDc, oldObj); DeleteDC(memDc); memDc = IntPtr.Zero; }
+            if (dib != IntPtr.Zero) { DeleteObject(dib); dib = IntPtr.Zero; }
+            surfaceSize = Size.Empty;
+        }
+
+        void Push(byte alpha)
+        {
+            if (memDc == IntPtr.Zero) return;
+            IntPtr screen = GetDC(IntPtr.Zero);
+            try
+            {
+                PT dst = new PT(Left, Top), src = new PT(0, 0);
+                SZ size = new SZ(surfaceSize.Width, surfaceSize.Height);
+                BLEND b = new BLEND(); b.Op = 0; b.Flags = 0; b.Alpha = alpha; b.Format = 1;   // AC_SRC_OVER, per-pixel alpha
+                UpdateLayeredWindow(Handle, screen, ref dst, ref size, memDc, ref src, 0, ref b, 2);   // ULW_ALPHA
+            }
+            finally { ReleaseDC(IntPtr.Zero, screen); }
+        }
+
+        // ---- the mouse: only the three card buttons react
+        Hit HitAt(Point p) { return HitAt(p, curCard); }
+        Hit HitAt(Point p, Point card)
+        {
+            Point q = new Point(p.X - card.X, p.Y - card.Y);
+            if (lay.Next.Contains(q)) return Hit.Next;
+            if (!lay.Back.IsEmpty && lay.Back.Contains(q)) return Hit.Back;
+            if (!lay.Skip.IsEmpty && lay.Skip.Contains(q)) return Hit.Skip;
+            return Hit.None;
+        }
+        void Redraw() { try { if (content != null) content.Dispose(); content = DrawContent(); Frame(); } catch (Exception ex) { Fail(ex); } }
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            Hit h = HitAt(e.Location);
+            if (h != hot) { hot = h; Cursor = h == Hit.None ? Cursors.Default : Cursors.Hand; Redraw(); }
+            base.OnMouseMove(e);
+        }
+        protected override void OnMouseLeave(EventArgs e) { if (hot != Hit.None || pressed != Hit.None) { hot = Hit.None; pressed = Hit.None; Redraw(); } base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left) { pressed = HitAt(e.Location); if (pressed != Hit.None) Redraw(); }
+            base.OnMouseDown(e);
+        }
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            Hit was = pressed; pressed = Hit.None;
+            Hit now = HitAt(e.Location);
+            if (was != Hit.None) Redraw();
+            if (e.Button == MouseButtons.Left && was != Hit.None && was == now) Press(was);
+            base.OnMouseUp(e);
+        }
+        protected override void OnMouseWheel(MouseEventArgs e) { if (CoachWheel != null) CoachWheel(this, e); base.OnMouseWheel(e); }
+
+        void Press(Hit h)
+        {
+            EventHandler ev = h == Hit.Next ? NextClick : (h == Hit.Back ? BackClick : SkipClick);
+            if (ev != null) ev(this, EventArgs.Empty);
+        }
+        public void PerformNext() { Press(Hit.Next); }
+        public void PerformBack() { if (CanBack) Press(Hit.Back); }
+        public void PerformSkip() { Press(Hit.Skip); }
     }
 }

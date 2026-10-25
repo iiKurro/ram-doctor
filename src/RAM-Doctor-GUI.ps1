@@ -35,6 +35,8 @@ param(
 $ErrorActionPreference = 'Continue'
 $AppDir = $PSScriptRoot
 . (Join-Path $AppDir 'lib\Strings.ps1')   # every user-facing text (ar / en)
+. (Join-Path $AppDir 'lib\Tour.ps1')      # the optional guided tour of the window (coach marks) and its first-run banner
+
 . (Join-Path $AppDir 'lib\Store.ps1')     # damage-tolerant reading of the plan, safe removal of temp folders
 Set-UiLang $Lang
 $ScanScript = Join-Path $AppDir 'RAM-Doctor.ps1'
@@ -128,17 +130,18 @@ try {
     function Add-Block($ctl, [int]$top = 0, [int]$bottom = 12) { $ctl.Dock = 'Fill'; $ctl.Margin = Pad 24 $top 24 $bottom; [void]$col.Controls.Add($ctl) }
 
     # ---- header
-    $hdr = New-Tlp 3 1 $cWin; $hdr.Height = 82
-    Add-Col $hdr 'Absolute' 68; Add-Col $hdr 'Percent' 100; Add-Col $hdr 'Absolute' 132; Add-Row $hdr 'Percent' 100
+    $hdr = New-Tlp 4 1 $cWin; $hdr.Height = 88
+    Add-Col $hdr 'Absolute' 68; Add-Col $hdr 'Percent' 100; Add-Col $hdr 'Absolute' 162; Add-Col $hdr 'Absolute' 116; Add-Row $hdr 'Percent' 100
     $badge = New-Object Fluent.FBadge
     $badge.Glyph = Glyph 0xE9D9; $badge.GlyphPx = 26; $badge.Size = New-Object System.Drawing.Size(52, 52); $badge.Radius = 13; $badge.Anchor = 'None'
-    $tt = New-Tlp 1 2 $cWin; Add-Col $tt 'Percent' 100; Add-Row $tt 'Percent' 58; Add-Row $tt 'Percent' 42
+    $tt = New-Tlp 1 2 $cWin; Add-Col $tt 'Percent' 100; Add-Row $tt 'Absolute' 48; Add-Row $tt 'Percent' 100   # the subtitle may take two lines in a narrow window
     $lblTitle = New-Lbl '' (Semi 22) $cText $cWin 'BottomLeft'; Bind-Text $lblTitle 'gui.title'
     $lblSub = New-Lbl '' (Ui 10.5) $cSub $cWin 'TopLeft'   # text: Apply-ShareVisibility (it mentions sharing only when sharing is on)
     $tt.Controls.Add($lblTitle, 0, 0); $tt.Controls.Add($lblSub, 0, 1)
     # language button: it is named after the language it switches TO ("English" in Arabic mode, the Arabic word for Arabic in English mode)
-    $btnLang = New-Btn '' 'Subtle' (Glyph 0xE774) 120 34; $btnLang.Anchor = 'None'; $btnLang.Font = Semi 10; Bind-Text $btnLang 'gui.lang.other'
-    $hdr.Controls.Add($badge, 0, 0); $hdr.Controls.Add($tt, 1, 0); $hdr.Controls.Add($btnLang, 2, 0)
+    $btnLang = New-Btn '' 'Subtle' (Glyph 0xE774) 108 34; $btnLang.Anchor = 'None'; $btnLang.Font = Semi 10; Bind-Text $btnLang 'gui.lang.other'
+    $btnTour = New-Btn '' 'Subtle' (Glyph 0xE897) 156 34; $btnTour.Anchor = 'None'; $btnTour.Font = Semi 10; Bind-Text $btnTour 'tour.btn'   # opens the tour (lib\Tour.ps1)
+    $hdr.Controls.Add($badge, 0, 0); $hdr.Controls.Add($tt, 1, 0); $hdr.Controls.Add($btnTour, 2, 0); $hdr.Controls.Add($btnLang, 3, 0)
     Add-Block $hdr 18 4
 
     # ---- admin banner (only when not elevated)
@@ -146,6 +149,11 @@ try {
     $banner.Level = 'Warning'
     $banner.Visible = (-not $CanAct)
     Add-Block $banner 4 10
+
+    # ---- first use (no report yet): offer the tour
+    $tourBar = New-TourBanner
+    $tourBar.Visible = (Test-TourFirstRun $ReportsDir)
+    Add-Block $tourBar 4 10
 
     # ---- step 1: hero card
     $hero = New-Object Fluent.FCard
@@ -1091,6 +1099,7 @@ try {
     Set-Status 'gui.status.ready' 0
     Show-Info 'Info' 'gui.info.ready.t' 'gui.info.ready.m'
     Apply-Language
+    Connect-Tour
     [void]$form.ShowDialog()
 }
 catch {

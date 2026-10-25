@@ -65,6 +65,54 @@ function Only-Hog { foreach ($it in $list.Items) { $it.Checked = ($it.Name -ieq 
 $arabic = '[؀-ۿ]'
 $rtlWant = $(if ($flow -eq 'ar') { 'Yes' } else { 'No' })
 
+# ---- guided tour helpers: keys are POSTED to the window (they must be caught by the tour, never reach the window)
+Add-Type -ReferencedAssemblies System.Drawing -Namespace TourT -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, int m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(System.Drawing.Point p); [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, int flags);'
+function Pump([int]$ms = 250) { $end = (Get-Date).AddMilliseconds($ms); do { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 25 } while ((Get-Date) -lt $end) }
+function Send-Key($ctl, [int]$vk) { [void][TourT.U]::PostMessage($ctl.Handle, 0x100, [IntPtr]$vk, [IntPtr]0); [void][TourT.U]::PostMessage($ctl.Handle, 0x101, [IntPtr]$vk, [IntPtr]0); Pump 300 }
+function Tour-Snapshot {   # everything the tour must leave exactly as it found it
+    $s = [ordered]@{}
+    $s.Bounds = [string]$form.Bounds; $s.State = [string]$form.WindowState; $s.Dir = [string]$form.RightToLeft + [string]$form.RightToLeftLayout; $s.Lang = Get-UiLang
+    $s.Scroll = [string]$page.AutoScrollPosition; $s.More = $exMore.Expanded; $s.Log = $exLog.Expanded
+    $s.Visible = (@($acts, $find, $toast, $info, $more, $details, $btnShare, $banner, $moreBody, $txtLog) | ForEach-Object { [string]$_.Visible }) -join ','
+    $s.Enabled = (@($btnScan, $btnQ, $btnLang, $btnTour, $btnReport, $btnFolder, $btnCopy, $btnShare, $btnRestore, $btnPurge, $btnClean) | ForEach-Object { [string]$_.Enabled }) -join ','
+    $s.Texts = @($form.Text, $lblStatus.Text, $info.Title, $info.Message, $btnScan.Text, $lblSub.Text, $lblPick.Text) -join '|'
+    $s.List = '{0}/{1}/{2}' -f $list.Items.Count, $list.CheckedCount, ((@($list.GetChecked()) | ForEach-Object { $_.Name }) -join ';')
+    $s.Busy = [string]($null -ne $script:proc); $s.Bar = $bar.Value; $s.Log2 = $txtLog.TextLength
+    $s.Files = (@(Get-ChildItem -LiteralPath $work -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'result.txt' } | ForEach-Object { $_.FullName }) | Sort-Object) -join ';'
+    $s.Forms = [System.Windows.Forms.Application]::OpenForms.Count
+    ($s.GetEnumerator() | ForEach-Object { '{0}={1}' -f $_.Key, $_.Value }) -join "`n"
+}
+function Tour-Diff([string]$a, [string]$b) { (Compare-Object @($a -split "`n") @($b -split "`n") | ForEach-Object { $_.SideIndicator + ' ' + $_.InputObject }) -join ' ; ' }
+function Tour-Overlay { if ($script:Tour) { $script:Tour.Overlay } else { $null } }
+function Tour-CardOk {   # the card is inside the overlay and, unless it had to sit over a tall control, does not cover the lit control
+    $o = Tour-Overlay; if (-not $o) { return $false }
+    $c = $o.CardBounds; $area = New-Object System.Drawing.Rectangle(0, 0, $o.ClientSize.Width, $o.ClientSize.Height)
+    if (-not $area.Contains($c)) { return $false }
+    if ($o.Hole.IsEmpty) { return $true }
+    $free = ($c.Bottom -le $o.Hole.Top -or $c.Top -ge $o.Hole.Bottom -or $c.Right -le $o.Hole.Left -or $c.Left -ge $o.Hole.Right)
+    return ($free -or ($c.Top -le 16 -or $c.Bottom -ge $o.ClientSize.Height - 16))
+}
+function Tour-Walk([string]$label) {   # Next through every step; returns the ids seen and checks each card
+    $ids = New-Object System.Collections.Generic.List[string]
+    $bad = New-Object System.Collections.Generic.List[string]
+    $n = $script:Tour.Steps.Count
+    for ($i = 0; $i -lt $n; $i++) {
+        $st = $script:Tour.Steps[$script:Tour.Index]; $o = Tour-Overlay
+        $ids.Add($st.Id)
+        if ($script:Tour.Index -ne $i) { $bad.Add("index $($script:Tour.Index) instead of $i") }
+        if (-not (Tour-CardOk)) { $bad.Add("card misplaced at $($st.Id): card=$($o.CardBounds) hole=$($o.Hole) size=$($o.ClientSize)") }
+        if (-not $o.Title -or -not $o.Body -or $o.Title -match '\[\[' -or $o.Body -match '\[\[|\{\d\}') { $bad.Add("text missing at $($st.Id)") }
+        if ((($o.Title + $o.Body + $o.Note) -match $arabic) -ne ($flow -eq 'ar')) { $bad.Add("wrong language at $($st.Id)") }
+        if ($o.Counter -ne (Get-Text 'tour.count' ($i + 1) $n)) { $bad.Add("counter '$($o.Counter)' at $($st.Id)") }
+        if ($o.Rtl -ne ($flow -eq 'ar')) { $bad.Add("direction at $($st.Id)") }
+        if ($st.Expand -and -not $exMore.Expanded) { $bad.Add('More not opened for its step') }
+        if (-not $st.Expand -and $exMore.Expanded) { $bad.Add("More left open at $($st.Id)") }
+        if ($i -lt $n - 1) { $o.PerformNext(); Pump 200 }
+    }
+    Check "$label - every card is complete, in $flow, counted and placed inside the window ($($bad -join ' | '))" ($bad.Count -eq 0)
+    return ,$ids
+}
+
 Log2 '== initial state'
 Check 'scan button enabled' $btnScan.Enabled
 Check 'copy-summary disabled before a scan' (-not $btnCopy.Enabled)
@@ -79,6 +127,51 @@ Check 'window title and scan button come from the string table' ($form.Text -eq 
 Check 'the language button names the other language' ($btnLang.Text -eq (Get-Text 'gui.lang.other') -and $btnLang.Enabled)
 Check 'header subtitle is the "sharing is optional" one (forced configured)' ($lblSub.Text -eq (Get-Text 'gui.sub.share'))
 Check 'script of the window matches the language (Arabic only in Arabic mode)' ((($form.Text + $lblTitle.Text + $lblSub.Text + $btnScan.Text + $lblStatus.Text + $info.Title + $info.Message) -match $arabic) -eq ($flow -eq 'ar'))
+
+Log2 '== guided tour (first use, before any scan)'
+Check 'first use: the "take a tour" banner is shown (no report yet)' ($tourBar.Visible -and $tourBar.Title -eq (Get-Text 'tour.banner.t'))
+Check 'the header has the tour button, named in the window language' ($btnTour.Visible -and $btnTour.Enabled -and $btnTour.Text -eq (Get-Text 'tour.btn'))
+$before = Tour-Snapshot
+$btnScan.Focus() | Out-Null; Pump 100
+$tourBar.Tag.Go.PerformClick(); Pump 400
+$o = Tour-Overlay
+Check 'the banner button opens the tour (overlay shown) and the banner goes away' ($o -and $o.Visible -and -not $tourBar.Visible -and [System.Windows.Forms.Application]::OpenForms.Count -eq 2)
+Check 'the overlay lies exactly over the window content' ($o -and $o.Bounds -eq [Fluent.Win]::ScreenRect($page.Handle))
+Check 'the overlay never takes the focus (the window stays active)' ($o -and -not $o.ContainsFocus -and [System.Windows.Forms.Form]::ActiveForm -ne $o)
+$ids = Tour-Walk 'first walk'
+Check "the tour covers every part of the window ($($ids -join ','))" (($ids -join ',') -eq 'welcome,scan,progress,verdict,actions,findings,quarantine,more,details,language,help')
+$script:Tour.Overlay.PerformBack(); Pump 200; $script:Tour.Overlay.PerformBack(); Pump 200; $script:Tour.Overlay.PerformBack(); Pump 200
+Check 'Back goes back step by step (and re-opens "More" for its step)' ($script:Tour.Index -eq 7 -and $exMore.Expanded)
+Show-TourStep 4; Pump 200
+Check 'before a scan the result buttons are explained on a centred card with a note' ($script:Tour.Steps[4].Id -eq 'actions' -and $o.Hole.IsEmpty -and $o.Note -eq (Get-Text 'tour.acts.later'))
+Show-TourStep 1; Pump 200
+$c = $o.Hole; $pt = $o.PointToScreen((New-Object System.Drawing.Point(($c.X + [int]($c.Width / 2)), ($c.Y + [int]($c.Height / 2)))))
+Check 'the lit "Start scan" button cannot be clicked: the overlay catches clicks there' ((-not $c.IsEmpty) -and [TourT.U]::GetAncestor([TourT.U]::WindowFromPoint($pt), 2) -eq $o.Handle)
+$nextKey = $(if ($flow -eq 'ar') { 0x25 } else { 0x27 }); $backKey = $(if ($flow -eq 'ar') { 0x27 } else { 0x25 })
+Send-Key $btnScan $nextKey
+Check 'the arrow pointing at Next goes on (Right in English, Left in Arabic)' ($script:Tour.Index -eq 2)
+Send-Key $btnScan $backKey
+Check 'the other arrow goes back' ($script:Tour.Index -eq 1)
+Send-Key $btnScan 0x0D
+Check 'Enter goes on' ($script:Tour.Index -eq 2)
+Send-Key $btnScan 0x20
+Check 'Space goes on and does NOT press the focused "Start scan" button' ($script:Tour.Index -eq 3 -and $null -eq $script:proc -and $btnScan.Text -eq (Get-Text 'gui.btn.scan'))
+$sz = $form.ClientSize
+$form.ClientSize = New-Object System.Drawing.Size(($sz.Width - 40), ($sz.Height - 60)); Pump 500
+Check 'the overlay follows when the window is resized' ($o.Bounds -eq [Fluent.Win]::ScreenRect($page.Handle) -and (Tour-CardOk))
+$form.ClientSize = $sz; Pump 400
+Send-Key $btnScan 0x1B
+Check 'Esc leaves the tour (overlay closed and disposed, nothing left open)' ($null -eq $script:Tour -and $o.IsDisposed -and [System.Windows.Forms.Application]::OpenForms.Count -eq 1)
+$after = Tour-Snapshot
+Check "the window is exactly as before the tour ($(Tour-Diff $before $after))" ($before -eq $after)
+Check 'no scan was started and nothing was written' ($null -eq $script:proc -and -not (Test-Path (Join-Path $ReportsDir 'Plan-*.json')))
+$btnTour.PerformClick(); Pump 400
+Check 'the header button opens the tour again' ($null -ne $script:Tour -and (Tour-Overlay).Visible)
+$null = Tour-Walk 'second walk'
+(Tour-Overlay).PerformNext(); Pump 300
+Check 'Done on the last step closes the tour' ($null -eq $script:Tour -and [System.Windows.Forms.Application]::OpenForms.Count -eq 1)
+Check 'the window is still unchanged after a full walk' ((Tour-Snapshot) -eq $after)
+Check "the tour never stopped by itself after an error ('$script:TourLastError')" (-not $script:TourLastError)
 
 Log2 '== scan #1'
 $btnScan.PerformClick()
@@ -99,6 +192,25 @@ Check "the report is <html lang=$flow> with the matching direction" ($htmlText -
 Check 'the report carries the inert-report marker right after the doctype' ($htmlText -match '(?i)^\s*<!doctype html>\r?\n<!-- ram-doctor-report v\d+\.\d+\.\d+ -->')
 Check 'the report has no unresolved string key or placeholder' ($htmlText -notmatch '\[\[[a-z]+\.[A-Za-z0-9.\-]+\]\]' -and $htmlText -notmatch '@@[A-Z]+@@')
 Check 'the verdict bar shows the plan headline' ($info.Title -eq [string]$planObj.verdict.Headline)
+
+Log2 '== guided tour (with results)'
+Check 'the "take a tour" banner stays away once a report exists' (-not $tourBar.Visible)
+$before = Tour-Snapshot
+$btnTour.PerformClick(); Pump 400
+$o = Tour-Overlay
+$stepIds = @($script:Tour.Steps | ForEach-Object { $_.Id })
+function Lit-Contains($ctl) { $h = $o.RectangleToScreen($o.Hole); (-not $o.Hole.IsEmpty) -and $h.Contains([Fluent.Win]::ScreenRect($ctl.Handle)) }
+Show-TourStep ([array]::IndexOf($stepIds, 'actions')); Pump 250
+Check 'with results the action buttons are lit, with no "appears later" note, and sharing is mentioned (it is on)' ((Lit-Contains $btnCopy) -and (Lit-Contains $btnShare) -and -not $o.Note -and $o.Body.Contains((Get-Text 'gui.btn.share')))
+Show-TourStep ([array]::IndexOf($stepIds, 'findings')); Pump 250
+Check 'the findings card is scrolled into view and lit' ((Lit-Contains $list) -and (Tour-CardOk))
+Show-TourStep ([array]::IndexOf($stepIds, 'quarantine')); Pump 250
+Check 'the quarantine button is lit' ((Lit-Contains $btnQ) -and (Tour-CardOk))
+Show-TourStep ([array]::IndexOf($stepIds, 'details')); Pump 250
+Check 'the technical details card is lit and stays closed' ((Lit-Contains $exLog) -and -not $exLog.Expanded)
+$o.PerformSkip(); Pump 300
+Check 'Skip closes the tour' ($null -eq $script:Tour -and $o.IsDisposed)
+Check "the results, the selection, the scroll position and the window are unchanged ($(Tour-Diff $before (Tour-Snapshot)))" ((Tour-Snapshot) -eq $before)
 
 Log2 '== copy summary'
 $btnCopy.PerformClick()

@@ -39,6 +39,7 @@ src/                  the tool (this is what ships)
   lib/Report.ps1      HTML report builder
   lib/Store.ps1       crash-safe JSON files (.tmp + rename, .bak fallback) and the inter-process lock
   lib/Strings.ps1     the one string table (Arabic + English) and Get-Text
+  lib/Tour.ps1        the guided tour of the window (overlay: FCoach in lib/Fluent.cs)
   lib/Share.ps1       client of the optional Share button (redaction, bundle, upload)
 server/                the relay (Cloudflare Worker) behind the optional Share button
 build/Build-SingleFile.ps1   packs src/ into dist/RAM-Doctor.bat
