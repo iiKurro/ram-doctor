@@ -81,10 +81,12 @@ export class HttpError extends Error {
 }
 
 export class GitHubError extends Error {
-  constructor(status) {
+  constructor(status, step, detail) {
     super('github_' + status);
     this.name = 'GitHubError';
     this.status = status;
+    this.step = step || '';       // which API call failed, e.g. "POST /git/trees" (never contains file contents)
+    this.detail = detail || '';   // GitHub's own error message, truncated; useful to the helper when reading the logs
   }
 }
 
@@ -372,7 +374,7 @@ function cssOk(css) {
     .replace(/\\([0-9a-f]{1,6})[ \t\r\n\f]?/gi, (m, h) => safeCodePoint(parseInt(h, 16)))
     .replace(/\\([\s\S])/g, '$1');
   for (const x of [stripped, unescaped]) {
-    if (/@import/i.test(x) || /expression\s{0,8}\(/i.test(x) || /behavior\s{0,8}:/i.test(x) || /-moz-binding/i.test(x) || /javascript\s{0,8}:/i.test(x)) {
+    if (/@import/i.test(x) || /expression\s{0,8}\(/i.test(x) || /(?<![\w-])behavior\s{0,8}:/i.test(x) || /-moz-binding/i.test(x) || /javascript\s{0,8}:/i.test(x)) {
       return false;
     }
     const all = (x.match(/url\(/gi) || []).length;
@@ -730,10 +732,16 @@ async function readLimited(request, max) {
 
 // ---------------------------------------------------------------------------------------------- GitHub
 
+// A secret pasted into a terminal prompt can pick up a stray space, line break or invisible mark. GitHub answers a
+// malformed Authorization header with a bare "400 Bad Request" (found in the first live test), so keep only printable ASCII.
+function cleanToken(t) {
+  return String(t === undefined || t === null ? '' : t).replace(/[^\x21-\x7e]/g, '');
+}
+
 function ghClient(env, deps) {
   const owner = env.GITHUB_OWNER;
   const repo = env.GITHUB_REPO;
-  const token = env.GITHUB_TOKEN;
+  const token = cleanToken(env.GITHUB_TOKEN);
   return async function gh(method, path, body) {
     const doFetch = deps.fetch || globalThis.fetch;
     let res;
@@ -752,7 +760,11 @@ function ghClient(env, deps) {
     } catch (_) {
       throw new GitHubError(0);
     }
-    if (!res.ok) throw new GitHubError(res.status);
+    if (!res.ok) {
+      let detail = '';
+      try { const j = await res.json(); detail = String((j && j.message) || '').slice(0, 160); } catch (_) { /* no JSON body */ }
+      throw new GitHubError(res.status, method + ' ' + path.replace(/[0-9a-f]{40}/g, '<sha>'), detail);
+    }
     return res.json();
   };
 }
@@ -817,7 +829,7 @@ export async function commitFiles(env, deps, entries, message, nowMs) {
 
 function checkConfig(env, mode) {
   const ok =
-    typeof env.GITHUB_TOKEN === 'string' && env.GITHUB_TOKEN.length > 0 &&
+    typeof env.GITHUB_TOKEN === 'string' && cleanToken(env.GITHUB_TOKEN).length > 0 &&
     typeof env.GITHUB_OWNER === 'string' && RE_GH_NAME.test(env.GITHUB_OWNER) &&
     typeof env.GITHUB_REPO === 'string' && RE_GH_NAME.test(env.GITHUB_REPO) &&
     (env.GITHUB_BRANCH === undefined || (typeof env.GITHUB_BRANCH === 'string' && RE_BRANCH.test(env.GITHUB_BRANCH))) &&
@@ -934,7 +946,7 @@ export async function handle(request, env, deps) {
   } catch (err) {
     if (err instanceof HttpError) return errorResponse(err);
     if (err instanceof GitHubError) {
-      log('upstream_error', { status: err.status });
+      log('upstream_error', { status: err.status, step: err.step, detail: err.detail });
       return errorResponse(new HttpError(502, 'upstream_error'));
     }
     log('unhandled_error', { name: err && err.name });

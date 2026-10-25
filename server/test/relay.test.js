@@ -553,6 +553,18 @@ test('report.html: the generator-shaped inert document is accepted', () => {
   assert.equal(checkReportHtml(GOOD_REPORT.replace('iiKurro/ram-doctor', 'iiKurro/ram-doctor/releases/latest?x=1#top')).ok, true);
 });
 
+// Regression (found by the first live upload): the real report uses `scroll-behavior`, which a naive /behavior\s*:/ rule
+// mistook for the legacy IE `behavior:` property and rejected every genuine report.
+test('report.html: scroll-behavior is normal CSS, the legacy behavior: property is still refused', () => {
+  const withStyle = (css) => GOOD_REPORT.replace('</head>', '<style>' + css + '</style></head>');
+  assert.equal(checkReportHtml(withStyle('html{scroll-behavior:smooth}')).ok, true);
+  assert.equal(checkReportHtml(withStyle('*{scroll-behavior:auto!important}')).ok, true);
+  assert.equal(checkReportHtml(withStyle('a{behavior:url(x.htc)}')).ok, false);
+  assert.equal(checkReportHtml(withStyle('a{ behavior : url(x.htc)}')).ok, false);
+  assert.equal(checkReportHtml(withStyle('a{\\62 ehavior:url(x.htc)}')).ok, false);   // CSS-escaped spelling
+  assert.equal(checkReportHtml(withStyle('a{-moz-binding:url(x)}')).ok, false);
+});
+
 const REPORT_EVIL = [
   ['missing marker', (h) => h.replace('<!-- ram-doctor-report v1.0.0 -->', '')],
   ['marker not right after the doctype', (h) => h.replace('<!-- ram-doctor-report v1.0.0 -->', '<!-- other -->').replace('<main>', '<main><!-- ram-doctor-report v1 -->')],
@@ -640,6 +652,20 @@ test('rejected report.html => 400 "report_rejected", GitHub untouched, reason lo
   assert.deepEqual(r.json, { ok: false, error: 'report_rejected', field: 'report.html' });
   assert.equal(r.gh.calls.length, 0);
   assert.ok(cap.lines.some((l) => l.includes('content_rejected') && l.includes('event_attr')));
+});
+
+// Regression (first live test): the secret had picked up a stray character while being pasted into a terminal and GitHub
+// answered the very first call with a bare "400 Bad Request". The Authorization header must carry only the clean token.
+test('a token saved with stray whitespace or invisible characters is cleaned before it is sent', async () => {
+  for (const suffix of [' ', '\r', '\n', '\r\n', '\t', '‏', ' ', '﻿']) {
+    const { res, gh } = await post(payload(), Object.assign({}, ENV, { GITHUB_TOKEN: '  ' + TOKEN + suffix }));
+    assert.equal(res.status, 200, JSON.stringify(suffix));
+    assert.ok(gh.calls.length > 0);
+    for (const c of gh.calls) assert.equal(c.headers.get('authorization'), 'Bearer ' + TOKEN, JSON.stringify(suffix));
+  }
+  // a token that is nothing but junk is still a misconfiguration
+  const { res } = await post(payload(), Object.assign({}, ENV, { GITHUB_TOKEN: ' \r\n ' }));
+  assert.equal(res.status, 500);
 });
 
 // ------------------------------------------------------------------------------------------------ commit sequence

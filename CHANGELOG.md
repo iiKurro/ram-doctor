@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-25
+
+### Added
+
+- **One-click sharing is switched on**: the app is connected to the relay (src/share.config.json), so the Share button, the profile
+  dialog and the confirm dialog appear. Nothing is sent unless the user presses Share and confirms; the scan itself still never uses the network.
+- Tests: a cross-component contract test (the real report must pass the relay's validator) and a version-consistency check.
+
+### Fixed
+
+- Relay rejected every genuine report: its CSS rule mistook `scroll-behavior` for the legacy IE `behavior:` property.
+- Relay rejected the report's theme toggle (`setAttribute('href', ...)`): the toggle now switches two icons with CSS and no longer sets attributes.
+- Relay now cleans a secret that picked up stray whitespace/invisible characters while being pasted (GitHub answers a malformed `Authorization` header with a bare 400), and its log says which API step failed.
+
 ## [1.0.0] - 2026-10-24
 
 First public release.

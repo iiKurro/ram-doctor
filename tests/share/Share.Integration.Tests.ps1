@@ -10,6 +10,10 @@ BeforeAll {
     $script:Cli = Join-Path $script:Repo 'src\RAM-Doctor-Share.ps1'
     $script:Mock = Start-MockRelay
     $script:Utf8 = New-Object System.Text.UTF8Encoding($false)
+    $script:ToolVersion = (Get-Content -LiteralPath (Join-Path $script:Repo 'build\VERSION') -Raw).Trim()
+    # the SHIPPED config names the relay; tests that need the "no endpoint" (dormant) behaviour use this empty one instead
+    $script:EmptyCfg = Join-Path $TestDrive 'empty.config.json'
+    [IO.File]::WriteAllText($script:EmptyCfg, '{"endpoint":"","helperName":"7san","maxBytes":2000000}', $script:Utf8)
 
     # Runs the CLI in its own powershell.exe (exactly how the GUI will) and returns exit code + UTF-8 output.
     function Invoke-ShareCli {
@@ -45,10 +49,15 @@ BeforeAll {
 AfterAll { Stop-MockRelay $script:Mock }
 
 Describe 'CLI: profile (name only; the invite code is optional)' -Tag 'Integration' {
-    It 'reports an empty profile and the dormant endpoint by default' {
-        $r = Invoke-ShareCli -CliArgs @('-Action', 'ShowProfile', '-ProfileDir', ('"{0}"' -f (New-ProfileDir)))
+    It 'reports an empty profile and a dormant endpoint when the config names no relay' {
+        $r = Invoke-ShareCli -CliArgs @('-Action', 'ShowProfile', '-ProfileDir', ('"{0}"' -f (New-ProfileDir)), '-ConfigPath', ('"{0}"' -f $script:EmptyCfg))
         $r.ExitCode | Should -Be 0
         $r.Output | Should -Match 'PROFILE: configured=false name= userId= helper=7san endpointConfigured=false'
+    }
+    It 'the shipped config names the relay, so the Share UI is offered' {
+        $r = Invoke-ShareCli -CliArgs @('-Action', 'ShowProfile', '-ProfileDir', ('"{0}"' -f (New-ProfileDir)))
+        $r.ExitCode | Should -Be 0
+        $r.Output | Should -Match 'PROFILE: configured=false name= userId= helper=7san endpointConfigured=true'
     }
     It 'saves a profile with ONLY a username, keeps the userId fixed' {
         $d = New-ProfileDir
@@ -148,7 +157,7 @@ Describe 'CLI: Share against the local mock relay' -Tag 'Integration' {
         $b.userId | Should -Match '^[0-9a-f]{8}$'
         $b.PSObject.Properties.Name | Should -Not -Contain 'code'
         $b.tool.name | Should -Be 'RAM-Doctor'
-        $b.tool.version | Should -Be '1.0.0'
+        $b.tool.version | Should -Be $script:ToolVersion
         $b.createdAt | Should -Match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$'
         $b.host | Should -Be '<PC>'
         @($b.files | ForEach-Object { $_.name }) | Should -Be @('summary.md', 'report.html', 'plan.json')
@@ -232,8 +241,8 @@ Describe 'CLI: Share against the local mock relay' -Tag 'Integration' {
         $r.ExitCode | Should -Be 1
         $r.Output | Should -Match 'RESULT: ERROR offline .*الاتصال'
     }
-    It 'stays dormant without an endpoint (shipped config)' {
-        $r = Invoke-ShareCli -CliArgs @('-Action', 'Share', '-ProfileDir', ('"{0}"' -f $pd), '-PlanPath', ('"{0}"' -f $files.Plan))
+    It 'stays dormant when the config names no endpoint' {
+        $r = Invoke-ShareCli -CliArgs @('-Action', 'Share', '-ProfileDir', ('"{0}"' -f $pd), '-PlanPath', ('"{0}"' -f $files.Plan), '-ConfigPath', ('"{0}"' -f $script:EmptyCfg))
         $r.ExitCode | Should -Be 1
         $r.Output | Should -Match 'RESULT: ERROR not-configured '
         $Mock.State.Requests.Count | Should -Be 0

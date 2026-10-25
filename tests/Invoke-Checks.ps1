@@ -94,7 +94,7 @@ $allFiles = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorActio
         $rel = $_.FullName.Substring($Root.Length)
         $ok = $true
         foreach ($d in $skipDirs) { if ($rel -match ('^\\' + $d + '\\')) { $ok = $false; break } }
-        if ($rel -match '\\node_modules\\') { $ok = $false }
+        if ($rel -match '\\node_modules\\|\\\.wrangler\\|\\wrangler\.local\.toml$') { $ok = $false }   # generated / account-specific, git-ignored
         $ok
     })
 function Select-Files([string[]]$Extensions) { @($allFiles | Where-Object { $Extensions -contains $_.Extension.ToLowerInvariant() }) }

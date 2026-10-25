@@ -42,6 +42,7 @@ class P { static void Main() {
 '@
     Add-Type -TypeDefinition $code -OutputAssembly $hogExe -OutputType ConsoleApplication
     Start-Process -FilePath $hogExe -WindowStyle Hidden | Out-Null
+    if (-not (Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey -Force | Out-Null }   # empty profiles (CI runners) have no Run key yet
     New-ItemProperty -LiteralPath $runKey -Name $runName -Value ('"' + $hogExe + '"') -PropertyType String -Force | Out-Null
     Write-Host "hog: $hog.exe  (run value $runName)"
 
@@ -87,6 +88,7 @@ Check 'hog alive before' ((Hog-State).Proc)
 $btnQ.PerformClick()
 Check 'quarantine finished' (Idle)
 $s = Hog-State
+if ($s.Proc -or $s.Exe) { Log2 ('DIAG quarantine output: ' + ((@($script:lastOutput -split "`r?`n") | Select-Object -Last 45) -join ' | ')) }
 Check 'hog process stopped' (-not $s.Proc)
 Check 'hog exe moved away' (-not $s.Exe)
 Check 'Run value removed' (-not $s.Run)
@@ -135,7 +137,13 @@ Check 'reports folder removed' (-not (Test-Path $ReportsDir))
 Check 'action row hidden' (-not $acts.Visible)
 
 Log2 '== leftovers in the GUI private TEMP'
-$left = @(Get-ChildItem $env:TEMP -Filter 'ramdoctor-*' -ErrorAction SilentlyContinue)
+$left = @()
+for ($try = 0; $try -lt 10; $try++) {   # the last task's output file is deleted right after the process exits: allow for that
+    $left = @(Get-ChildItem $env:TEMP -Filter 'ramdoctor-*' -Force -ErrorAction SilentlyContinue)
+    if (-not $left.Count) { break }
+    Start-Sleep -Milliseconds 500; [System.Windows.Forms.Application]::DoEvents()
+}
+if ($left.Count) { Log2 ('DIAG leftovers: ' + (($left | ForEach-Object { '{0} dir={1} len={2} items={3}' -f $_.Name, $_.PSIsContainer, $_.Length, @(Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue).Count }) -join ' ; ')) }
 Check ('no ramdoctor-* temp files left (found ' + $left.Count + ')') ($left.Count -eq 0)
 Log2 'DONE'
 $form.Close()

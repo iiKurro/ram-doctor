@@ -15,10 +15,11 @@ GITHUB_OWNER = "iiKurro"
 GITHUB_REPO = "ram-doctor-reports"
 GITHUB_BRANCH = "main"
 
-# Optional but recommended: rate limiting (10 uploads/hour per user, 30 requests/hour per IP).
-# 1) npx wrangler kv namespace create RATE      2) paste the printed id below and remove the leading '#'
-#    3) npx wrangler deploy
-# Without it the relay still works (the invite code remains the gate) - it just has no rate brake.
+# REQUIRED in the default open mode (no INVITE_CODES): rate limiting. Without a KV binding the relay answers 503 to every upload.
+# 1) npx wrangler kv namespace create RATE
+# 2) keep YOUR namespace id out of git: copy this file to wrangler.local.toml (git-ignored), uncomment the block below there
+#    and paste the printed id
+# 3) npx wrangler deploy --config wrangler.local.toml
 # [[kv_namespaces]]
 # binding = "RATE"
 # id = "PASTE_THE_NAMESPACE_ID_HERE"

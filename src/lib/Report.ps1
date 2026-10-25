@@ -164,6 +164,10 @@ bdi{unicode-bidi:isolate}small{font-size:.72em;font-weight:500;color:var(--text3
 .btn:hover{background:var(--layer2)}.btn:active{background:var(--layer3)}
 .btn.sm{padding:2px 9px;min-height:26px;font-size:12px}
 .btn-icon{padding:6px 9px}
+#themeBtn .ic-sun{display:none}
+:root[data-theme="dark"] #themeBtn .ic-moon{display:none}
+:root[data-theme="dark"] #themeBtn .ic-sun{display:inline-flex}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) #themeBtn .ic-moon{display:none}:root:not([data-theme="light"]) #themeBtn .ic-sun{display:inline-flex}}
 .toc{border-bottom:1px solid var(--stroke);background:var(--bar);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
 .toc .wrap{display:flex;gap:6px;overflow-x:auto;padding-top:8px;padding-bottom:8px;scrollbar-width:thin}
 .toc a{white-space:nowrap;text-decoration:none;color:var(--text2);padding:3px 12px;border-radius:99px;font-size:13px;border:1px solid transparent}
@@ -331,7 +335,7 @@ $script:ReportJs = @'
 (()=>{
 const r=document.documentElement,b=document.getElementById('themeBtn');
 const cur=()=>r.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
-const paint=()=>{if(!b)return;const d=cur()==='dark';b.querySelector('use').setAttribute('href',d?'#i-sun':'#i-moon');b.setAttribute('aria-label',d?'وضع فاتح':'وضع داكن');b.title=b.getAttribute('aria-label')};
+const paint=()=>{if(!b)return;const d=cur()==='dark';b.setAttribute('aria-label',d?'وضع فاتح':'وضع داكن');b.title=b.getAttribute('aria-label')};
 try{const s=localStorage.getItem('rd-theme');if(s)r.setAttribute('data-theme',s)}catch(e){}
 if(b){b.addEventListener('click',()=>{const n=cur()==='dark'?'light':'dark';r.setAttribute('data-theme',n);try{localStorage.setItem('rd-theme',n)}catch(e){}paint()});paint()}
 const p=document.getElementById('printBtn');if(p)p.addEventListener('click',()=>window.print());
@@ -380,7 +384,7 @@ function New-RamReportHtml($d) {
     L '<header class="appbar"><div class="wrap">'
     L "<div class='logo'>$(Ic 'shield')</div>"
     L "<div class='ttl'><h1>تقرير فاحص الذاكرة</h1><p>RAM Doctor <bdi dir='ltr'>v$(E $d.Version)</bdi> &middot; <bdi dir='ltr'>$(E $d.Created)</bdi></p></div>"
-    L "<div class='tools'><button class='btn btn-icon' id='themeBtn' type='button' aria-label='وضع داكن'>$(Ic 'moon')</button><button class='btn' id='printBtn' type='button'>$(Ic 'print')<span>$(Rich 'طباعة أو حفظ PDF')</span></button></div>"
+    L "<div class='tools'><button class='btn btn-icon' id='themeBtn' type='button' aria-label='وضع داكن'><span class='ic-moon'>$(Ic 'moon')</span><span class='ic-sun'>$(Ic 'sun')</span></button><button class='btn' id='printBtn' type='button'>$(Ic 'print')<span>$(Rich 'طباعة أو حفظ PDF')</span></button></div>"
     L '</div></header>'
     $toc = "<a href='#overview'>نظرة عامة</a><a href='#memory'>الذاكرة</a><a href='#consumers'>المستهلكون</a><a href='#pool'>ذاكرة النواة</a><a href='#suspects'>الملفات المشبوهة</a><a href='#hidden'>العمليات المخفية</a><a href='#drivers'>التعريفات</a><a href='#evidence'>أدلة إضافية</a><a href='#next'>الخطوات</a>"
     L "<nav class='toc' aria-label='أقسام التقرير'><div class='wrap'>$toc</div></nav>"
