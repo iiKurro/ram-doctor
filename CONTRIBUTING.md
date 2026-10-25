@@ -205,6 +205,11 @@ the language is ever saved.
   placeholders, Arabic inside the English table, an untranslated (identical)
   text, a key used in code but not defined, a defined key nobody uses, and any
   Arabic literal outside `Strings.ps1`.
+* Display scaling: write every size for 96 dpi. The window scales itself once to the monitor's dpi; a size computed later must go
+  through `S` (PowerShell) or `Theme.S` / `Theme.Sf` (`Fluent.cs`), and fonts must come from `Theme` so they follow the dpi.
+  `tests/gui/Scale.Test.ps1` checks the window at 100-200 %.
+* Screen readers: a new control needs an accessible name (`Bind-Text <control> <key> 'AccessibleName'` when it has no text)
+  and, in `Fluent.cs`, a role, state and default action.
 * Layout: the window is mirrored by `RightToLeft` / `RightToLeftLayout`, and the
   `Fluent.cs` controls draw correctly in both directions: do not hard-code
   left/right, use the control's `RightToLeft` (see how `FList` / `FInfoBar`

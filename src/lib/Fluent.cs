@@ -1,6 +1,13 @@
 // Fluent.cs - small owner-drawn control kit that gives the WinForms window a Windows 11 (Fluent) look.
 // Pure GDI+/WinForms, no third-party code. Everything mirrors correctly for RightToLeft (Arabic).
 // Compiled at start-up by Add-Type (Windows PowerShell 5.1 => C# 5: no string interpolation, no ?., no expression bodies).
+//
+// Display scaling: the window makes the process dpi-aware (Dpi.Enable) before it creates any window, so Windows no longer
+// stretches a blurry bitmap of it. Every size in this file is written for 96 dpi and multiplied by Theme.Scale where it is
+// used (Theme.S / Theme.Sf); fonts come from Theme and follow the dpi of the window's monitor (Theme.SetDpi).
+//
+// Screen readers: every control describes itself (role, name, state, default action) through its AccessibleObject, the list
+// exposes its rows as check boxes, and the tour card (FCoach) exposes its texts and buttons and announces each step.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -14,7 +21,7 @@ namespace Fluent
     public enum FKind { Standard, Accent, Danger, Subtle }
     public enum FLevel { Info, Success, Warning, Error }
 
-    // ------------------------------------------------------------------ palette / fonts / drawing helpers
+    // ------------------------------------------------------------------ palette / fonts / scale / drawing helpers
     public static class Theme
     {
         public static bool Dark;
@@ -26,6 +33,23 @@ namespace Fluent
         public static string UiFamily = "Segoe UI Variable Text";
         public static string SemiFamily = "Segoe UI Semibold";
         static readonly Dictionary<string, Font> cache = new Dictionary<string, Font>();
+
+        // ---- dots per inch of the window's monitor. Scale = device pixels per 96-dpi pixel. GDI turns point sizes into
+        // pixels at the SYSTEM dpi (the dpi Windows started with), so fonts get FontScale = dpi / system dpi on top.
+        public static int Dpi = 96, SystemDpi = 96;
+        public static float Scale = 1f, FontScale = 1f;
+
+        public static void SetDpi(int dpi, int systemDpi)
+        {
+            if (dpi < 48 || dpi > 960) dpi = 96;
+            if (systemDpi < 48 || systemDpi > 960) systemDpi = 96;
+            Dpi = dpi; SystemDpi = systemDpi;
+            Scale = dpi / 96f;
+            FontScale = (float)dpi / systemDpi;
+            cache.Clear();
+        }
+        public static int S(float v) { return (int)Math.Round(v * Scale, MidpointRounding.AwayFromZero); }
+        public static float Sf(float v) { return v * Scale; }
 
         public static bool HasFont(string name)
         {
@@ -120,14 +144,17 @@ namespace Fluent
             return Color.FromArgb(255, (int)Math.Round(a.R + (b.R - a.R) * t), (int)Math.Round(a.G + (b.G - a.G) * t), (int)Math.Round(a.B + (b.B - a.B) * t));
         }
 
-        public static Font UI(float pt, FontStyle st) { return Get(UiFamily, pt, st, GraphicsUnit.Point); }
-        public static Font Semi(float pt) { return Get(SemiFamily, pt, FontStyle.Regular, GraphicsUnit.Point); }
-        public static Font Icons(float px) { return Get(IconFamily, px, FontStyle.Regular, GraphicsUnit.Pixel); }
-        public static Font Mono(float pt) { return Get(HasFont("Cascadia Mono") ? "Cascadia Mono" : "Consolas", pt, FontStyle.Regular, GraphicsUnit.Point); }
+        // fonts: sizes in points (UI / Semi / Mono) or 96-dpi pixels (Icons); all of them follow the dpi
+        public static Font UI(float pt, FontStyle st) { return Get(UiFamily, pt * FontScale, st, GraphicsUnit.Point); }
+        public static Font Semi(float pt) { return Get(SemiFamily, pt * FontScale, FontStyle.Regular, GraphicsUnit.Point); }
+        public static Font Icons(float px) { return Get(IconFamily, px * Scale, FontStyle.Regular, GraphicsUnit.Pixel); }
+        public static Font IconsPx(float px) { return Get(IconFamily, px, FontStyle.Regular, GraphicsUnit.Pixel); }   // exact pixels (bitmaps of a fixed size)
+        public static Font Mono(float pt) { return Get(HasFont("Cascadia Mono") ? "Cascadia Mono" : "Consolas", pt * FontScale, FontStyle.Regular, GraphicsUnit.Point); }
 
         static Font Get(string fam, float size, FontStyle st, GraphicsUnit u)
         {
-            string k = fam + "|" + size + "|" + (int)st + "|" + (int)u;
+            size = (float)Math.Round(size, 2);
+            string k = fam + "|" + size.ToString(System.Globalization.CultureInfo.InvariantCulture) + "|" + (int)st + "|" + (int)u;
             Font f;
             if (!cache.TryGetValue(k, out f))
             {
@@ -137,6 +164,23 @@ namespace Fluent
             }
             return f;
         }
+
+        // After a dpi change: every font in the tree grows or shrinks by k (fonts are read first, then replaced, so a
+        // control that only inherits its parent's font is not scaled twice).
+        public static void RescaleFonts(Control root, float k)
+        {
+            if (root == null || Math.Abs(k - 1f) < 0.001f) return;
+            List<Control> all = new List<Control>();
+            Collect(root, all);
+            List<Font> fonts = new List<Font>();
+            foreach (Control c in all) fonts.Add(c.Font);
+            for (int i = 0; i < all.Count; i++)
+            {
+                Font f = fonts[i];
+                try { all[i].Font = new Font(f.FontFamily, Math.Max(1f, f.Size * k), f.Style, f.Unit, f.GdiCharSet, f.GdiVerticalFont); } catch { }
+            }
+        }
+        static void Collect(Control c, List<Control> all) { all.Add(c); foreach (Control k in c.Controls) Collect(k, all); }
 
         public static GraphicsPath RoundRect(RectangleF r, float rad)
         {
@@ -197,10 +241,86 @@ namespace Fluent
             return TextRenderer.MeasureText(g, s, f, new Size(Math.Max(20, width), 100000), fl).Height;
         }
 
+        // px: glyph size at 96 dpi (scaled here)
         public static void DrawGlyph(Graphics g, string glyph, float px, Rectangle r, Color c)
         {
             if (string.IsNullOrEmpty(glyph)) return;
             TextRenderer.DrawText(g, glyph, Icons(px), r, c, TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+    }
+
+    // ------------------------------------------------------------------ dpi awareness
+    public static class Dpi
+    {
+        [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+        [DllImport("shcore.dll")] static extern int SetProcessDpiAwareness(int value);
+        [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+        [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern uint GetDpiForSystem();
+        [DllImport("user32.dll")] static extern IntPtr GetThreadDpiAwarenessContext();
+        [DllImport("user32.dll")] static extern int GetAwarenessFromDpiAwarenessContext(IntPtr value);
+
+        public static string Mode = "unaware";
+
+        // Call once, before the first window of the process exists: Per-Monitor V2 (Windows 10 1703+), otherwise per-monitor
+        // (Windows 8.1+), otherwise system-aware. Returns what the process now is.
+        public static string Enable()
+        {
+            try { if (SetProcessDpiAwarenessContext(new IntPtr(-4))) { Mode = "per-monitor-v2"; return Mode; } } catch (EntryPointNotFoundException) { }
+            try
+            {
+                int a = GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());   // already set earlier in this process?
+                if (a == 2) { Mode = "per-monitor"; return Mode; }
+                if (a == 1) { Mode = "system"; return Mode; }
+            }
+            catch (EntryPointNotFoundException) { }
+            try { if (SetProcessDpiAwareness(2) == 0) { Mode = "per-monitor"; return Mode; } } catch (DllNotFoundException) { } catch (EntryPointNotFoundException) { }
+            try { if (SetProcessDPIAware()) { Mode = "system"; return Mode; } } catch (EntryPointNotFoundException) { }
+            return Mode;
+        }
+
+        public static int ForSystem()
+        {
+            try { uint d = GetDpiForSystem(); if (d > 0) return (int)d; } catch (EntryPointNotFoundException) { }
+            using (Graphics g = Graphics.FromHwnd(IntPtr.Zero)) return (int)Math.Round(g.DpiX);
+        }
+
+        public static int ForWindow(IntPtr hwnd)
+        {
+            try { uint d = GetDpiForWindow(hwnd); if (d > 0) return (int)d; } catch (EntryPointNotFoundException) { }
+            return ForSystem();
+        }
+    }
+
+    public class DpiChangedArgs : EventArgs
+    {
+        public int Dpi;
+        public Rectangle Suggested;
+        public DpiChangedArgs(int dpi, Rectangle suggested) { Dpi = dpi; Suggested = suggested; }
+    }
+
+    // Reports WM_DPICHANGED (the window moved to a monitor with another scale) and keeps the message from WinForms, which
+    // would otherwise only scale part of a window that sets its own fonts. Attach again after the handle is re-created.
+    public class DpiWatcher : NativeWindow
+    {
+        [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+        public event EventHandler<DpiChangedArgs> Changed;
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x02E0)
+            {
+                int dpi = (int)((long)m.WParam & 0xFFFF);
+                Rectangle r = Rectangle.Empty;
+                if (m.LParam != IntPtr.Zero)
+                {
+                    RECT rc = (RECT)Marshal.PtrToStructure(m.LParam, typeof(RECT));
+                    r = Rectangle.FromLTRB(rc.Left, rc.Top, rc.Right, rc.Bottom);
+                }
+                if (Changed != null) { try { Changed(this, new DpiChangedArgs(dpi, r)); } catch { } }
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            base.WndProc(ref m);
         }
     }
 
@@ -279,7 +399,7 @@ namespace Fluent
                     {
                         StringFormat sf = new StringFormat();
                         sf.Alignment = StringAlignment.Center; sf.LineAlignment = StringAlignment.Center;
-                        g.DrawString(glyph, Theme.Icons(34f), tb, new RectangleF(0, 1, 64, 64), sf);
+                        g.DrawString(glyph, Theme.IconsPx(34f), tb, new RectangleF(0, 1, 64, 64), sf);
                     }
                 }
                 return (Icon)Icon.FromHandle(bmp.GetHicon()).Clone();
@@ -300,7 +420,7 @@ namespace Fluent
             Graphics g = e.Graphics;
             g.Clear(Theme.Window);
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (GraphicsPath p = Theme.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Radius))
+            using (GraphicsPath p = Theme.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Theme.Sf(Radius)))
             {
                 using (SolidBrush b = new SolidBrush(Theme.Card)) g.FillPath(b, p);
                 using (Pen pen = new Pen(Theme.CardBorder, 1f)) g.DrawPath(pen, p);
@@ -329,14 +449,37 @@ namespace Fluent
 
         public void PerformClick() { if (Enabled) OnClick(EventArgs.Empty); }
 
+        protected override AccessibleObject CreateAccessibilityInstance() { return new ButtonAccessible(this); }
+        class ButtonAccessible : ControlAccessibleObject
+        {
+            readonly FButton b;
+            public ButtonAccessible(FButton owner) : base(owner) { b = owner; }
+            public override AccessibleRole Role { get { return b.AccessibleRole != AccessibleRole.Default ? b.AccessibleRole : AccessibleRole.PushButton; } }
+            public override string Name { get { return string.IsNullOrEmpty(b.AccessibleName) ? b.Text : b.AccessibleName; } set { b.AccessibleName = value; } }
+            public override string Description { get { return b.AccessibleDescription; } }
+            public override string DefaultAction { get { return "Press"; } }
+            public override void DoDefaultAction() { b.PerformClick(); }
+            public override AccessibleStates State
+            {
+                get
+                {
+                    AccessibleStates s = AccessibleStates.Focusable;
+                    if (!b.Enabled) s = AccessibleStates.Unavailable;
+                    if (b.Focused) s |= AccessibleStates.Focused;
+                    if (!b.Visible) s |= AccessibleStates.Invisible;
+                    return s;
+                }
+            }
+        }
+
         protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; Invalidate(); base.OnMouseLeave(e); }
         protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { down = true; Focus(); Invalidate(); } base.OnMouseDown(e); }
         protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
         protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
         protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
-        protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
-        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+        protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.StateChange, -1); }
+        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.NameChange, -1); }
         protected override void OnKeyDown(KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) { PerformClick(); e.Handled = true; }
@@ -366,6 +509,17 @@ namespace Fluent
             }
         }
 
+        // the width the text and the icon need (tests: nothing may be cut off at any dpi)
+        public int ContentWidth()
+        {
+            using (Graphics g = CreateGraphics())
+            {
+                int gw = glyph.Length > 0 ? Theme.S(18) : 0;
+                int gap = (glyph.Length > 0 && (Text ?? "").Length > 0) ? Theme.S(8) : 0;
+                return Theme.S(20) + gw + gap + Theme.MeasureWidth(g, Text ?? "", Font);
+            }
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -375,24 +529,25 @@ namespace Fluent
             Color fill, border, fore;
             Colors(out fill, out border, out fore);
             RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
-            using (GraphicsPath p = Theme.RoundRect(r, 4f))
+            using (GraphicsPath p = Theme.RoundRect(r, Theme.Sf(4f)))
             {
                 if (fill.A > 0) using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, p);
                 if (border.A > 0) using (Pen pen = new Pen(border, 1f)) g.DrawPath(pen, p);
                 if (Focused && ShowFocusCues && Enabled)
                 {
-                    RectangleF fr = new RectangleF(2.5f, 2.5f, Width - 5.5f, Height - 5.5f);
-                    using (GraphicsPath fp = Theme.RoundRect(fr, 3f))
-                    using (Pen pen = new Pen(Theme.Dark ? Color.White : Color.Black, 1.5f)) g.DrawPath(pen, fp);
+                    float i = Theme.Sf(2.5f);
+                    RectangleF fr = new RectangleF(i, i, Width - 2 * i - 0.5f, Height - 2 * i - 0.5f);
+                    using (GraphicsPath fp = Theme.RoundRect(fr, Theme.Sf(3f)))
+                    using (Pen pen = new Pen(Theme.Dark ? Color.White : Color.Black, Math.Max(1.5f, Theme.Sf(1.5f)))) g.DrawPath(pen, fp);
                 }
             }
 
             string t = Text ?? "";
             bool hasG = glyph.Length > 0;
-            int gw = hasG ? 18 : 0;
-            int gap = (hasG && t.Length > 0) ? 8 : 0;
-            int avail = Width - 20 - gw - gap;
-            int tw = Math.Min(Theme.MeasureWidth(g, t, Font), Math.Max(10, avail));
+            int gw = hasG ? Theme.S(18) : 0;
+            int gap = (hasG && t.Length > 0) ? Theme.S(8) : 0;
+            int avail = Width - Theme.S(20) - gw - gap;
+            int tw = Math.Min(Theme.MeasureWidth(g, t, Font), Math.Max(Theme.S(10), avail));
             int total = gw + gap + tw;
             int start = (Width - total) / 2;
             Rectangle gr, tr;
@@ -420,14 +575,34 @@ namespace Fluent
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
             Size = new Size(300, 6);
         }
-        public int Value { get { return value; } set { this.value = Math.Max(0, Math.Min(100, value)); Invalidate(); } }
+        public int Value
+        {
+            get { return value; }
+            set
+            {
+                int v = Math.Max(0, Math.Min(100, value));
+                if (v == this.value) return;
+                this.value = v; Invalidate();
+                if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.ValueChange, -1);
+            }
+        }
+        protected override AccessibleObject CreateAccessibilityInstance() { return new ProgressAccessible(this); }
+        class ProgressAccessible : ControlAccessibleObject
+        {
+            readonly FProgress p;
+            public ProgressAccessible(FProgress owner) : base(owner) { p = owner; }
+            public override AccessibleRole Role { get { return AccessibleRole.ProgressBar; } }
+            public override string Name { get { return p.AccessibleName; } set { p.AccessibleName = value; } }
+            public override string Value { get { return p.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "%"; } set { } }
+            public override AccessibleStates State { get { return AccessibleStates.ReadOnly; } }
+        }
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Theme.Backdrop(this));
             bool rtl = RightToLeft == RightToLeft.Yes;
-            float h = Math.Min(6f, Height);
+            float h = Math.Min(Theme.Sf(6f), Height);
             float y = (Height - h) / 2f;
             using (GraphicsPath tp = Theme.RoundRect(new RectangleF(0, y, Width, h), h / 2f))
             using (SolidBrush tb = new SolidBrush(Theme.Track)) g.FillPath(tb, tp);
@@ -447,7 +622,7 @@ namespace Fluent
         FLevel level = FLevel.Info;
         string title = "", message = "";
         public bool AutoFit = true;
-        public int ReserveEnd;   // pixels kept free at the far end (right, or left when right-to-left) for buttons placed on the bar
+        public int ReserveEnd;   // device pixels kept free at the far end (right, or left when right-to-left) for buttons placed on the bar
 
         public FInfoBar()
         {
@@ -456,25 +631,37 @@ namespace Fluent
         }
 
         public FLevel Level { get { return level; } set { level = value; Invalidate(); } }
-        public string Title { get { return title; } set { title = value ?? ""; Fit(); Invalidate(); } }
-        public string Message { get { return message; } set { message = (value ?? "").Replace("\r\n", "\n").Replace("\n", "\r\n"); Fit(); Invalidate(); } }
+        public string Title { get { return title; } set { title = value ?? ""; Fit(); Invalidate(); Notify(AccessibleEvents.NameChange); } }
+        public string Message { get { return message; } set { message = (value ?? "").Replace("\r\n", "\n").Replace("\n", "\r\n"); Fit(); Invalidate(); Notify(AccessibleEvents.DescriptionChange); } }
 
+        void Notify(AccessibleEvents ev) { if (IsHandleCreated) AccessibilityNotifyClients(ev, -1); }
         void Fit() { if (AutoFit && Width > 120) FitHeight(); }
 
         protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); Fit(); }
 
-        const int Pad = 16;
-        const int IconCol = 36;
+        static int Pad { get { return Theme.S(16); } }
+        static int IconCol { get { return Theme.S(36); } }
+
+        protected override AccessibleObject CreateAccessibilityInstance() { return new InfoAccessible(this); }
+        class InfoAccessible : ControlAccessibleObject
+        {
+            readonly FInfoBar b;
+            public InfoAccessible(FInfoBar owner) : base(owner) { b = owner; }
+            public override AccessibleRole Role { get { return (b.level == FLevel.Warning || b.level == FLevel.Error) ? AccessibleRole.Alert : AccessibleRole.StaticText; } }
+            public override string Name { get { return string.IsNullOrEmpty(b.AccessibleName) ? b.title : b.AccessibleName; } set { b.AccessibleName = value; } }
+            public override string Description { get { return b.message; } }
+            public override AccessibleStates State { get { return AccessibleStates.ReadOnly | (b.Visible ? AccessibleStates.None : AccessibleStates.Invisible); } }
+        }
 
         public int FitHeight()
         {
             using (Graphics g = CreateGraphics())
             {
-                int tw = Math.Max(60, Width - Pad * 2 - IconCol - ReserveEnd);
-                int th = Math.Max(20, Theme.MeasureWrapped(g, title, Theme.Semi(11.5f), tw));
+                int tw = Math.Max(Theme.S(60), Width - Pad * 2 - IconCol - ReserveEnd);
+                int th = Math.Max(Theme.S(20), Theme.MeasureWrapped(g, title, Theme.Semi(11.5f), tw));
                 int mh = message.Length > 0 ? Theme.MeasureWrapped(g, message, Theme.UI(10f, FontStyle.Regular), tw) : 0;
-                int h = (Pad - 2) + th + (mh > 0 ? 6 + mh : 0) + (Pad - 2);
-                h = Math.Max(56, h);
+                int h = (Pad - Theme.S(2)) + th + (mh > 0 ? Theme.S(6) + mh : 0) + (Pad - Theme.S(2));
+                h = Math.Max(Theme.S(56), h);
                 if (h != Height) Height = h;
                 return h;
             }
@@ -501,22 +688,24 @@ namespace Fluent
             Color bg, ic; string glyph;
             Palette(level, out bg, out ic, out glyph);
             Color border = Theme.Mix(bg, Theme.Text, 0.10);
-            using (GraphicsPath p = Theme.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), 6f))
+            using (GraphicsPath p = Theme.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Theme.Sf(6f)))
             {
                 using (SolidBrush b = new SolidBrush(bg)) g.FillPath(b, p);
                 using (Pen pen = new Pen(border, 1f)) g.DrawPath(pen, p);
             }
-            int tw = Math.Max(60, Width - Pad * 2 - IconCol - ReserveEnd);
+            int tw = Math.Max(Theme.S(60), Width - Pad * 2 - IconCol - ReserveEnd);
             int tx = rtl ? Pad + ReserveEnd : Pad + IconCol;
-            int ix = rtl ? Width - Pad - 22 : Pad;
+            int isz = Theme.S(22);
+            int ix = rtl ? Width - Pad - isz : Pad;
+            int top = Pad - Theme.S(2);
             Font tf = Theme.Semi(11.5f), mf = Theme.UI(10f, FontStyle.Regular);
-            int th = Math.Max(20, Theme.MeasureWrapped(g, title, tf, tw));
-            Theme.DrawGlyph(g, glyph, 20f, new Rectangle(ix, Pad - 2, 22, 22), ic);
-            Theme.DrawText(g, title, tf, new Rectangle(tx, Pad - 2, tw, th), Theme.Text, rtl, rtl, false, true);
+            int th = Math.Max(Theme.S(20), Theme.MeasureWrapped(g, title, tf, tw));
+            Theme.DrawGlyph(g, glyph, 20f, new Rectangle(ix, top, isz, isz), ic);
+            Theme.DrawText(g, title, tf, new Rectangle(tx, top, tw, th), Theme.Text, rtl, rtl, false, true);
             if (message.Length > 0)
             {
                 int mh = Theme.MeasureWrapped(g, message, mf, tw);
-                Theme.DrawText(g, message, mf, new Rectangle(tx, Pad - 2 + th + 6, tw, mh + 2), Theme.Mix(Theme.Text, bg, 0.22), rtl, rtl, false, true);
+                Theme.DrawText(g, message, mf, new Rectangle(tx, top + th + Theme.S(6), tw, mh + Theme.S(2)), Theme.Mix(Theme.Text, bg, 0.22), rtl, rtl, false, true);
             }
         }
     }
@@ -526,14 +715,24 @@ namespace Fluent
     {
         public string Glyph = "";
         public bool Filled = true;
-        public float GlyphPx = 22f;
-        public int Radius = 12;
+        public float GlyphPx = 22f;      // at 96 dpi
+        public int Radius = 12;          // at 96 dpi
         public Color GlyphColor = Color.Empty;
+        public bool Decorative;          // screen readers skip it (the text next to it says the same)
 
         public FBadge()
         {
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
             Size = new Size(48, 48);
+        }
+        protected override AccessibleObject CreateAccessibilityInstance() { return new BadgeAccessible(this); }
+        class BadgeAccessible : ControlAccessibleObject
+        {
+            readonly FBadge b;
+            public BadgeAccessible(FBadge owner) : base(owner) { b = owner; }
+            public override AccessibleRole Role { get { return AccessibleRole.Graphic; } }
+            public override string Name { get { return b.AccessibleName; } set { b.AccessibleName = value; } }
+            public override AccessibleStates State { get { return b.Decorative ? AccessibleStates.Invisible : AccessibleStates.ReadOnly; } }
         }
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -543,7 +742,7 @@ namespace Fluent
             Color c;
             if (Filled)
             {
-                using (GraphicsPath p = Theme.RoundRect(new RectangleF(0, 0, Width - 0.5f, Height - 0.5f), Radius))
+                using (GraphicsPath p = Theme.RoundRect(new RectangleF(0, 0, Width - 0.5f, Height - 0.5f), Theme.Sf(Radius)))
                 using (SolidBrush b = new SolidBrush(Theme.Accent)) g.FillPath(b, p);
                 c = GlyphColor.IsEmpty ? Theme.AccentText : GlyphColor;
             }
@@ -568,14 +767,38 @@ namespace Fluent
             Font = Theme.Semi(10.5f);
             Size = new Size(400, 48);
         }
-        public void Toggle() { Expanded = !Expanded; Invalidate(); if (Toggled != null) Toggled(this, EventArgs.Empty); }
+        public void Toggle()
+        {
+            Expanded = !Expanded; Invalidate();
+            if (Toggled != null) Toggled(this, EventArgs.Empty);
+            if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.StateChange, -1);
+        }
+        protected override AccessibleObject CreateAccessibilityInstance() { return new ExpanderAccessible(this); }
+        class ExpanderAccessible : ControlAccessibleObject
+        {
+            readonly FExpander x;
+            public ExpanderAccessible(FExpander owner) : base(owner) { x = owner; }
+            public override AccessibleRole Role { get { return AccessibleRole.PushButton; } }
+            public override string Name { get { return string.IsNullOrEmpty(x.AccessibleName) ? x.Text : x.AccessibleName; } set { x.AccessibleName = value; } }
+            public override string DefaultAction { get { return x.Expanded ? "Collapse" : "Expand"; } }
+            public override void DoDefaultAction() { x.Toggle(); }
+            public override AccessibleStates State
+            {
+                get
+                {
+                    AccessibleStates s = AccessibleStates.Focusable | (x.Expanded ? AccessibleStates.Expanded : AccessibleStates.Collapsed);
+                    if (x.Focused) s |= AccessibleStates.Focused;
+                    return s;
+                }
+            }
+        }
         protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
         protected override void OnClick(EventArgs e) { base.OnClick(e); Toggle(); }
         protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) { Toggle(); e.Handled = true; } base.OnKeyDown(e); }
         protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
         protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
-        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.NameChange, -1); }
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -584,12 +807,12 @@ namespace Fluent
             g.Clear(Theme.Backdrop(this));
             bool rtl = RightToLeft == RightToLeft.Yes;
             if (hover || Focused)
-                using (GraphicsPath p = Theme.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), 6f))
+                using (GraphicsPath p = Theme.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Theme.Sf(6f)))
                 using (SolidBrush b = new SolidBrush(Theme.RowHover)) g.FillPath(b, p);
-            int pad = 14;
-            Rectangle gr = rtl ? new Rectangle(Width - pad - 24, 0, 24, Height) : new Rectangle(pad, 0, 24, Height);
-            Rectangle cr = rtl ? new Rectangle(pad, 0, 24, Height) : new Rectangle(Width - pad - 24, 0, 24, Height);
-            Rectangle tr = new Rectangle(pad + 32, 0, Math.Max(40, Width - pad * 2 - 36 - 32), Height);
+            int pad = Theme.S(14), gw = Theme.S(24);
+            Rectangle gr = rtl ? new Rectangle(Width - pad - gw, 0, gw, Height) : new Rectangle(pad, 0, gw, Height);
+            Rectangle cr = rtl ? new Rectangle(pad, 0, gw, Height) : new Rectangle(Width - pad - gw, 0, gw, Height);
+            Rectangle tr = new Rectangle(pad + Theme.S(32), 0, Math.Max(Theme.S(40), Width - pad * 2 - Theme.S(36) - Theme.S(32)), Height);
             Theme.DrawGlyph(g, Glyph, 18f, gr, Theme.Accent);
             Theme.DrawText(g, Text, Font, tr, Theme.Text, rtl, rtl, false, false);
             Theme.DrawGlyph(g, Expanded ? "\uE70E" : "\uE70D", 12f, cr, Theme.SubText);
@@ -613,7 +836,33 @@ namespace Fluent
         public bool Checked
         {
             get { return isChecked; }
-            set { if (isChecked != value) { isChecked = value; Invalidate(); if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty); } }
+            set
+            {
+                if (isChecked == value) return;
+                isChecked = value; Invalidate();
+                if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty);
+                if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.StateChange, -1);
+            }
+        }
+        protected override AccessibleObject CreateAccessibilityInstance() { return new CheckAccessible(this); }
+        class CheckAccessible : ControlAccessibleObject
+        {
+            readonly FCheck c;
+            public CheckAccessible(FCheck owner) : base(owner) { c = owner; }
+            public override AccessibleRole Role { get { return AccessibleRole.CheckButton; } }
+            public override string Name { get { return string.IsNullOrEmpty(c.AccessibleName) ? c.Text : c.AccessibleName; } set { c.AccessibleName = value; } }
+            public override string DefaultAction { get { return c.isChecked ? "Uncheck" : "Check"; } }
+            public override void DoDefaultAction() { c.Checked = !c.Checked; }
+            public override AccessibleStates State
+            {
+                get
+                {
+                    AccessibleStates s = AccessibleStates.Focusable;
+                    if (c.isChecked) s |= AccessibleStates.Checked;
+                    if (c.Focused) s |= AccessibleStates.Focused;
+                    return s;
+                }
+            }
         }
         protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
@@ -629,8 +878,9 @@ namespace Fluent
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Theme.Backdrop(this));
             bool rtl = RightToLeft == RightToLeft.Yes;
-            Rectangle cb = new Rectangle(rtl ? Width - 20 - 2 : 2, (Height - 20) / 2, 20, 20);
-            using (GraphicsPath cp = Theme.RoundRect(new RectangleF(cb.X + 0.5f, cb.Y + 0.5f, cb.Width - 1, cb.Height - 1), 5f))
+            int box = Theme.S(20), m = Theme.S(2), gap = Theme.S(12);
+            Rectangle cb = new Rectangle(rtl ? Width - box - m : m, (Height - box) / 2, box, box);
+            using (GraphicsPath cp = Theme.RoundRect(new RectangleF(cb.X + 0.5f, cb.Y + 0.5f, cb.Width - 1, cb.Height - 1), Theme.Sf(5f)))
             {
                 if (isChecked)
                 {
@@ -640,13 +890,13 @@ namespace Fluent
                 else
                 {
                     if (hover) using (SolidBrush hb = new SolidBrush(Theme.RowHover)) g.FillPath(hb, cp);
-                    using (Pen pen = new Pen(Theme.SubText, 1.4f)) g.DrawPath(pen, cp);
+                    using (Pen pen = new Pen(Theme.SubText, Math.Max(1.4f, Theme.Sf(1.4f)))) g.DrawPath(pen, cp);
                 }
                 if (Focused && ShowFocusCues)
-                    using (Pen fp = new Pen(Theme.Dark ? Color.White : Color.Black, 1.2f))
-                        g.DrawRectangle(fp, cb.X - 3, cb.Y - 3, cb.Width + 5, cb.Height + 5);
+                    using (Pen fp = new Pen(Theme.Dark ? Color.White : Color.Black, Math.Max(1.2f, Theme.Sf(1.2f))))
+                        g.DrawRectangle(fp, cb.X - Theme.S(3), cb.Y - Theme.S(3), cb.Width + Theme.S(5), cb.Height + Theme.S(5));
             }
-            Rectangle tr = rtl ? new Rectangle(0, 0, Width - 20 - 12, Height) : new Rectangle(20 + 12, 0, Width - 20 - 12, Height);
+            Rectangle tr = rtl ? new Rectangle(0, 0, Width - box - gap, Height) : new Rectangle(box + gap, 0, Width - box - gap, Height);
             Theme.DrawText(g, Text, Font, tr, Theme.Text, rtl, rtl, false, false);
         }
     }
@@ -675,12 +925,13 @@ namespace Fluent
         public bool Password { get { return tb.UseSystemPasswordChar; } set { tb.UseSystemPasswordChar = value; } }
         public int MaxLen { get { return tb.MaxLength; } set { tb.MaxLength = value; } }
         public string Cue { set { tb.HandleCreated += delegate { Win.SetCue(tb.Handle, value); }; if (tb.IsHandleCreated) Win.SetCue(tb.Handle, value); } }
+        public string Label { get { return tb.AccessibleName; } set { tb.AccessibleName = value; AccessibleName = value; } }   // what a screen reader says for the box
 
         protected override void OnLayout(LayoutEventArgs e)
         {
             base.OnLayout(e);
             int h = tb.PreferredHeight;
-            tb.SetBounds(12, (Height - h) / 2, Math.Max(20, Width - 24), h);
+            tb.SetBounds(Theme.S(12), (Height - h) / 2, Math.Max(Theme.S(20), Width - Theme.S(24)), h);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -689,7 +940,7 @@ namespace Fluent
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Theme.Backdrop(this));
             RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
-            using (GraphicsPath p = Theme.RoundRect(r, 4f))
+            using (GraphicsPath p = Theme.RoundRect(r, Theme.Sf(4f)))
             {
                 using (SolidBrush b = new SolidBrush(Theme.BtnFill)) g.FillPath(b, p);
                 using (Pen pen = new Pen(Theme.BtnBorder, 1f)) g.DrawPath(pen, p);
@@ -697,10 +948,10 @@ namespace Fluent
             if (focused)
             {
                 // accent underline, clipped to the rounded shape
-                using (GraphicsPath cp = Theme.RoundRect(r, 4f))
+                using (GraphicsPath cp = Theme.RoundRect(r, Theme.Sf(4f)))
                 {
                     g.SetClip(cp);
-                    using (SolidBrush ab = new SolidBrush(Theme.Accent)) g.FillRectangle(ab, 0, Height - 3, Width, 2);
+                    using (SolidBrush ab = new SolidBrush(Theme.Accent)) g.FillRectangle(ab, 0, Height - Theme.S(3), Width, Theme.S(2));
                     g.ResetClip();
                 }
             }
@@ -721,7 +972,7 @@ namespace Fluent
     public class FList : Control
     {
         readonly List<FItem> items = new List<FItem>();
-        public int RowHeight = 64;
+        public int RowHeight = 64;            // at 96 dpi
         public string EmptyText = "";
         public string EmptyGlyph = "\uE73E";
         public event EventHandler ItemChecked;
@@ -735,14 +986,30 @@ namespace Fluent
         }
 
         public List<FItem> Items { get { return items; } }
-        public void Add(FItem it) { items.Add(it); Invalidate(); }
-        public void Clear() { items.Clear(); scroll = 0; hot = -1; cur = -1; Invalidate(); }
+        public void Add(FItem it) { items.Add(it); Invalidate(); if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.Reorder, -1); }
+        public void Clear() { items.Clear(); scroll = 0; hot = -1; cur = -1; Invalidate(); if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.Reorder, -1); }
         public int CheckedCount { get { int n = 0; foreach (FItem i in items) if (i.Checked) n++; return n; } }
         public FItem[] GetChecked() { List<FItem> l = new List<FItem>(); foreach (FItem i in items) if (i.Checked) l.Add(i); return l.ToArray(); }
 
-        int ContentHeight { get { return items.Count * RowHeight; } }
+        int RowH { get { return Math.Max(1, Theme.S(RowHeight)); } }
+        public int Current { get { return cur; } }   // the row the keyboard is on (-1 = none)
+        int ContentHeight { get { return items.Count * RowH; } }
         void ClampScroll() { int max = Math.Max(0, ContentHeight - Height); scroll = Math.Max(0, Math.Min(max, scroll)); }
-        int IndexAt(Point p) { int idx = (p.Y + scroll) / RowHeight; return (idx >= 0 && idx < items.Count && p.Y >= 0 && p.Y < Height) ? idx : -1; }
+        int IndexAt(Point p) { int idx = (p.Y + scroll) / RowH; return (idx >= 0 && idx < items.Count && p.Y >= 0 && p.Y < Height) ? idx : -1; }
+        Rectangle RowRect(int i)
+        {
+            bool bar = ContentHeight > Height;
+            int sb = Theme.S(12);
+            return new Rectangle((RightToLeft == RightToLeft.Yes && bar) ? sb : 0, i * RowH - scroll, Width - (bar ? sb : 0), RowH);
+        }
+        string SpokenName(int i)
+        {
+            FItem it = items[i];
+            string s = it.Name;
+            if (it.Risk.Length > 0) s += ", " + it.Risk;
+            if (it.Reason.Length > 0) s += ". " + it.Reason;
+            return s;
+        }
 
         public void Toggle(int i)
         {
@@ -750,8 +1017,47 @@ namespace Fluent
             items[i].Checked = !items[i].Checked;
             Invalidate();
             if (ItemChecked != null) ItemChecked(this, EventArgs.Empty);
+            if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.StateChange, i);
         }
 
+        protected override AccessibleObject CreateAccessibilityInstance() { return new ListAccessible(this); }
+        class ListAccessible : ControlAccessibleObject
+        {
+            readonly FList l;
+            public ListAccessible(FList owner) : base(owner) { l = owner; }
+            public override AccessibleRole Role { get { return AccessibleRole.List; } }
+            public override string Name { get { return string.IsNullOrEmpty(l.AccessibleName) ? l.EmptyText : l.AccessibleName; } set { l.AccessibleName = value; } }
+            public override int GetChildCount() { return l.Items.Count; }
+            public override AccessibleObject GetChild(int index) { return (index >= 0 && index < l.Items.Count) ? new ItemAccessible(l, this, index) : null; }
+            public override AccessibleObject GetFocused() { int c = l.Current; return (l.Focused && c >= 0 && c < l.Items.Count) ? new ItemAccessible(l, this, c) : base.GetFocused(); }
+            public override AccessibleStates State { get { return AccessibleStates.Focusable | (l.Focused ? AccessibleStates.Focused : AccessibleStates.None); } }
+        }
+        class ItemAccessible : AccessibleObject
+        {
+            readonly FList l; readonly AccessibleObject parent; readonly int i;
+            public ItemAccessible(FList list, AccessibleObject p, int index) { l = list; parent = p; i = index; }
+            public override AccessibleObject Parent { get { return parent; } }
+            public override AccessibleRole Role { get { return AccessibleRole.CheckButton; } }
+            public override string Name { get { return i < l.Items.Count ? l.SpokenName(i) : ""; } set { } }
+            public override Rectangle Bounds { get { return l.IsHandleCreated ? l.RectangleToScreen(Rectangle.Intersect(l.RowRect(i), l.ClientRectangle)) : Rectangle.Empty; } }
+            public override string DefaultAction { get { return (i < l.Items.Count && l.Items[i].Checked) ? "Uncheck" : "Check"; } }
+            public override void DoDefaultAction() { l.Toggle(i); }
+            public override AccessibleStates State
+            {
+                get
+                {
+                    AccessibleStates s = AccessibleStates.Focusable | AccessibleStates.Selectable;
+                    if (i < l.Items.Count && l.Items[i].Checked) s |= AccessibleStates.Checked;
+                    if (i == l.Current) { s |= AccessibleStates.Selected; if (l.Focused) s |= AccessibleStates.Focused; }
+                    Rectangle r = l.RowRect(i);
+                    if (r.Bottom <= 0 || r.Top >= l.Height) s |= AccessibleStates.Offscreen;
+                    return s;
+                }
+            }
+            public override void Select(AccessibleSelection flags) { if (i < l.Items.Count) l.MoveTo(i); }
+        }
+
+        void MoveTo(int i) { cur = i; EnsureVisible(cur); Invalidate(); if (IsHandleCreated && Focused) AccessibilityNotifyClients(AccessibleEvents.Focus, cur); }
         protected override void OnMouseMove(MouseEventArgs e) { int h = IndexAt(e.Location); if (h != hot) { hot = h; Invalidate(); } base.OnMouseMove(e); }
         protected override void OnMouseLeave(EventArgs e) { hot = -1; Invalidate(); base.OnMouseLeave(e); }
         protected override void OnMouseDown(MouseEventArgs e)
@@ -760,23 +1066,28 @@ namespace Fluent
             if (i >= 0) { Focus(); cur = i; Toggle(i); }
             base.OnMouseDown(e);
         }
-        protected override void OnMouseWheel(MouseEventArgs e) { scroll -= (e.Delta / 120) * (RowHeight / 2); ClampScroll(); Invalidate(); base.OnMouseWheel(e); }
+        protected override void OnMouseWheel(MouseEventArgs e) { scroll -= (e.Delta / 120) * (RowH / 2); ClampScroll(); Invalidate(); base.OnMouseWheel(e); }
         protected override bool IsInputKey(Keys k) { return k == Keys.Up || k == Keys.Down || base.IsInputKey(k); }
         protected override void OnKeyDown(KeyEventArgs e)
         {
             if (items.Count > 0)
             {
-                if (e.KeyCode == Keys.Down) { cur = Math.Min(items.Count - 1, cur + 1); EnsureVisible(cur); Invalidate(); e.Handled = true; }
-                else if (e.KeyCode == Keys.Up) { cur = Math.Max(0, cur - 1); EnsureVisible(cur); Invalidate(); e.Handled = true; }
+                if (e.KeyCode == Keys.Down) { MoveTo(Math.Min(items.Count - 1, cur + 1)); e.Handled = true; }
+                else if (e.KeyCode == Keys.Up) { MoveTo(Math.Max(0, cur - 1)); e.Handled = true; }
                 else if (e.KeyCode == Keys.Space && cur >= 0) { Toggle(cur); e.Handled = true; }
             }
             base.OnKeyDown(e);
         }
-        protected override void OnGotFocus(EventArgs e) { if (cur < 0 && items.Count > 0) cur = 0; Invalidate(); base.OnGotFocus(e); }
+        protected override void OnGotFocus(EventArgs e)
+        {
+            if (cur < 0 && items.Count > 0) cur = 0;
+            Invalidate(); base.OnGotFocus(e);
+            if (IsHandleCreated && cur >= 0) AccessibilityNotifyClients(AccessibleEvents.Focus, cur);
+        }
         protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
         void EnsureVisible(int i)
         {
-            int top = i * RowHeight, bottom = top + RowHeight;
+            int top = i * RowH, bottom = top + RowH;
             if (top < scroll) scroll = top; else if (bottom > scroll + Height) scroll = bottom - Height;
             ClampScroll();
         }
@@ -798,64 +1109,64 @@ namespace Fluent
 
             if (items.Count == 0)
             {
-                Theme.DrawGlyph(g, EmptyGlyph, 28f, new Rectangle(0, Height / 2 - 40, Width, 40), Theme.SubText);
-                Theme.DrawText(g, EmptyText, Theme.UI(10f, FontStyle.Regular), new Rectangle(12, Height / 2 + 4, Width - 24, 26), Theme.SubText, rtl, false, true, false);
+                Theme.DrawGlyph(g, EmptyGlyph, 28f, new Rectangle(0, Height / 2 - Theme.S(40), Width, Theme.S(40)), Theme.SubText);
+                Theme.DrawText(g, EmptyText, Theme.UI(10f, FontStyle.Regular), new Rectangle(Theme.S(12), Height / 2 + Theme.S(4), Width - Theme.S(24), Theme.S(26)), Theme.SubText, rtl, false, true, false);
                 return;
             }
             ClampScroll();
             bool bar = ContentHeight > Height;
-            int rowW = Width - (bar ? 12 : 0);
-            int rowX = (rtl && bar) ? 12 : 0;
+            int rh = RowH;
             Font nf = Theme.Semi(10.5f), rf = Theme.UI(9.5f, FontStyle.Regular), pf = Theme.Semi(9f);
+            int pad = Theme.S(14), box = Theme.S(20), pillH = Theme.S(24);
 
             for (int i = 0; i < items.Count; i++)
             {
-                int y = i * RowHeight - scroll;
-                if (y + RowHeight < 0 || y > Height) continue;
+                Rectangle row = RowRect(i);
+                if (row.Bottom < 0 || row.Y > Height) continue;
                 FItem it = items[i];
-                Rectangle row = new Rectangle(rowX, y, rowW, RowHeight);
                 if (i == hot || (i == cur && Focused))
-                    using (GraphicsPath hp = Theme.RoundRect(new RectangleF(row.X + 2, row.Y + 3, row.Width - 4, row.Height - 6), 6f))
+                    using (GraphicsPath hp = Theme.RoundRect(new RectangleF(row.X + Theme.Sf(2), row.Y + Theme.Sf(3), row.Width - Theme.Sf(4), row.Height - Theme.Sf(6)), Theme.Sf(6f)))
                     using (SolidBrush hb = new SolidBrush(Theme.RowHover)) g.FillPath(hb, hp);
                 if (i < items.Count - 1 && i != hot && i != hot - 1)
-                    using (Pen dp = new Pen(Theme.Divider, 1f)) g.DrawLine(dp, row.X + 14, row.Bottom - 1, row.Right - 14, row.Bottom - 1);
+                    using (Pen dp = new Pen(Theme.Divider, 1f)) g.DrawLine(dp, row.X + pad, row.Bottom - 1, row.Right - pad, row.Bottom - 1);
 
-                int pad = 14;
                 // checkbox
-                int cbx = rtl ? row.Right - pad - 20 : row.X + pad;
-                Rectangle cb = new Rectangle(cbx, row.Y + (RowHeight - 20) / 2, 20, 20);
-                using (GraphicsPath cp = Theme.RoundRect(new RectangleF(cb.X + 0.5f, cb.Y + 0.5f, cb.Width - 1, cb.Height - 1), 5f))
+                int cbx = rtl ? row.Right - pad - box : row.X + pad;
+                Rectangle cb = new Rectangle(cbx, row.Y + (rh - box) / 2, box, box);
+                using (GraphicsPath cp = Theme.RoundRect(new RectangleF(cb.X + 0.5f, cb.Y + 0.5f, cb.Width - 1, cb.Height - 1), Theme.Sf(5f)))
                 {
                     if (it.Checked)
                     {
                         using (SolidBrush ab = new SolidBrush(Theme.Accent)) g.FillPath(ab, cp);
                         Theme.DrawGlyph(g, "\uE73E", 12f, cb, Theme.AccentText);
                     }
-                    else using (Pen cpn = new Pen(Theme.SubText, 1.4f)) g.DrawPath(cpn, cp);
+                    else using (Pen cpn = new Pen(Theme.SubText, Math.Max(1.4f, Theme.Sf(1.4f)))) g.DrawPath(cpn, cp);
                 }
                 // risk pill
                 Color pbg, pfg;
                 PillColors(it.Level, out pbg, out pfg);
-                int pw = Math.Max(58, Theme.MeasureWidth(g, it.Risk, pf) + 22);
+                int pw = Math.Max(Theme.S(58), Theme.MeasureWidth(g, it.Risk, pf) + Theme.S(22));
                 int px = rtl ? row.X + pad : row.Right - pad - pw;       // pill sits at the far end of the row
-                Rectangle pill = new Rectangle(px, row.Y + (RowHeight - 24) / 2, pw, 24);
-                using (GraphicsPath pp = Theme.RoundRect(pill, 12f))
+                Rectangle pill = new Rectangle(px, row.Y + (rh - pillH) / 2, pw, pillH);
+                using (GraphicsPath pp = Theme.RoundRect(pill, pillH / 2f))
                 using (SolidBrush pb = new SolidBrush(pbg)) g.FillPath(pb, pp);
                 Theme.DrawText(g, it.Risk, pf, pill, pfg, rtl, false, true, false);
                 // texts: between the checkbox and the pill
-                int tx0 = rtl ? pill.Right + 16 : cb.Right + 14;
-                int tx1 = rtl ? cb.X - 14 : pill.X - 16;
-                Rectangle nr = new Rectangle(tx0, row.Y + 10, Math.Max(40, tx1 - tx0), 22);
-                Rectangle rr = new Rectangle(tx0, row.Y + 33, Math.Max(40, tx1 - tx0), 20);
+                int tx0 = rtl ? pill.Right + Theme.S(16) : cb.Right + pad;
+                int tx1 = rtl ? cb.X - pad : pill.X - Theme.S(16);
+                int tw = Math.Max(Theme.S(40), tx1 - tx0);
+                Rectangle nr = new Rectangle(tx0, row.Y + Theme.S(10), tw, Theme.S(22));
+                Rectangle rr = new Rectangle(tx0, row.Y + Theme.S(33), tw, Theme.S(20));
                 Theme.DrawText(g, it.Name, nf, nr, Theme.Text, false, rtl, false, false);
                 Theme.DrawText(g, it.Reason, rf, rr, Theme.SubText, rtl, rtl, false, false);
             }
             if (bar)
             {
-                float th = Math.Max(24f, Height * (float)Height / ContentHeight);
+                float th = Math.Max(Theme.Sf(24f), Height * (float)Height / ContentHeight);
                 float ty = (Height - th) * (ContentHeight - Height == 0 ? 0 : (float)scroll / (ContentHeight - Height));
-                float tx = rtl ? 2f : Width - 7f;
-                using (GraphicsPath sp = Theme.RoundRect(new RectangleF(tx, ty + 2, 4f, th - 4), 2f))
+                float sw = Theme.Sf(4f);
+                float tx = rtl ? Theme.Sf(2f) : Width - Theme.Sf(7f);
+                using (GraphicsPath sp = Theme.RoundRect(new RectangleF(tx, ty + Theme.Sf(2), sw, th - Theme.Sf(4)), sw / 2f))
                 using (SolidBrush sb = new SolidBrush(Theme.Track)) g.FillPath(sb, sp);
             }
         }
@@ -864,21 +1175,27 @@ namespace Fluent
     // ------------------------------------------------------------------ coach marks (the guided tour, see lib\Tour.ps1)
     // A borderless per-pixel-alpha ("layered") window that the tour lays exactly over the main window's client area. It dims
     // the window, keeps a lit hole with an accent ring around one control, and draws the tour card (step counter, title,
-    // text, Back / Next / Skip). It never takes the focus (WS_EX_NOACTIVATE). While it is shown, a message filter swallows
-    // the keys and the mouse wheel meant for the main window and reports them through CoachKey / CoachWheel, so nothing
-    // underneath can be typed into; the hole is painted with alpha 1 (invisible, but it still catches clicks), so nothing
-    // underneath can be clicked either. The tour logic (steps, texts, where the card goes) lives in PowerShell.
+    // text, Back / Next / Skip). While the tour is open the card has the keyboard focus: Tab moves between its buttons,
+    // Enter / Space press the focused one (Next unless Tab moved), other keys are reported through CoachKey. A message filter
+    // also catches the keys and the mouse wheel meant for the main window (if the user clicks its title bar), so nothing
+    // underneath can be typed into; the hole is painted with alpha 1 (invisible, but it still catches clicks). Screen readers
+    // see a dialog with the counter, title, text and the three buttons (each can be invoked), and each step is announced.
+    // The main window keeps its active title bar. The tour logic (steps, texts, where the card goes) lives in PowerShell.
     public class FCoach : Form, IMessageFilter
     {
         [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, ref PT dst, ref SZ size, IntPtr hdcSrc, ref PT src, int key, ref BLEND blend, int flags);
         [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
         [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
         [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr child);
+        [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wp, IntPtr lp);
         [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
         [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
         [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
         [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
         [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BMI info, uint usage, out IntPtr bits, IntPtr section, uint offset);
+        [DllImport("UIAutomationCore.dll")] static extern int UiaHostProviderFromHwnd(IntPtr hwnd, out IntPtr provider);
+        [DllImport("UIAutomationCore.dll", CharSet = CharSet.Unicode)] static extern int UiaRaiseNotificationEvent(IntPtr provider, int kind, int processing, [MarshalAs(UnmanagedType.BStr)] string display, [MarshalAs(UnmanagedType.BStr)] string activityId);
+        [DllImport("UIAutomationCore.dll")] static extern bool UiaClientsAreListening();
 
         [StructLayout(LayoutKind.Sequential)] struct PT { public int X, Y; public PT(int x, int y) { X = x; Y = y; } }
         [StructLayout(LayoutKind.Sequential)] struct SZ { public int W, H; public SZ(int w, int h) { W = w; H = h; } }
@@ -896,9 +1213,10 @@ namespace Fluent
         public int StepIndex, StepCount;
         public Rectangle Hole = Rectangle.Empty;   // lit area in client coordinates; Empty = nothing lit (the card stands alone)
         public Point CardLocation;                 // top-left corner of the card in client coordinates (see MeasureCard)
-        public int CardWidth = 384;                // at 96 dpi; multiplied by Scale
+        public int CardWidth = 384;                // at 96 dpi; multiplied by Theme.Scale
         public bool Animate = SystemInformation.UIEffectsEnabled;
         public byte DimAlpha;
+        public string LastError = "";              // set when drawing failed on a timer or mouse event (nothing to throw to there); the tour then closes
 
         public event EventHandler NextClick, BackClick, SkipClick;
         public event KeyEventHandler CoachKey;
@@ -907,11 +1225,10 @@ namespace Fluent
         enum Hit { None, Skip, Back, Next }
         struct Lay { public Size Card; public Rectangle Badge, Counter, Dots, TitleR, BodyR, NoteIcon, NoteR, Skip, Back, Next; }
 
-        float scale = 1f;
-        bool filterOn, shown;
-        Hit hot = Hit.None, pressed = Hit.None;
+        bool filterOn, shown, detached, cues;
+        Hit hot = Hit.None, pressed = Hit.None, focus = Hit.Next;
         Lay lay;
-        Bitmap content;                        // the card, drawn opaque (ClearType text needs an opaque surface)
+        Bitmap content;                        // the card, drawn opaque
         IntPtr memDc = IntPtr.Zero, dib = IntPtr.Zero, oldObj = IntPtr.Zero, bits = IntPtr.Zero;
         Bitmap surface;                        // premultiplied ARGB view of the DIB that UpdateLayeredWindow shows
         Size surfaceSize = Size.Empty;
@@ -921,6 +1238,7 @@ namespace Fluent
         Point curCard, fromCard, toCard;
         byte curAlpha = 255;
         bool fading;
+        string spoken = "";
         const int MoveMs = 190, FadeMs = 160;
 
         public FCoach()
@@ -928,6 +1246,7 @@ namespace Fluent
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
+            KeyPreview = false;
             DimAlpha = Theme.Dark ? (byte)150 : (byte)120;
             anim.Interval = 15;
             anim.Tick += delegate { try { Step(); } catch (Exception ex) { Fail(ex); } };
@@ -938,42 +1257,50 @@ namespace Fluent
             get
             {
                 CreateParams cp = base.CreateParams;
-                cp.ExStyle |= 0x00080000 | 0x08000000 | 0x00000080;   // WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                cp.ExStyle |= 0x00080000 | 0x00000080;   // WS_EX_LAYERED | WS_EX_TOOLWINDOW
                 return cp;
             }
         }
-        protected override bool ShowWithoutActivation { get { return true; } }
         protected override void OnPaintBackground(PaintEventArgs e) { }   // a layered window shows what UpdateLayeredWindow gave it
         protected override void OnPaint(PaintEventArgs e) { }
         protected override void WndProc(ref Message m)
         {
-            if (m.Msg == 0x0021) { m.Result = (IntPtr)3; return; }   // WM_MOUSEACTIVATE -> MA_NOACTIVATE: a click never steals the focus
             base.WndProc(ref m);
+            if (m.Msg == 0x0006 && Owner != null && Owner.IsHandleCreated)   // WM_ACTIVATE: keep the main window's title bar looking active
+            {
+                bool active = ((long)m.WParam & 0xFFFF) != 0;
+                if (active) SendMessage(Owner.Handle, 0x0086, (IntPtr)1, IntPtr.Zero);
+                else if (m.LParam != Owner.Handle) SendMessage(Owner.Handle, 0x0086, IntPtr.Zero, IntPtr.Zero);
+            }
         }
-        protected override void OnHandleCreated(EventArgs e)
+        protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            base.OnHandleCreated(e);
-            try { using (Graphics g = CreateGraphics()) scale = Math.Max(1f, g.DpiX / 96f); } catch { scale = 1f; }
+            // Alt+F4 on the card means "leave the tour": the tour closes it properly
+            if (!detached && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Press(Hit.Skip); return; }
+            base.OnFormClosing(e);
         }
 
-        public float DpiScale { get { return scale; } }
-        public string LastError = "";   // set when drawing failed on a timer or mouse event (nothing to throw to there); the tour then closes
+        public float DpiScale { get { return Theme.Scale; } }
         void Fail(Exception ex) { anim.Stop(); LastError = ex.Message; }
         public Rectangle CardBounds { get { return new Rectangle(toCard, lay.Card); } }   // where the card ends up (client coordinates)
         public Rectangle NextBounds { get { return Offset(lay.Next); } }
         public Rectangle BackBounds { get { return Offset(lay.Back); } }
         public Rectangle SkipBounds { get { return Offset(lay.Skip); } }
+        public string FocusedButton { get { return focus.ToString(); } }
+        public string Spoken { get { return spoken; } }   // what the last step announcement said (tests)
         Rectangle Offset(Rectangle r) { if (r.IsEmpty) return r; r.Offset(toCard); return r; }
-        int P(float v) { return (int)Math.Round(v * scale); }
+        static int P(float v) { return Theme.S(v); }
 
         // ---- showing and hiding
         public void Attach(Form owner)
         {
             Owner = owner;
+            detached = false;
             if (!filterOn) { Application.AddMessageFilter(this); filterOn = true; }
         }
         public void Detach()
         {
+            detached = true;
             if (filterOn) { Application.RemoveMessageFilter(this); filterOn = false; }
             anim.Stop();
         }
@@ -985,7 +1312,7 @@ namespace Fluent
             base.Dispose(disposing);
         }
 
-        // keys and wheel turns aimed at the owner window (or at this one) are reported here and never reach the owner
+        // keys and wheel turns aimed at the owner window or at this one are handled here and never reach the owner
         public bool PreFilterMessage(ref Message m)
         {
             int msg = m.Msg;
@@ -997,14 +1324,41 @@ namespace Fluent
             if (m.HWnd != o && m.HWnd != Handle && !IsChild(o, m.HWnd)) return false;
             try
             {
-                if (msg == 0x0100 && CoachKey != null) CoachKey(this, new KeyEventArgs(((Keys)(int)(long)m.WParam & Keys.KeyCode) | ModifierKeys));
+                if (msg == 0x0100)
+                {
+                    Keys k = (Keys)(int)(long)m.WParam & Keys.KeyCode;
+                    if (k == Keys.Tab) MoveFocus((ModifierKeys & Keys.Shift) == Keys.Shift ? -1 : 1);
+                    else if (k == Keys.Enter || k == Keys.Space) Press(Usable(focus) ? focus : Hit.Next);
+                    else if (CoachKey != null) CoachKey(this, new KeyEventArgs(k | ModifierKeys));
+                }
                 if (wheel && CoachWheel != null) CoachWheel(this, new MouseEventArgs(MouseButtons.None, 0, 0, 0, (short)(((long)m.WParam >> 16) & 0xFFFF)));
             }
-            catch { }
+            catch (Exception ex) { Fail(ex); }
             return true;
         }
 
-        // ---- card layout (all sizes follow Scale; right-to-left mirrors every rectangle)
+        // ---- keyboard focus inside the card (reading order: Skip, Back, Next)
+        bool Usable(Hit h) { return h == Hit.Next || (h == Hit.Back && CanBack) || (h == Hit.Skip && SkipText.Length > 0); }
+        List<Hit> Buttons() { List<Hit> l = new List<Hit>(); foreach (Hit h in new Hit[] { Hit.Skip, Hit.Back, Hit.Next }) if (Usable(h)) l.Add(h); return l; }
+        public void MoveFocus(int dir)
+        {
+            List<Hit> b = Buttons();
+            int i = b.IndexOf(focus);
+            if (i < 0) i = b.Count - 1;
+            i = (i + dir + b.Count) % b.Count;
+            focus = b[i];
+            cues = true;
+            Redraw();
+            NotifyFocus();
+        }
+        void NotifyFocus()
+        {
+            if (!IsHandleCreated) return;
+            List<Part> parts = Parts();
+            for (int i = 0; i < parts.Count; i++) if (parts[i].Hit == focus && focus != Hit.None) { AccessibilityNotifyClients(AccessibleEvents.Focus, i); break; }
+        }
+
+        // ---- card layout (all sizes follow Theme.Scale; right-to-left mirrors every rectangle)
         Font CounterFont { get { return Theme.UI(9f, FontStyle.Regular); } }
         Font TitleFont { get { return Theme.Semi(13f); } }
         Font BodyFont { get { return Theme.UI(10f, FontStyle.Regular); } }
@@ -1062,6 +1416,14 @@ namespace Fluent
         }
         static Rectangle Mirror(Rectangle r, int w) { if (r.IsEmpty) return r; return new Rectangle(w - r.Right, r.Y, r.Width, r.Height); }
 
+        void DrawButtonFocus(Graphics g, Rectangle r)
+        {
+            float i = Theme.Sf(2.5f);
+            RectangleF fr = new RectangleF(r.X + i, r.Y + i, r.Width - 2 * i - 0.5f, r.Height - 2 * i - 0.5f);
+            using (GraphicsPath fp = Theme.RoundRect(fr, Theme.Sf(3f)))
+            using (Pen pen = new Pen(Theme.Dark ? Color.White : Color.Black, Math.Max(1.5f, Theme.Sf(1.5f)))) g.DrawPath(pen, fp);
+        }
+
         Bitmap DrawContent()
         {
             Bitmap b;
@@ -1074,9 +1436,9 @@ namespace Fluent
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;   // GDI text on an off-screen bitmap is too heavy without it
                 // icon badge, tinted with the accent
-                using (GraphicsPath bp = Theme.RoundRect(new RectangleF(lay.Badge.X, lay.Badge.Y, lay.Badge.Width, lay.Badge.Height), P(9)))
+                using (GraphicsPath bp = Theme.RoundRect(new RectangleF(lay.Badge.X, lay.Badge.Y, lay.Badge.Width, lay.Badge.Height), Theme.Sf(9f)))
                 using (SolidBrush bb = new SolidBrush(Theme.Mix(Theme.Card, Theme.Accent, Theme.Dark ? 0.22 : 0.12))) g.FillPath(bb, bp);
-                Theme.DrawGlyph(g, Glyph, P(18), lay.Badge, Theme.Accent);
+                Theme.DrawGlyph(g, Glyph, 18f, lay.Badge, Theme.Accent);
                 // step counter and progress dots
                 Theme.DrawText(g, Counter, CounterFont, lay.Counter, Theme.SubText, Rtl, Rtl, false, false);
                 int dot = P(6), dgap = P(5);
@@ -1090,29 +1452,32 @@ namespace Fluent
                 Theme.DrawText(g, Body, BodyFont, lay.BodyR, Theme.Mix(Theme.Text, Theme.Card, 0.12), Rtl, Rtl, false, true);
                 if (Note.Length > 0)
                 {
-                    Theme.DrawGlyph(g, "\uE946", P(14), lay.NoteIcon, Theme.Accent);
+                    Theme.DrawGlyph(g, "\uE946", 14f, lay.NoteIcon, Theme.Accent);
                     Theme.DrawText(g, Note, NoteFont, lay.NoteR, Theme.SubText, Rtl, Rtl, false, true);
                 }
                 // buttons
                 if (!lay.Skip.IsEmpty)
                 {
-                    if (hot == Hit.Skip) using (GraphicsPath sp = Theme.RoundRect(R(lay.Skip), P(4))) using (SolidBrush sb = new SolidBrush(pressed == Hit.Skip ? Theme.BtnPressed : Theme.RowHover)) g.FillPath(sb, sp);
+                    if (hot == Hit.Skip) using (GraphicsPath sp = Theme.RoundRect(R(lay.Skip), Theme.Sf(4f))) using (SolidBrush sb = new SolidBrush(pressed == Hit.Skip ? Theme.BtnPressed : Theme.RowHover)) g.FillPath(sb, sp);
                     Theme.DrawText(g, SkipText, ButtonFont, lay.Skip, hot == Hit.Skip ? Theme.Text : Theme.SubText, Rtl, false, true, false);
+                    if (cues && focus == Hit.Skip) DrawButtonFocus(g, lay.Skip);
                 }
                 if (!lay.Back.IsEmpty)
                 {
                     Color f = pressed == Hit.Back ? Theme.BtnPressed : (hot == Hit.Back ? Theme.BtnHover : Theme.BtnFill);
-                    using (GraphicsPath p = Theme.RoundRect(R(lay.Back), P(4)))
+                    using (GraphicsPath p = Theme.RoundRect(R(lay.Back), Theme.Sf(4f)))
                     {
                         using (SolidBrush fb = new SolidBrush(f)) g.FillPath(fb, p);
                         using (Pen pen = new Pen(Theme.BtnBorder, 1f)) g.DrawPath(pen, p);
                     }
                     Theme.DrawText(g, BackText, ButtonFont, lay.Back, Theme.Text, Rtl, false, true, false);
+                    if (cues && focus == Hit.Back) DrawButtonFocus(g, lay.Back);
                 }
                 Color nf = pressed == Hit.Next ? Theme.AccentPressed : (hot == Hit.Next ? Theme.AccentHover : Theme.Accent);
-                using (GraphicsPath np = Theme.RoundRect(R(lay.Next), P(4)))
+                using (GraphicsPath np = Theme.RoundRect(R(lay.Next), Theme.Sf(4f)))
                 using (SolidBrush nb = new SolidBrush(nf)) g.FillPath(nb, np);
                 Theme.DrawText(g, NextText, ButtonFont, lay.Next, Theme.AccentText, Rtl, false, true, false);
+                if (cues && focus == Hit.Next) DrawButtonFocus(g, lay.Next);
             }
             return b;
         }
@@ -1125,6 +1490,7 @@ namespace Fluent
             pressed = Hit.None;   // a press never carries over to another step; hover follows where the mouse really is
             hot = Hit.None;
             MeasureCard();
+            if (!Usable(focus)) focus = Hit.Next;
             if (IsHandleCreated && Visible)
             {
                 Point m = PointToClient(MousePosition);
@@ -1132,6 +1498,7 @@ namespace Fluent
             }
             if (content != null) content.Dispose();
             content = DrawContent();
+            Announce();
             if (fading) return;   // the fade-in keeps running and ends on the new targets
             if (animate && Animate && shown)
             {
@@ -1155,6 +1522,47 @@ namespace Fluent
             shown = true;
             if (Animate) { fading = true; curAlpha = 0; fromHole = toHole; fromCard = toCard; clock.Reset(); clock.Start(); anim.Start(); }
             Frame();
+            spoken = "";
+            Announce();
+        }
+
+        // what a screen reader hears for the current step
+        public string SpokenText(bool withCounter)
+        {
+            string s = withCounter && Counter.Length > 0 ? Counter + ". " : "";
+            s += Title;
+            if (Body.Length > 0) s += ". " + Body;
+            if (Note.Length > 0) s += " " + Note;
+            return s;
+        }
+        // tell screen readers about a new step (once per step): the dialog's name changed, the focus is on a button, and on
+        // Windows 10 1709+ a UI Automation notification reads the whole card
+        void Announce()
+        {
+            if (!shown || !IsHandleCreated) return;
+            string s = SpokenText(true);
+            if (s == spoken) return;
+            spoken = s;
+            try
+            {
+                AccessibilityNotifyClients(AccessibleEvents.NameChange, -1);
+                AccessibilityNotifyClients(AccessibleEvents.DescriptionChange, -1);
+                NotifyFocus();
+            }
+            catch { }
+            try
+            {
+                if (!UiaClientsAreListening()) return;
+                IntPtr p;
+                if (UiaHostProviderFromHwnd(Handle, out p) == 0 && p != IntPtr.Zero)
+                {
+                    try { UiaRaiseNotificationEvent(p, 4, 1, s, "RamDoctorTourStep"); }   // NotificationKind_Other, ImportantMostRecent
+                    finally { Marshal.Release(p); }
+                }
+            }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
+            catch { }
         }
 
         void Step()
@@ -1180,7 +1588,7 @@ namespace Fluent
                 g.Clear(Color.FromArgb(DimAlpha, 0, 0, 0));
                 if (!curHole.IsEmpty)
                 {
-                    float rad = P(8);
+                    float rad = Theme.Sf(8f);
                     using (GraphicsPath hp = Theme.RoundRect(new RectangleF(curHole.X, curHole.Y, curHole.Width, curHole.Height), rad))
                     using (SolidBrush hb = new SolidBrush(Color.FromArgb(1, 0, 0, 0))) g.FillPath(hb, hp);   // looks clear, still catches clicks
                     g.CompositingMode = CompositingMode.SourceOver;
@@ -1188,8 +1596,8 @@ namespace Fluent
                     RectangleF ring = new RectangleF(curHole.X - 0.5f, curHole.Y - 0.5f, curHole.Width + 1f, curHole.Height + 1f);
                     using (GraphicsPath rp = Theme.RoundRect(ring, rad + 0.5f))
                     {
-                        using (Pen glow = new Pen(Color.FromArgb(70, Theme.Accent), P(6))) g.DrawPath(glow, rp);
-                        using (Pen pen = new Pen(Theme.Accent, Math.Max(2f, P(2)))) g.DrawPath(pen, rp);
+                        using (Pen glow = new Pen(Color.FromArgb(70, Theme.Accent), Theme.Sf(6f))) g.DrawPath(glow, rp);
+                        using (Pen pen = new Pen(Theme.Accent, Math.Max(2f, Theme.Sf(2f)))) g.DrawPath(pen, rp);
                     }
                 }
                 g.CompositingMode = CompositingMode.SourceOver;
@@ -1197,7 +1605,7 @@ namespace Fluent
                 if (content != null)
                 {
                     Rectangle c = new Rectangle(curCard, content.Size);
-                    float rad = P(8);
+                    float rad = Theme.Sf(8f);
                     int sh = P(10);
                     for (int i = sh; i >= 1; i--)   // soft shadow, a little below the card
                         using (GraphicsPath sp = Theme.RoundRect(new RectangleF(c.X - i, c.Y - i + P(4), c.Width + 2 * i, c.Height + 2 * i), rad + i))
@@ -1303,5 +1711,67 @@ namespace Fluent
         public void PerformNext() { Press(Hit.Next); }
         public void PerformBack() { if (CanBack) Press(Hit.Back); }
         public void PerformSkip() { Press(Hit.Skip); }
+
+        // ---- what screen readers see: a dialog with the counter, the title, the text (and note) and the buttons
+        struct Part { public Hit Hit; public AccessibleRole Role; public string Name; public Rectangle Rect; }
+        List<Part> Parts()
+        {
+            List<Part> l = new List<Part>();
+            Add(l, Hit.None, AccessibleRole.StaticText, Counter, lay.Counter);
+            Add(l, Hit.None, AccessibleRole.StaticText, Title, lay.TitleR);
+            Add(l, Hit.None, AccessibleRole.StaticText, Body, lay.BodyR);
+            if (Note.Length > 0) Add(l, Hit.None, AccessibleRole.StaticText, Note, lay.NoteR);
+            if (Usable(Hit.Skip)) Add(l, Hit.Skip, AccessibleRole.PushButton, SkipText, lay.Skip);
+            if (Usable(Hit.Back)) Add(l, Hit.Back, AccessibleRole.PushButton, BackText, lay.Back);
+            Add(l, Hit.Next, AccessibleRole.PushButton, NextText, lay.Next);
+            return l;
+        }
+        static void Add(List<Part> l, Hit h, AccessibleRole role, string name, Rectangle r) { Part p; p.Hit = h; p.Role = role; p.Name = name ?? ""; p.Rect = r; l.Add(p); }
+        Rectangle ToScreen(Rectangle cardRect) { if (!IsHandleCreated) return Rectangle.Empty; Rectangle r = cardRect; r.Offset(curCard); return RectangleToScreen(r); }
+
+        protected override AccessibleObject CreateAccessibilityInstance() { return new CoachAccessible(this); }
+        class CoachAccessible : ControlAccessibleObject
+        {
+            readonly FCoach c;
+            public CoachAccessible(FCoach owner) : base(owner) { c = owner; }
+            public override AccessibleRole Role { get { return AccessibleRole.Dialog; } }
+            public override string Name { get { return c.Title; } set { } }
+            public override string Description { get { return c.SpokenText(true); } }
+            public override int GetChildCount() { return c.Parts().Count; }
+            public override AccessibleObject GetChild(int index) { List<Part> p = c.Parts(); return (index >= 0 && index < p.Count) ? new PartAccessible(c, this, p[index]) : null; }
+            public override AccessibleObject GetFocused()
+            {
+                foreach (Part p in c.Parts()) if (p.Hit != Hit.None && p.Hit == c.focus) return new PartAccessible(c, this, p);
+                return this;
+            }
+            public override AccessibleObject HitTest(int x, int y)
+            {
+                foreach (Part p in c.Parts()) if (c.ToScreen(p.Rect).Contains(x, y)) return new PartAccessible(c, this, p);
+                return base.HitTest(x, y);
+            }
+            public override AccessibleStates State { get { return AccessibleStates.Focusable | (c.ContainsFocus ? AccessibleStates.Focused : AccessibleStates.None); } }
+        }
+        class PartAccessible : AccessibleObject
+        {
+            readonly FCoach c; readonly AccessibleObject parent; readonly Part p;
+            public PartAccessible(FCoach coach, AccessibleObject owner, Part part) { c = coach; parent = owner; p = part; }
+            public override AccessibleObject Parent { get { return parent; } }
+            public override AccessibleRole Role { get { return p.Role; } }
+            public override string Name { get { return p.Name; } set { } }
+            public override Rectangle Bounds { get { return c.ToScreen(p.Rect); } }
+            public override string DefaultAction { get { return p.Hit != Hit.None ? "Press" : null; } }
+            public override void DoDefaultAction() { if (p.Hit != Hit.None) c.Press(p.Hit); }
+            public override AccessibleStates State
+            {
+                get
+                {
+                    if (p.Hit == Hit.None) return AccessibleStates.ReadOnly;
+                    AccessibleStates s = AccessibleStates.Focusable;
+                    if (p.Hit == c.focus) s |= AccessibleStates.Focused;
+                    return s;
+                }
+            }
+            public override void Select(AccessibleSelection flags) { if (p.Hit != Hit.None && (flags & AccessibleSelection.TakeFocus) != 0) { c.focus = p.Hit; c.Redraw(); } }
+        }
     }
 }

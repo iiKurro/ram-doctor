@@ -151,7 +151,7 @@ else {
 param([string]$Path)
 $ErrorActionPreference = 'Stop'
 try {
-    Add-Type -ReferencedAssemblies 'System.Windows.Forms', 'System.Drawing' -TypeDefinition ([IO.File]::ReadAllText($Path)) -Language CSharp
+    Add-Type -ReferencedAssemblies 'System.Windows.Forms', 'System.Drawing', 'Accessibility' -TypeDefinition ([IO.File]::ReadAllText($Path)) -Language CSharp
     'compiled'
 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 '@)

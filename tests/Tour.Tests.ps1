@@ -215,12 +215,19 @@ Describe 'Tour: wiring and hygiene' {
         ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) | Should -BeTrue
         [IO.File]::ReadAllText($p) | Should -Not -Match '[\u0600-\u06FF]'
     }
-    It 'is loaded and wired by the window: header button, first-run banner, Connect-Tour' {
+    It 'is loaded and wired by the window: header button, the first-use offer on the ready bar, Connect-Tour' {
         $script:Gui | Should -Match ([regex]::Escape(". (Join-Path `$AppDir 'lib\Tour.ps1')"))
         $script:Gui | Should -Match '\$btnTour\s*=\s*New-Btn'
-        $script:Gui | Should -Match '\$tourBar\s*=\s*New-TourBanner'
-        $script:Gui | Should -Match 'Test-TourFirstRun \$ReportsDir'
+        $script:Gui | Should -Match 'Add-TourOffer \$info \(Test-TourFirstRun \$ReportsDir\)'
+        $script:Gui | Should -Not -Match 'New-TourBanner|\$tourBar'
         $script:Gui | Should -Match '(?m)^\s*Connect-Tour\s*$'
+    }
+    It 'keeps the offer in step with the ready bar: the window calls Update-TourOffer from Show-Info and Refresh-Buttons' {
+        foreach ($fn in 'Show-Info', 'Refresh-Buttons') {
+            $m = [regex]::Match($script:Gui, '(?s)function ' + $fn + '\b.*?\r?\n    \}')
+            $m.Success | Should -BeTrue
+            $m.Value | Should -Match 'Update-TourOffer' -Because "$fn changes the bar"
+        }
     }
     It 'never starts a scan, an action or a child process, and writes no file' {
         $t = [IO.File]::ReadAllText((Join-Path $script:Root 'src\lib\Tour.ps1'))

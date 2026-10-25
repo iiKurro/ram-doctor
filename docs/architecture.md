@@ -46,8 +46,8 @@ flowchart TB
 | File | Role |
 | --- | --- |
 | `src/RAM-Doctor-GUI.ps1` | The window. It contains **no scanning logic**: it starts the scan and the actions as child `powershell.exe` processes, parses their timestamped progress lines for the progress bar, and reads the plan file to show results. It also provides the *report location* and *copy summary for sending* buttons and the optional *Share with my helper* flow (hidden when `share.config.json` has no endpoint). |
-| `src/lib/Fluent.cs` | Windows 11 style WinForms controls (cards, buttons, list, progress, info bar) compiled with `Add-Type`. They draw correctly both right-to-left (Arabic) and left-to-right (English): every control reads its own `RightToLeft` when it paints. `FCoach` is the tour overlay: a per-pixel-alpha window laid over the client area that dims it, lights one control and draws the tour card; it never takes the focus, and while it is shown it swallows the keys, the mouse wheel and the clicks meant for the window. |
-| `src/lib/Tour.ps1` | The optional guided tour of the window (coach marks): the step list, the card texts and placement, and the first-use banner. It only explains: it never starts a scan or an action and saves nothing. The overlay itself is `Fluent.FCoach` (below). |
+| `src/lib/Fluent.cs` | Windows 11 style WinForms controls (cards, buttons, list, progress, info bar) compiled with `Add-Type`. They draw correctly both right-to-left (Arabic) and left-to-right (English): every control reads its own `RightToLeft` when it paints. `FCoach` is the tour overlay: a per-pixel-alpha window laid over the client area that dims it, lights one control and draws the tour card; the card has the keyboard while the tour is open (Tab, Enter, Esc) and gives it back afterwards, and the keys, the mouse wheel and the clicks meant for the window never reach it. **Display scaling**: `Dpi.Enable` makes the process Per-Monitor V2 dpi-aware (falling back to per-monitor, then system awareness) before the first window exists, every size in the kit is written for 96 dpi and multiplied by `Theme.Scale` where it is used, fonts follow `Theme.FontScale`, and `DpiWatcher` reports `WM_DPICHANGED` so the window re-scales itself on another monitor. **Screen readers**: every control has an accessible role, name, state and default action (buttons, expanders with expanded/collapsed, check boxes, the progress bar with its value, info bars as text or alerts, the list's rows as check boxes, decorative icons hidden), and the tour card is a dialog with its texts and three buttons; each step is announced (UI Automation notification). |
+| `src/lib/Tour.ps1` | The optional guided tour of the window (coach marks): the step list, the card texts and placement, and the first-use offer on the `Ready to scan` bar. It only explains: it never starts a scan or an action and saves nothing. The overlay itself is `Fluent.FCoach` (below). |
 | `src/lib/Strings.ps1` | The one string table: an `ar` and an `en` table with the same keys, and `Get-Text` / `Set-UiLang` / `Get-UiLang`. No other source file holds a user-facing literal (checked by `tests/Strings.Tests.ps1`). |
 | `src/RAM-Doctor.ps1` | The scan. Collects evidence, scores it, writes the report and the plan. Never modifies the system. |
 | `src/RAM-Doctor-Actions.ps1` | `Quarantine`, `Restore`, `Purge`, `List`. The only code that changes the system. |
@@ -330,7 +330,7 @@ therefore:
   *minimised* console), no download;
 * with a header that says what it does.
 
-The cost is a larger file (about 560 KB); the benefit is that it can be audited
+The cost is a larger file (about 590 KB); the benefit is that it can be audited
 and diffed, and it triggers fewer heuristics.
 
 The release file has **no environment-controlled behaviour**: a check in

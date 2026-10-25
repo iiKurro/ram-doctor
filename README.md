@@ -87,6 +87,9 @@ give you and points you to the next tool when needed.
   everything back. Deleting for good (**Purge**) is a separate step.
 * **Windows 11 style window** that follows your light/dark theme, plus an
   HTML report, **in English or Arabic** (see [Languages](#languages)).
+* **Easy to read and to use for everyone**: sharp at any display scale (125-200 %, also when moved
+  between monitors), usable with a screen reader (every button, check box and the tour card are named),
+  and a one-minute guided tour of the window.
 * **One file, no install**: `RAM-Doctor.bat`, plain readable text. Nothing is
   left behind when you close it, apart from the small report you asked for.
 * **Easy to hand to a helper**: open the report's folder, copy a redacted
@@ -170,7 +173,7 @@ More in [docs/architecture.md](docs/architecture.md).
 
 | Where | What | When |
 | --- | --- | --- |
-| `C:\ProgramData\RAM-Doctor-run\<random>\` | Unpacked scripts of the one-file release (~550 KB), in a folder only Administrators and SYSTEM can write to | While the window is open; deleted on exit |
+| `C:\ProgramData\RAM-Doctor-run\<random>\` | Unpacked scripts of the one-file release (~585 KB), in a folder only Administrators and SYSTEM can write to | While the window is open; deleted on exit |
 | `Desktop\RAM-Doctor-Reports\` | `RAMDoctor-<host>-<stamp>.html` and `Plan-<host>-<stamp>.json` (~45 KB per scan) | Every scan; the **newest 3** scans are kept |
 | `C:\ProgramData\RAM-Doctor\` | Quarantined files, `manifest.json`, `actions-<stamp>.log` | Only if you use quarantine |
 | System restore point | "RAM-Doctor before quarantine" | Before a quarantine, if System Protection is on |

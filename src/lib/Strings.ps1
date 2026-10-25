@@ -533,10 +533,9 @@ $script:RdText['ar'] = @{
     # ---- the guided tour (lib\Tour.ps1): header button, first-run banner, card buttons, one title + text per step
     'tour.btn'                 = 'طريقة الاستخدام'
     'tour.btn.tip'             = 'جولة سريعة تشرح أجزاء النافذة (دقيقة واحدة)'
-    'tour.banner.t'            = 'جديد هنا؟ خذ جولة سريعة لمدة دقيقة'
-    'tour.banner.m'            = 'تشرح لك ما يفعله كل جزء في النافذة. الجولة لا تفحص ولا تغيّر شيئًا.'
-    'tour.banner.go'           = 'ابدأ الجولة'
-    'tour.banner.close'        = 'إخفاء هذه الرسالة'
+    'tour.offer.m'             = 'أول مرة هنا؟ جولة سريعة لمدة دقيقة تشرح كل جزء في النافذة، ولا تفحص ولا تغيّر شيئًا.'
+    'tour.offer.go'            = 'ابدأ الجولة'
+    'tour.offer.close'         = 'إخفاء عرض الجولة'
     'tour.count'               = 'الخطوة {0} من {1}'
     'tour.next'                = 'التالي'
     'tour.back'                = 'السابق'
@@ -551,7 +550,7 @@ $script:RdText['ar'] = @{
     'tour.progress.t'          = 'تابع التقدّم'
     'tour.progress.b'          = 'يمتلئ الشريط أثناء الفحص، والسطر تحته يوضّح ما يجري فحصه الآن. اترك النافذة مفتوحة حتى يظهر أن الفحص اكتمل.'
     'tour.verdict.t'           = 'اقرأ النتيجة'
-    'tour.verdict.b'           = 'هذا المربع يلخّص ما وجده الفحص بكلمات بسيطة، ولونه يوضّح الأهمية: الأخضر يعني أن كل شيء سليم، والأزرق للمعلومة، والأصفر يستحق نظرة، والأحمر يحتاج انتباهك الآن.'
+    'tour.verdict.b'           = 'قبل الفحص يقول هذا المربع إن الأداة جاهزة، وبعده يلخّص ما وُجد بكلمات بسيطة. ولونه يوضّح الأهمية: الأخضر يعني أن كل شيء سليم، والأزرق للمعلومة، والأصفر يستحق نظرة، والأحمر يحتاج انتباهك الآن.'
     'tour.acts.t'              = 'احتفظ بالنتيجة أو أرسلها'
     'tour.acts.b'              = 'افتح التقرير الكامل، أو افتح المجلد الذي يحفظه، أو انسخ ملخصًا قصيرًا بلا معلومات شخصية لتلصقه في محادثة.'
     'tour.acts.share'          = 'وبزر «{0}» ترسله مباشرة لمن يساعدك بعد أن تؤكد.'
@@ -570,6 +569,9 @@ $script:RdText['ar'] = @{
     'tour.lang.b'              = 'بدّل بين العربية والإنجليزية في أي وقت. الفحص التالي يكتب تقريره باللغة التي اخترتها.'
     'tour.help.t'              = 'تحتاج مساعدة؟'
     'tour.help.b'              = 'اضغط هذا الزر لترى الجولة مرة أخرى. وإن احترت فاضغط «{0}» بعد الفحص والصقه في محادثة مع من يساعدك.'
+
+    # ---- names that only screen readers say
+    'gui.a11y.progress'        = 'تقدّم الفحص'
 
     # ---- crash-safe storage, quarantine records, honest results (keys store.* / restore.*)
     'store.status.busy'        = 'عملية أخرى قيد التنفيذ. انتظر حتى تنتهي ثم أعد المحاولة.'
@@ -1050,10 +1052,9 @@ $script:RdText['en'] = @{
     # ---- the guided tour (lib\Tour.ps1): header button, first-run banner, card buttons, one title + text per step
     'tour.btn'                 = 'How to use'
     'tour.btn.tip'             = 'A quick tour of the window (about a minute)'
-    'tour.banner.t'            = 'New here? Take a 1-minute tour'
-    'tour.banner.m'            = 'It shows what each part of the window does. The tour does not scan or change anything.'
-    'tour.banner.go'           = 'Start the tour'
-    'tour.banner.close'        = 'Hide this message'
+    'tour.offer.m'             = 'New here? A 1-minute tour shows what each part of the window does. It does not scan or change anything.'
+    'tour.offer.go'            = 'Start the tour'
+    'tour.offer.close'         = 'Hide the tour offer'
     'tour.count'               = 'Step {0} of {1}'
     'tour.next'                = 'Next'
     'tour.back'                = 'Back'
@@ -1068,7 +1069,7 @@ $script:RdText['en'] = @{
     'tour.progress.t'          = 'Follow the progress'
     'tour.progress.b'          = 'The bar fills up while the scan runs, and the line under it says what is being checked. Keep the window open until it says the scan is complete.'
     'tour.verdict.t'           = 'Read the result'
-    'tour.verdict.b'           = 'This box sums up what the scan found, in plain words. Its colour tells you how urgent it is: green means all is well, blue is for information, yellow is worth a look, red needs your attention now.'
+    'tour.verdict.b'           = 'Before a scan this box says the tool is ready; after it, it sums up what was found in plain words. Its colour tells you how urgent it is: green means all is well, blue is for information, yellow is worth a look, red needs your attention now.'
     'tour.acts.t'              = 'Keep or send the result'
     'tour.acts.b'              = 'Open the full report, open the folder that holds it, or copy a short summary without personal details to paste into a chat.'
     'tour.acts.share'          = 'With "{0}" you can also send it straight to the person who helps you, after you confirm.'
@@ -1087,6 +1088,9 @@ $script:RdText['en'] = @{
     'tour.lang.b'              = 'Switch between English and Arabic at any time. The next scan writes its report in the language you chose.'
     'tour.help.t'              = 'Need help?'
     'tour.help.b'              = 'Press this button to see the tour again. Stuck? After a scan press "{0}" and paste the text into a chat with the person who helps you.'
+
+    # ---- names that only screen readers say
+    'gui.a11y.progress'        = 'Scan progress'
 
     # ---- crash-safe storage, quarantine records, honest results (keys store.* / restore.*)
     'store.status.busy'        = 'Another action is running. Wait until it has finished, then try again.'

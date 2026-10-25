@@ -16,6 +16,7 @@
   -Lang ar   Arabic, right-to-left (the default); pictures go to docs\assets
   -Lang en   English, left-to-right; pictures go to docs\assets\en
   -Only      a subset, e.g. -Only gui-light,report-sample
+  -Dark      the dark-theme variants of the window and tour pictures (<name>-dark.png); the website shows them in dark mode
 
   Tour pictures (scenarios tour, tour-banner): every step of the guided tour (lib\Tour.ps1), cut to the card and the control it
   lights up, as <OutDir>\tour\NN-<step>.png, the whole window at the first step (tour-window.png) and the first-use banner
@@ -27,7 +28,8 @@
 param(
     [string]$OutDir = '',
     [string]$Work = '',
-    [string[]]$Only = @(),
+    [string[]]$Only = @(),   # several names: one string with commas also works (-Only tour,tour-banner under powershell -File)
+    [switch]$Dark,           # the dark variants: every picture but gui-light / gui-dark again, in the dark theme, named <name>-dark.png
     [ValidateSet('ar', 'en')][string]$Lang = 'ar'
 )
 
@@ -73,8 +75,9 @@ function New-DemoPlan([string]$dir, [string]$scenario) {
     }
     $plan = [pscustomobject]@{ tool = 'RAM-Doctor'; version = '1.0.0'; lang = $Lang; host = 'DESKTOP-DEMO'; created = '2026-01-01 10:15:00'; isAdmin = $true
         report = (Join-Path $dir "RAMDoctor-DESKTOP-DEMO-$stamp.html"); verdict = $v; observations = $obs; memory = $mem; suspects = $sus }
-    [IO.File]::WriteAllText((Join-Path $dir "Plan-DESKTOP-DEMO-$stamp.json"), ($plan | ConvertTo-Json -Depth 6), $utf8)
-    Set-Content -LiteralPath (Join-Path $dir "RAMDoctor-DESKTOP-DEMO-$stamp.html") -Value '<html></html>'
+    # the window only shows plans of the PC it runs on, so the FILE names carry this PC's name (never shown in a picture)
+    [IO.File]::WriteAllText((Join-Path $dir "Plan-$($env:COMPUTERNAME)-$stamp.json"), ($plan | ConvertTo-Json -Depth 6), $utf8)
+    Set-Content -LiteralPath (Join-Path $dir "RAMDoctor-$($env:COMPUTERNAME)-$stamp.html") -Value '<html></html>'
 }
 foreach ($s in 'high', 'kernel', 'clean') { New-DemoPlan (Join-Path $Work $s) $s }
 New-Item -ItemType Directory -Force -Path (Join-Path $Work 'empty') | Out-Null
@@ -94,7 +97,7 @@ function Force-Foreground($f) {
 function Fit-Window {
     if ($form.WindowState -ne 'Normal') { $form.WindowState = 'Normal' }   # a minimised or maximised window cannot be photographed
     $col.PerformLayout()
-    $form.ClientSize = New-Object System.Drawing.Size(940, [math]::Min($col.Height + 4, [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 80))
+    $form.ClientSize = New-Object System.Drawing.Size((S 940), [math]::Min($col.Height + 4, [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 80))
     [System.Windows.Forms.Application]::DoEvents()
     Force-Foreground $form
 }
@@ -117,6 +120,7 @@ function Dialog-Shot([scriptblock]$show, [string]$path) {
     & $show
 }
 $script:OUT = '%OUT%'
+$script:SUF = '%SUF%'   # '' or '-dark'
 $script:DemoShare = [pscustomobject]@{ Configured = $true; Name = '%USER%'; UserId = 'a1b2c3d4e5'; Helper = (Get-Text 'gui.helper.demo'); EndpointConfigured = $true }
 # a picture of the part of the window around the tour card and the lit control (the guide shows them at 1:1)
 function Save-Crop([string]$path, [System.Drawing.Rectangle]$r) {
@@ -154,25 +158,25 @@ Fit-Window
 Save-WindowShot (Join-Path $script:OUT 'gui-dark.png')
 '@ },
     @{ Name = 'gui-progress'; Reports = 'empty'; Theme = 'Light'; Extra = @(); Body = @'
-Hide-TourBanner   # a real scan hides the first-use banner
+Hide-TourOffer   # a real scan hides the first-use offer
 $btnScan.Enabled = $false; $btnScan.Text = Get-Text 'gui.btn.scanning'
 $bar.Value = 46
 Set-Status 'gui.step.8' 46
 Show-Info 'Info' 'gui.info.scanning.t' 'gui.info.scanning.m'
 Fit-Window
-Save-WindowShot (Join-Path $script:OUT 'gui-progress.png')
+Save-WindowShot (Join-Path $script:OUT ('gui-progress' + $script:SUF + '.png'))
 '@ },
     @{ Name = 'gui-clean'; Reports = 'clean'; Theme = 'Light'; Extra = @(); Body = @'
 Load-Results (Get-LatestResult) $false
 Set-Status 'gui.status.done' 100
 Fit-Window
-Save-WindowShot (Join-Path $script:OUT 'gui-clean.png')
+Save-WindowShot (Join-Path $script:OUT ('gui-clean' + $script:SUF + '.png'))
 '@ },
     @{ Name = 'gui-kernel'; Reports = 'kernel'; Theme = 'Light'; Extra = @(); Body = @'
 Load-Results (Get-LatestResult) $false
 Set-Status 'gui.status.done' 100
 Fit-Window
-Save-WindowShot (Join-Path $script:OUT 'gui-kernel.png')
+Save-WindowShot (Join-Path $script:OUT ('gui-kernel' + $script:SUF + '.png'))
 '@ },
     @{ Name = 'gui-more'; Reports = 'clean'; Theme = 'Light'; Extra = @('-ShareForceConfigured'); Body = @'
 Load-Results (Get-LatestResult) $false
@@ -181,18 +185,18 @@ $script:share = $script:DemoShare
 Apply-ShareVisibility
 $exMore.Expanded = $true; Resize-Cards
 Fit-Window
-Save-WindowShot (Join-Path $script:OUT 'gui-more.png')
+Save-WindowShot (Join-Path $script:OUT ('gui-more' + $script:SUF + '.png'))
 '@ },
     @{ Name = 'gui-share'; Reports = 'high'; Theme = 'Light'; Extra = @('-ShareForceConfigured'); Body = @'
 Load-Results (Get-LatestResult) $false
 $script:share = $script:DemoShare
 Apply-ShareVisibility
 $pv = @{ Dir = $env:TEMP; Sizes = @{ 'summary.md' = '3'; 'report.html' = '31'; 'plan.json' = '14' } }
-Dialog-Shot { [void](Show-ShareDialog $pv) } (Join-Path $script:OUT 'gui-share.png')
+Dialog-Shot { [void](Show-ShareDialog $pv) } (Join-Path $script:OUT ('gui-share' + $script:SUF + '.png'))
 '@ },
     @{ Name = 'gui-profile'; Reports = 'high'; Theme = 'Light'; Extra = @('-ShareForceConfigured'); Body = @'
 Load-Results (Get-LatestResult) $false
-Dialog-Shot { [void](Show-ProfileDialog) } (Join-Path $script:OUT 'gui-profile.png')
+Dialog-Shot { [void](Show-ProfileDialog) } (Join-Path $script:OUT ('gui-profile' + $script:SUF + '.png'))
 '@ },
     # the guided tour: every step (card + lit control) for the illustrated guide (docs/guide.html), plus the whole window
     @{ Name = 'tour'; Reports = 'high'; Theme = 'Light'; Extra = @('-ShareForceConfigured'); Body = @'
@@ -205,35 +209,39 @@ Start-Tour
 for ($i = 0; $i -lt $script:Tour.Steps.Count; $i++) {
     Show-TourStep $i
     [System.Windows.Forms.Application]::DoEvents()
-    if ($i -eq 0) { Save-WindowShot (Join-Path $dir 'tour-window.png') }
-    Save-TourShot (Join-Path $dir ('{0:00}-{1}.png' -f ($i + 1), $script:Tour.Steps[$i].Id))
+    if ($i -eq 0) { Save-WindowShot (Join-Path $dir ('tour-window' + $script:SUF + '.png')) }
+    Save-TourShot (Join-Path $dir ('{0:00}-{1}{2}.png' -f ($i + 1), $script:Tour.Steps[$i].Id, $script:SUF))
 }
 Stop-Tour
 '@ },
-    # first use: the header with the "take a tour" banner
+    # first use: the top of the window, where the "Ready to scan" bar offers the tour
     @{ Name = 'tour-banner'; Reports = 'empty'; Theme = 'Light'; Extra = @(); Body = @'
 Fit-Window
 $dir = Join-Path $script:OUT 'tour'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $frame = [Fluent.Win]::FrameBounds($form.Handle)
-$r = [Fluent.Win]::ScreenRect($tourBar.Handle)
-Save-Crop (Join-Path $dir '00-banner.png') (New-Object System.Drawing.Rectangle(0, 0, $frame.Width, ($r.Bottom - $frame.Y + 16)))
+$r = [Fluent.Win]::ScreenRect($info.Handle)
+Save-Crop (Join-Path $dir ('00-banner' + $script:SUF + '.png')) (New-Object System.Drawing.Rectangle(0, 0, $frame.Width, ($r.Bottom - $frame.Y + (S 16))))
 '@ }
 )
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$Only = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$suffix = $(if ($Dark) { '-dark' } else { '' })
 foreach ($s in $scenarios) {
     if ($Only.Count -gt 0 -and $Only -notcontains $s.Name) { continue }
+    if ($Dark -and $s.Name -in 'gui-light', 'gui-dark') { continue }   # that pair is already light + dark
+    $theme = $(if ($Dark) { 'Dark' } else { $s.Theme })
     Write-Host ("  {0} ({1}) ..." -f $s.Name, $Lang)
     # Park the mouse at the right edge of the PRIMARY screen first: the window opens on the screen that holds the pointer
     # (CenterScreen), and a pointer resting over the title bar would pop up the Windows 11 snap-layout flyout into the picture.
     $prim = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
     [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(($prim.Right - 3), [int]($prim.Top + $prim.Height / 2))
     $ts = Join-Path $Work ($s.Name + '.test.ps1')
-    $body = ($common.Replace('%OUT%', $OutDir).Replace('%USER%', $demoUser)) + "`r`n" + $s.Body + "`r`n" + '$form.Close()' + "`r`n"
+    $body = ($common.Replace('%OUT%', $OutDir).Replace('%USER%', $demoUser).Replace('%SUF%', $suffix)) + "`r`n" + $s.Body + "`r`n" + '$form.Close()' + "`r`n"
     [IO.File]::WriteAllText($ts, $body, $utf8)
     Remove-Item -LiteralPath ($ts + '.error.txt') -ErrorAction SilentlyContinue
     $guiArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"{0}"' -f $gui), '-ReportsDir', ('"{0}"' -f (Join-Path $Work $s.Reports)),
-        '-QuarantineDir', ('"{0}"' -f (Join-Path $Work 'store')), '-AllowNonAdmin', '-Theme', $s.Theme, '-Accent', 'default', '-Lang', $Lang, '-TestScript', ('"{0}"' -f $ts)) + $s.Extra
+        '-QuarantineDir', ('"{0}"' -f (Join-Path $Work 'store')), '-AllowNonAdmin', '-Theme', $theme, '-Accent', 'default', '-Lang', $Lang, '-TestScript', ('"{0}"' -f $ts)) + $s.Extra
     $p = Start-Process -FilePath powershell.exe -ArgumentList $guiArgs -PassThru
     if (-not $p.WaitForExit(90000)) { try { $p.Kill() } catch { }; Write-Warning "$($s.Name): GUI did not close in time" }
     if (Test-Path ($ts + '.error.txt')) { Write-Warning "$($s.Name): test script error"; Get-Content ($ts + '.error.txt') }
@@ -241,7 +249,7 @@ foreach ($s in $scenarios) {
 
 # ---------------------------------------------------------------- the report, photographed with a headless browser
 $reportShots = @(@{ Name = 'report-sample'; Theme = 'light' }, @{ Name = 'report-sample-dark'; Theme = 'dark' })
-$want = @($reportShots | Where-Object { $Only.Count -eq 0 -or $Only -contains $_.Name })
+$want = @($reportShots | Where-Object { -not $Dark -and ($Only.Count -eq 0 -or $Only -contains $_.Name) })   # report-sample-dark is already the dark one
 if ($want.Count -gt 0) {
     $browser = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
         "$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1

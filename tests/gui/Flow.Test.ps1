@@ -55,7 +55,7 @@ class P { static void Main() {
         # ---- the script that runs INSIDE the GUI process
         $inner = @'
 $out = '%RESULT%'
-$hog = '%HOG%'; $hogExe = '%HOGEXE%'; $runKey = '%RUNKEY%'; $runName = '%RUNNAME%'; $work = '%WORK%'; $flow = '%LANG%'
+$hog = '%HOG%'; $hogExe = '%HOGEXE%'; $runKey = '%RUNKEY%'; $runName = '%RUNNAME%'; $work = '%WORK%'; $flow = '%LANG%'; $probe = '%PROBE%'
 function Log2($s) { Add-Content -LiteralPath $out -Value $s -Encoding UTF8 }
 function Check([string]$name, $cond) { if ($cond) { Log2 "PASS  $name" } else { Log2 "FAIL  $name" } }
 function Wait-Until([scriptblock]$cond, [int]$sec) { $end = (Get-Date).AddSeconds($sec); while ((Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); if (& $cond) { return $true }; Start-Sleep -Milliseconds 150 }; return $false }
@@ -66,16 +66,31 @@ $arabic = '[؀-ۿ]'
 $rtlWant = $(if ($flow -eq 'ar') { 'Yes' } else { 'No' })
 
 # ---- guided tour helpers: keys are POSTED to the window (they must be caught by the tour, never reach the window)
-Add-Type -ReferencedAssemblies System.Drawing -Namespace TourT -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, int m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(System.Drawing.Point p); [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, int flags);'
+Add-Type -ReferencedAssemblies System.Drawing -Namespace TourT -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, int m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(System.Drawing.Point p); [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, int flags); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern IntPtr GetActiveWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);'
+# is this window process the one in front? (focus checks only mean something then: the owner may be using another program)
+function In-Front { $fp = [uint32]0; [void][TourT.U]::GetWindowThreadProcessId([TourT.U]::GetForegroundWindow(), [ref]$fp); return ($fp -eq $PID) }
+# UI Automation looks at a window from another process (never from this UI thread): tests\gui\Uia-Probe.ps1, while this thread keeps pumping
+function Run-Probe($hwnd, [string]$invoke = '') {
+    $outF = Join-Path $work ('uia-' + [guid]::NewGuid().ToString('N') + '.txt'); $nameF = $outF + '.name'
+    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $probe), '-Hwnd', $hwnd.ToInt64(), '-Out', ('"{0}"' -f $outF))
+    if ($invoke) { [IO.File]::WriteAllText($nameF, $invoke, (New-Object System.Text.UTF8Encoding($false))); $a += @('-InvokeFile', ('"{0}"' -f $nameF)) }
+    $pp = Start-Process -FilePath powershell.exe -ArgumentList $a -PassThru -WindowStyle Hidden
+    $end = (Get-Date).AddSeconds(60); while (-not $pp.HasExited -and (Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 30 }
+    if (-not $pp.HasExited) { try { $pp.Kill() } catch { } }
+    Pump 200
+    $r = @(); if (Test-Path -LiteralPath $outF) { $r = @(Get-Content -LiteralPath $outF -Encoding UTF8) }
+    Remove-Item -LiteralPath $outF, $nameF -Force -ErrorAction SilentlyContinue
+    return ,$r
+}
 function Pump([int]$ms = 250) { $end = (Get-Date).AddMilliseconds($ms); do { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 25 } while ((Get-Date) -lt $end) }
 function Send-Key($ctl, [int]$vk) { [void][TourT.U]::PostMessage($ctl.Handle, 0x100, [IntPtr]$vk, [IntPtr]0); [void][TourT.U]::PostMessage($ctl.Handle, 0x101, [IntPtr]$vk, [IntPtr]0); Pump 300 }
-function Tour-Snapshot {   # everything the tour must leave exactly as it found it
+function Tour-Snapshot([switch]$NoReadyText) {   # everything the tour must leave exactly as it found it (-NoReadyText: the first-use offer goes away on purpose)
     $s = [ordered]@{}
     $s.Bounds = [string]$form.Bounds; $s.State = [string]$form.WindowState; $s.Dir = [string]$form.RightToLeft + [string]$form.RightToLeftLayout; $s.Lang = Get-UiLang
     $s.Scroll = [string]$page.AutoScrollPosition; $s.More = $exMore.Expanded; $s.Log = $exLog.Expanded
     $s.Visible = (@($acts, $find, $toast, $info, $more, $details, $btnShare, $banner, $moreBody, $txtLog) | ForEach-Object { [string]$_.Visible }) -join ','
     $s.Enabled = (@($btnScan, $btnQ, $btnLang, $btnTour, $btnReport, $btnFolder, $btnCopy, $btnShare, $btnRestore, $btnPurge, $btnClean) | ForEach-Object { [string]$_.Enabled }) -join ','
-    $s.Texts = @($form.Text, $lblStatus.Text, $info.Title, $info.Message, $btnScan.Text, $lblSub.Text, $lblPick.Text) -join '|'
+    $s.Texts = @($form.Text, $lblStatus.Text, $info.Title, $(if ($NoReadyText) { '' } else { $info.Message }), $btnScan.Text, $lblSub.Text, $lblPick.Text) -join '|'
     $s.List = '{0}/{1}/{2}' -f $list.Items.Count, $list.CheckedCount, ((@($list.GetChecked()) | ForEach-Object { $_.Name }) -join ';')
     $s.Busy = [string]($null -ne $script:proc); $s.Bar = $bar.Value; $s.Log2 = $txtLog.TextLength
     $s.Files = (@(Get-ChildItem -LiteralPath $work -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'result.txt' } | ForEach-Object { $_.FullName }) | Sort-Object) -join ';'
@@ -90,7 +105,8 @@ function Tour-CardOk {   # the card is inside the overlay and, unless it had to 
     if (-not $area.Contains($c)) { return $false }
     if ($o.Hole.IsEmpty) { return $true }
     $free = ($c.Bottom -le $o.Hole.Top -or $c.Top -ge $o.Hole.Bottom -or $c.Right -le $o.Hole.Left -or $c.Left -ge $o.Hole.Right)
-    return ($free -or ($c.Top -le 16 -or $c.Bottom -ge $o.ClientSize.Height - 16))
+    $m = [Fluent.Theme]::S(16)
+    return ($free -or ($c.Top -le $m -or $c.Bottom -ge $o.ClientSize.Height - $m))
 }
 function Tour-Walk([string]$label) {   # Next through every step; returns the ids seen and checks each card
     $ids = New-Object System.Collections.Generic.List[string]
@@ -129,15 +145,25 @@ Check 'header subtitle is the "sharing is optional" one (forced configured)' ($l
 Check 'script of the window matches the language (Arabic only in Arabic mode)' ((($form.Text + $lblTitle.Text + $lblSub.Text + $btnScan.Text + $lblStatus.Text + $info.Title + $info.Message) -match $arabic) -eq ($flow -eq 'ar'))
 
 Log2 '== guided tour (first use, before any scan)'
-Check 'first use: the "take a tour" banner is shown (no report yet)' ($tourBar.Visible -and $tourBar.Title -eq (Get-Text 'tour.banner.t'))
+$offer = $script:TourOfferUi
+Check 'first use: the "Ready to scan" bar itself offers the tour (one bar, with a Start the tour button and a close button)' ($offer.On -and $offer.Go.Visible -and $offer.Close.Visible -and $offer.Go.Parent -eq $info -and $info.Title -eq (Get-Text 'gui.info.ready.t') -and $info.Message.Contains((Get-Text 'tour.offer.m')))
+Check 'the offer text keeps clear of its buttons' ($info.ReserveEnd -ge ($offer.Go.Width + $offer.Close.Width) -and $offer.Go.Bounds.IntersectsWith($offer.Close.Bounds) -eq $false -and (New-Object System.Drawing.Rectangle(0, 0, $info.Width, $info.Height)).Contains($offer.Go.Bounds))
 Check 'the header has the tour button, named in the window language' ($btnTour.Visible -and $btnTour.Enabled -and $btnTour.Text -eq (Get-Text 'tour.btn'))
-$before = Tour-Snapshot
+$before = Tour-Snapshot -NoReadyText
 $btnScan.Focus() | Out-Null; Pump 100
-$tourBar.Tag.Go.PerformClick(); Pump 400
+$front = In-Front
+$offer.Go.PerformClick(); Pump 400
 $o = Tour-Overlay
-Check 'the banner button opens the tour (overlay shown) and the banner goes away' ($o -and $o.Visible -and -not $tourBar.Visible -and [System.Windows.Forms.Application]::OpenForms.Count -eq 2)
+Check 'the offer button opens the tour (overlay shown); the offer goes away and the bar says only "Ready to scan" again' ($o -and $o.Visible -and -not $offer.On -and -not $offer.Go.Visible -and $info.Message -eq (Get-Text 'gui.info.ready.m').Replace("`n", "`r`n") -and [System.Windows.Forms.Application]::OpenForms.Count -eq 2)
 Check 'the overlay lies exactly over the window content' ($o -and $o.Bounds -eq [Fluent.Win]::ScreenRect($page.Handle))
-Check 'the overlay never takes the focus (the window stays active)' ($o -and -not $o.ContainsFocus -and [System.Windows.Forms.Form]::ActiveForm -ne $o)
+if ($front) { Check 'the tour card has the keyboard focus while the tour is open (Tab and screen readers reach it)' ($o -and [TourT.U]::GetActiveWindow() -eq $o.Handle -and $o.FocusedButton -eq 'Next') }
+else { Log2 'NOTE  keyboard-focus check skipped: another program was in front' }
+$u = Run-Probe $o.Handle (Get-Text 'tour.next')
+$uButtons = @($u | Where-Object { $_ -match '^Button\|' })
+Check "screen readers see the card: its counter, title and text, and Back / Next / Skip as buttons they can press ($($u -join ' ; '))" ((@($u | Where-Object { $_ -like ('Text|' + (Get-Text 'tour.count' 1 11) + '|*') }).Count -eq 1) -and (@($u | Where-Object { $_ -like ('Text|' + (Get-Text 'tour.welcome.t') + '|*') }).Count -ge 1) -and (@($uButtons | Where-Object { $_ -like ('Button|' + (Get-Text 'tour.next') + '|True|True|*') }).Count -eq 1) -and (@($uButtons | Where-Object { $_ -like ('Button|' + (Get-Text 'tour.skip') + '|True|True|*') }).Count -eq 1))
+Check 'pressing Next through UI Automation goes to the next step' (($u[-1] -eq ('INVOKED ' + (Get-Text 'tour.next'))) -and $script:Tour.Index -eq 1)
+Check 'each step is announced to screen readers' ($o.Spoken -like ((Get-Text 'tour.count' 2 11) + '*') -and $o.Spoken.Contains((Get-Text 'tour.scan.t')))
+Show-TourStep 0; Pump 200
 $ids = Tour-Walk 'first walk'
 Check "the tour covers every part of the window ($($ids -join ','))" (($ids -join ',') -eq 'welcome,scan,progress,verdict,actions,findings,quarantine,more,details,language,help')
 $script:Tour.Overlay.PerformBack(); Pump 200; $script:Tour.Overlay.PerformBack(); Pump 200; $script:Tour.Overlay.PerformBack(); Pump 200
@@ -156,21 +182,29 @@ Send-Key $btnScan 0x0D
 Check 'Enter goes on' ($script:Tour.Index -eq 2)
 Send-Key $btnScan 0x20
 Check 'Space goes on and does NOT press the focused "Start scan" button' ($script:Tour.Index -eq 3 -and $null -eq $script:proc -and $btnScan.Text -eq (Get-Text 'gui.btn.scan'))
+Send-Key $btnScan 0x09
+Check 'Tab moves the keyboard focus on the card (Next -> Skip, it wraps in reading order)' ($o.FocusedButton -eq 'Skip')
+Send-Key $btnScan 0x09
+Check 'Tab again -> Back' ($o.FocusedButton -eq 'Back')
+Send-Key $btnScan 0x0D
+Check 'Enter presses the focused button (Back), and the focus stays on it for the next press' ($script:Tour.Index -eq 2 -and $o.FocusedButton -eq 'Back')
 $sz = $form.ClientSize
 $form.ClientSize = New-Object System.Drawing.Size(($sz.Width - 40), ($sz.Height - 60)); Pump 500
 Check 'the overlay follows when the window is resized' ($o.Bounds -eq [Fluent.Win]::ScreenRect($page.Handle) -and (Tour-CardOk))
 $form.ClientSize = $sz; Pump 400
 Send-Key $btnScan 0x1B
 Check 'Esc leaves the tour (overlay closed and disposed, nothing left open)' ($null -eq $script:Tour -and $o.IsDisposed -and [System.Windows.Forms.Application]::OpenForms.Count -eq 1)
-$after = Tour-Snapshot
-Check "the window is exactly as before the tour ($(Tour-Diff $before $after))" ($before -eq $after)
+$after = Tour-Snapshot -NoReadyText
+Check "the window is exactly as before the tour, apart from the offer it answered ($(Tour-Diff $before $after))" ($before -eq $after)
+if ($front) { Check 'the keyboard focus is back in the window' ([TourT.U]::GetActiveWindow() -eq $form.Handle) }
 Check 'no scan was started and nothing was written' ($null -eq $script:proc -and -not (Test-Path (Join-Path $ReportsDir 'Plan-*.json')))
 $btnTour.PerformClick(); Pump 400
 Check 'the header button opens the tour again' ($null -ne $script:Tour -and (Tour-Overlay).Visible)
 $null = Tour-Walk 'second walk'
 (Tour-Overlay).PerformNext(); Pump 300
 Check 'Done on the last step closes the tour' ($null -eq $script:Tour -and [System.Windows.Forms.Application]::OpenForms.Count -eq 1)
-Check 'the window is still unchanged after a full walk' ((Tour-Snapshot) -eq $after)
+Check 'the window is still unchanged after a full walk' ((Tour-Snapshot -NoReadyText) -eq $after)
+Check 'the offer does not come back once the tour was taken' (-not $offer.On -and -not $offer.Go.Visible)
 Check "the tour never stopped by itself after an error ('$script:TourLastError')" (-not $script:TourLastError)
 
 Log2 '== scan #1'
@@ -194,7 +228,10 @@ Check 'the report has no unresolved string key or placeholder' ($htmlText -notma
 Check 'the verdict bar shows the plan headline' ($info.Title -eq [string]$planObj.verdict.Headline)
 
 Log2 '== guided tour (with results)'
-Check 'the "take a tour" banner stays away once a report exists' (-not $tourBar.Visible)
+Check 'no tour offer once a report exists' (-not $offer.On -and -not $offer.Go.Visible)
+$u = Run-Probe $form.Handle
+Check "screen readers see the window's controls with their names and roles ($((@($u | Where-Object { $_ -notmatch '^(Pane|Type)' }) | Select-Object -First 30) -join ' ; '))" ((@($u | Where-Object { $_ -like ('Button|' + (Get-Text 'gui.btn.scan') + '|True|True|*') }).Count -eq 1) -and (@($u | Where-Object { $_ -like ('ProgressBar|' + (Get-Text 'gui.a11y.progress') + '|*') }).Count -eq 1) -and (@($u | Where-Object { $_ -like ('Button|' + (Get-Text 'gui.more.t') + '|True|True|*') }).Count -eq 1) -and (@($u | Where-Object { $_ -like ('Image|' + (Get-Text 'gui.title') + '|*') }).Count -eq 1))
+Check 'the files in the list are check boxes a screen reader can tick, named after the file and its risk' (@($u | Where-Object { $_ -like ('CheckBox|' + $hog + '.exe, ' + (Get-Text 'level.high') + '*') }).Count -eq 1)
 $before = Tour-Snapshot
 $btnTour.PerformClick(); Pump 400
 $o = Tour-Overlay
@@ -313,7 +350,7 @@ Check ('no ramdoctor-* temp files left (found ' + $left.Count + ')') ($left.Coun
 Log2 'DONE'
 $form.Close()
 '@
-        $inner = $inner.Replace('%RESULT%', $result).Replace('%HOG%', $hog).Replace('%HOGEXE%', $hogExe).Replace('%RUNKEY%', $runKey).Replace('%RUNNAME%', $runName).Replace('%WORK%', $work).Replace('%LANG%', $flowLang)
+        $inner = $inner.Replace('%RESULT%', $result).Replace('%HOG%', $hog).Replace('%HOGEXE%', $hogExe).Replace('%RUNKEY%', $runKey).Replace('%RUNNAME%', $runName).Replace('%WORK%', $work).Replace('%PROBE%', (Join-Path $PSScriptRoot 'Uia-Probe.ps1')).Replace('%LANG%', $flowLang)
         $testScript = Join-Path $work 'inner.test.ps1'
         [IO.File]::WriteAllText($testScript, $inner, $utf8)
 

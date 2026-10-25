@@ -15,7 +15,7 @@
 if (-not (Get-Command Get-Text -CommandType Function -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Strings.ps1') }
 if (-not (Get-Command Read-JsonSafe -CommandType Function -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Store.ps1') }   # crash-safe profile file
 
-$script:ShareToolVersion = '1.1.0'
+$script:ShareToolVersion = '1.1.1'
 $script:ShareReservedUserNames = @('public', 'default', 'default user', 'all users', 'defaultuser0', 'desktop.ini')
 # account names that are ordinary words: a whole-word search for them would damage the prose, so only the
 # C:\Users\<name> form is masked for these.
