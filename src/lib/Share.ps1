@@ -13,6 +13,7 @@
 # Windows PowerShell 5.1. Keep this file UTF-8 with BOM (the user-facing texts, Arabic and English, live in lib\Strings.ps1).
 
 if (-not (Get-Command Get-Text -CommandType Function -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Strings.ps1') }
+if (-not (Get-Command Read-JsonSafe -CommandType Function -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Store.ps1') }   # crash-safe profile file
 
 $script:ShareToolVersion = '1.0.1'
 $script:ShareReservedUserNames = @('public', 'default', 'default user', 'all users', 'defaultuser0', 'desktop.ini')
@@ -99,17 +100,29 @@ function Test-ShareInviteCode {
 # ---------------------------------------------------------------- profile (%APPDATA%\RAM-Doctor\profile.json)
 function Get-ShareDefaultProfileDir { Join-Path $env:APPDATA 'RAM-Doctor' }
 
-function Get-ShareProfile {
+# The profile file is written crash-safe (profile.json.tmp + rename, previous version profile.json.bak) and read with
+# Read-JsonSafe: Status Ok | Recovered (the .bak was used) | Missing | Damaged (set aside as profile.json.damaged-<stamp>,
+# never deleted) | TooNew. A damaged profile is NOT the same as no profile: the window says so, and a new profile keeps
+# the old userId when it can be read from the damaged copy, so the helper still sees one person.
+function Get-ShareProfileState {
     [CmdletBinding()]
     param([string]$ProfileDir)
     if (-not $ProfileDir) { $ProfileDir = Get-ShareDefaultProfileDir }
-    $p = Join-Path $ProfileDir 'profile.json'
-    if (-not (Test-Path -LiteralPath $p)) { return $null }
-    try {
-        $j = Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
-        if (-not $j.displayName -or -not $j.userId) { return $null }
-        return [pscustomobject]@{ displayName = [string]$j.displayName; userId = [string]$j.userId; createdAt = [string]$j.createdAt; codeProtected = [string]$j.code }
-    } catch { return $null }
+    $r = Read-JsonSafe -Path (Join-Path $ProfileDir 'profile.json') -MaxSchema 1 -Validate {
+        param($j) ([string]$j.displayName).Trim().Length -ge 1 -and ([string]$j.userId) -match '^[0-9a-f]{8}$'
+    }
+    $prof = $null
+    if ($r.Status -eq 'Ok' -or $r.Status -eq 'Recovered') {
+        $j = $r.Data
+        $prof = [pscustomobject]@{ displayName = [string]$j.displayName; userId = [string]$j.userId; createdAt = [string]$j.createdAt; codeProtected = [string]$j.code }
+    }
+    return [pscustomobject]@{ Status = $r.Status; Profile = $prof; Message = $r.Message; DamagedFiles = @($r.DamagedFiles) }
+}
+
+function Get-ShareProfile {
+    [CmdletBinding()]
+    param([string]$ProfileDir)
+    return (Get-ShareProfileState -ProfileDir $ProfileDir).Profile
 }
 
 # Decrypts the invite code (DPAPI, current Windows user only). Returns $null if it cannot be read.
@@ -142,13 +155,20 @@ function Save-ShareProfile {
     if (-not $v.Ok) { return [pscustomobject]@{ Ok = $false; Error = $v.Error; Profile = $null } }
     # the invite code is OPTIONAL (only needed if the helper's relay enforces one)
     if ($Code -and -not (Test-ShareInviteCode $Code)) { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'code-invalid'); Profile = $null } }
-    $existing = Get-ShareProfile -ProfileDir $ProfileDir
+    $state = Get-ShareProfileState -ProfileDir $ProfileDir
+    # written by a newer version, or held by another program right now (its content is unknown): never overwritten
+    if ($state.Status -eq 'TooNew' -or $state.Status -eq 'Unreadable') { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'profile-write'); Profile = $null } }
+    $existing = $state.Profile
     $userId = $null; $created = $null; $prot = ''
     if ($existing) {
         if ($existing.displayName -ne $v.Name) { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'name-fixed'); Profile = $existing } }
         $userId = $existing.userId; $created = $existing.createdAt; $prot = $existing.codeProtected   # saving again without a code keeps the stored one
     } else {
-        $userId = New-ShareUserId
+        # a damaged profile that was set aside still carries the userId most of the time: keep it
+        foreach ($f in @($state.DamagedFiles)) {
+            try { $m = [regex]::Match([IO.File]::ReadAllText($f), '"userId"\s*:\s*"([0-9a-f]{8})"'); if ($m.Success) { $userId = $m.Groups[1].Value; break } } catch { }
+        }
+        if (-not $userId) { $userId = New-ShareUserId }
         $created = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
     }
     try {
@@ -158,7 +178,7 @@ function Save-ShareProfile {
         }
         New-Item -ItemType Directory -Force -Path $ProfileDir | Out-Null
         $obj = [ordered]@{ v = 1; displayName = $v.Name; userId = $userId; createdAt = $created; code = $prot }
-        [IO.File]::WriteAllText((Join-Path $ProfileDir 'profile.json'), ($obj | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($true)))
+        Write-JsonAtomic -Path (Join-Path $ProfileDir 'profile.json') -Object $obj -Schema 1
     } catch { return [pscustomobject]@{ Ok = $false; Error = (Get-ShareMessage 'profile-write'); Profile = $null } }
     return [pscustomobject]@{ Ok = $true; Error = ''; Profile = (Get-ShareProfile -ProfileDir $ProfileDir) }
 }
@@ -167,8 +187,10 @@ function Remove-ShareProfile {
     [CmdletBinding()]
     param([string]$ProfileDir)
     if (-not $ProfileDir) { $ProfileDir = Get-ShareDefaultProfileDir }
-    $p = Join-Path $ProfileDir 'profile.json'
-    if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+    # the user asked for their profile to go: the current file, its backup and any damaged copies set aside earlier
+    foreach ($f in @(Get-ChildItem -LiteralPath $ProfileDir -Filter 'profile.json*' -File -Force -ErrorAction SilentlyContinue)) {
+        if ($f.Name -match '^profile\.json(\.bak|\.tmp|(\.bak)?\.damaged-[\d-]+)?$') { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 # ---------------------------------------------------------------- redaction
@@ -545,14 +567,20 @@ function New-ShareShortSummary {
 }
 
 # ---------------------------------------------------------------- upload (protocol v1)
+# A new random id for one upload (relay field "requestId"): it is sent unchanged on every retry of that upload, so the
+# relay stores the report once even when an answer is lost and the client asks again.
+function New-ShareRequestId { return [guid]::NewGuid().ToString() }
+
 function New-ShareRequestJson {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', '', Justification = 'A parameter named Profile only shadows the profile-path variable inside this function.')]
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Profile, [string]$Code = '', [Parameter(Mandatory)]$Bundle, [string]$Version = $script:ShareToolVersion)
+    param([Parameter(Mandatory)]$Profile, [string]$Code = '', [Parameter(Mandatory)]$Bundle, [string]$Version = $script:ShareToolVersion, [string]$RequestId = '')
+    if (-not $RequestId) { $RequestId = New-ShareRequestId }
     $files = @()
     foreach ($f in $Bundle.Files) { $files += [ordered]@{ name = $f.name; content = $f.content } }
     $body = [ordered]@{ v = 1; displayName = $Profile.displayName; userId = $Profile.userId }
     if ($Code) { $body['code'] = $Code }   # "code" is only sent when one is stored
+    $body['requestId'] = $RequestId
     $body['tool'] = [ordered]@{ name = 'RAM-Doctor'; version = $Version }
     $body['createdAt'] = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
     $body['host'] = $Bundle.Host
@@ -560,11 +588,12 @@ function New-ShareRequestJson {
     return ($body | ConvertTo-Json -Depth 6 -Compress)
 }
 
-# One HTTP exchange. Returns Status (0 = network failure) and the response text.
+# One HTTP exchange. Returns Status (0 = network failure), the response text and Retry-After (seconds, 0 = none).
 function Send-ShareRequest {
     param([Parameter(Mandatory)][string]$Uri, [string]$Method = 'POST', [string]$Json, [int]$TimeoutSec = 30)
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
-    $res = [pscustomobject]@{ Status = 0; Text = ''; Network = $true; Error = '' }
+    $res = [pscustomobject]@{ Status = 0; Text = ''; Network = $true; Error = ''; RetryAfter = 0 }
+    $readRetryAfter = { param($r) $n = 0; try { if ([int]::TryParse([string]$r.Headers['Retry-After'], [ref]$n) -and $n -gt 0) { $res.RetryAfter = $n } } catch { } }
     try {
         $req = [Net.HttpWebRequest]::Create($Uri)
         $req.Method = $Method
@@ -585,12 +614,14 @@ function Send-ShareRequest {
             $sr = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
             $res.Text = $sr.ReadToEnd(); $sr.Close()
             $res.Status = [int]$resp.StatusCode; $res.Network = $false
+            & $readRetryAfter $resp
         } finally { $resp.Close() }
     } catch [System.Net.WebException] {
         $we = $_.Exception
         if ($we.Response) {
             try {
                 $res.Status = [int]([Net.HttpWebResponse]$we.Response).StatusCode; $res.Network = $false
+                & $readRetryAfter $we.Response
                 $sr = New-Object IO.StreamReader($we.Response.GetResponseStream(), [Text.Encoding]::UTF8)
                 $res.Text = $sr.ReadToEnd(); $sr.Close()
             } catch { }
@@ -600,42 +631,61 @@ function Send-ShareRequest {
     return $res
 }
 
-# Posts the report. Retries only network failures and 5xx (never 4xx). Never logs the request body.
+# Posts the report. Retries network failures and 5xx (never other 4xx) with the SAME body, so the same requestId: a relay
+# that already stored the report answers the retry with the first result ("replayed") instead of storing it twice.
+#   409 in_progress   the first attempt is still being stored: wait Retry-After (at most -MaxWaitSeconds) and ask again
+#   400 unknown_field a relay older than the requestId field: the same body without requestId is sent once
+# Never logs the request body.
 function Send-ShareReport {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Endpoint,
         [Parameter(Mandatory)][string]$Json,
         [switch]$CodeSent,
+        [switch]$CodeUnreadable,      # a stored invite code exists but could not be decrypted (DPAPI) on this account
         [int]$MaxAttempts = 3,
         [double]$BackoffSeconds = 2,
-        [int]$TimeoutSec = 30
+        [int]$TimeoutSec = 30,
+        [int]$MaxWaitSeconds = 15,
+        [int]$MaxInProgressWaits = 4
     )
     $uri = $Endpoint.TrimEnd('/') + '/v1/reports'
-    $last = $null
-    for ($a = 1; $a -le $MaxAttempts; $a++) {
+    $last = $null; $a = 0; $waits = 0; $legacyTried = $false
+    while ($true) {
+        $a++
         $r = Send-ShareRequest -Uri $uri -Method POST -Json $Json -TimeoutSec $TimeoutSec
         $last = $r
         if (-not $r.Network -and $r.Status -ge 200 -and $r.Status -lt 300) {
             $j = $null; try { $j = $r.Text | ConvertFrom-Json } catch { }
             if ($j -and $j.ok) {
                 $u = if ($j.url) { [string]$j.url } else { [string]$j.folder }
-                return [pscustomobject]@{ Ok = $true; Code = 'ok'; Message = ''; Url = $u; Folder = [string]$j.folder; Attempts = $a }
+                return [pscustomobject]@{ Ok = $true; Code = 'ok'; Message = ''; Url = $u; Folder = [string]$j.folder; Attempts = $a; Replayed = [bool]($j.PSObject.Properties['replayed'] -and $j.replayed) }
             }
-            return [pscustomobject]@{ Ok = $false; Code = 'bad-response'; Message = (Get-ShareMessage 'bad-response'); Url = ''; Folder = ''; Attempts = $a }
+            return [pscustomobject]@{ Ok = $false; Code = 'bad-response'; Message = (Get-ShareMessage 'bad-response'); Url = ''; Folder = ''; Attempts = $a; Replayed = $false }
+        }
+        if (-not $r.Network -and $r.Status -eq 409 -and $waits -lt $MaxInProgressWaits) {
+            $waits++; $a--
+            $sec = [Math]::Min([Math]::Max(1, $r.RetryAfter), $MaxWaitSeconds)
+            if ($sec -gt 0) { Start-Sleep -Seconds $sec }
+            continue
+        }
+        if (-not $r.Network -and $r.Status -eq 400 -and -not $legacyTried) {
+            $field = ''; try { $field = [string](($r.Text | ConvertFrom-Json).field) } catch { }
+            $m = [regex]::Match($Json, ',"requestId":"[A-Za-z0-9-]{16,64}"')
+            if ($field -eq 'unknown_field' -and $m.Success) { $legacyTried = $true; $a--; $Json = $Json.Remove($m.Index, $m.Length); continue }
         }
         $retry = ($r.Network -or $r.Status -ge 500)
-        if (-not $retry -or $a -eq $MaxAttempts) { break }
+        if (-not $retry -or $a -ge $MaxAttempts) { break }
         if ($BackoffSeconds -gt 0) { Start-Sleep -Milliseconds ([int](1000 * $BackoffSeconds * $a)) }
     }
-    if ($last.Network) { return [pscustomobject]@{ Ok = $false; Code = 'offline'; Message = (Get-ShareMessage 'offline'); Url = ''; Folder = ''; Attempts = $MaxAttempts } }
+    if ($last.Network) { return [pscustomobject]@{ Ok = $false; Code = 'offline'; Message = (Get-ShareMessage 'offline'); Url = ''; Folder = ''; Attempts = $a; Replayed = $false } }
     $code = [string]$last.Status
-    $key = if ($last.Status -ge 500) { '5xx' } elseif ($last.Status -eq 401 -and -not $CodeSent) { '401-nocode' } else { $code }
+    if ($last.Status -eq 409) { return [pscustomobject]@{ Ok = $false; Code = '409'; Message = (Get-Text 'store.share.inprogress'); Url = ''; Folder = ''; Attempts = $a; Replayed = $false } }
+    $key = if ($last.Status -ge 500) { '5xx' } elseif ($last.Status -eq 401 -and $CodeUnreadable) { 'code-unreadable' } elseif ($last.Status -eq 401 -and -not $CodeSent) { '401-nocode' } else { $code }
     $msg = Get-ShareMessage $key
     if ($msg -eq $key) { $msg = Get-ShareMessage '400' }
-    return [pscustomobject]@{ Ok = $false; Code = $code; Message = $msg; Url = ''; Folder = ''; Attempts = $a }
+    return [pscustomobject]@{ Ok = $false; Code = $code; Message = $msg; Url = ''; Folder = ''; Attempts = $a; Replayed = $false }
 }
-
 function Test-ShareHealth {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Endpoint, [int]$TimeoutSec = 10)

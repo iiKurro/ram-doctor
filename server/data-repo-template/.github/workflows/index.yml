@@ -34,7 +34,8 @@ jobs:
           if (Test-Path reports) {
             foreach ($u in (Get-ChildItem reports -Directory | Sort-Object Name)) {
               if ($u.Name -notmatch '^[a-z0-9]+(-[a-z0-9]+)*-[0-9a-f]{8}$') { continue }   # ignore anything unexpected
-              $uploads = @(Get-ChildItem $u.FullName -Directory | Where-Object { $_.Name -match '^\d{8}-\d{6}$' } | Sort-Object Name -Descending)
+              # upload folders: yyyyMMdd-HHmmss-<6 random chars> (relays before the requestId change wrote yyyyMMdd-HHmmss)
+              $uploads = @(Get-ChildItem $u.FullName -Directory | Where-Object { $_.Name -match '^\d{8}-\d{6}(-[a-z0-9]{6})?$' } | Sort-Object Name -Descending)
               if ($uploads.Count -eq 0) { continue }
               $people++
               $total += $uploads.Count
@@ -48,7 +49,7 @@ jobs:
                   if ($m.displayName -is [string] -and $m.displayName -match '^[\p{L}\p{Mn}\p{Nd} _-]{2,24}$') { $display = $m.displayName }
                 } catch { }
               }
-              $when = ($latest.Name -replace '^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$', '$1-$2-$3 $4:$5:$6') + ' UTC'
+              $when = ($latest.Name -replace '^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(-[a-z0-9]{6})?$', '$1-$2-$3 $4:$5:$6') + ' UTC'
               $rel = "reports/$($u.Name)/$($latest.Name)"
               $rows.Add("| $display | ``$($u.Name.Substring($u.Name.Length - 8))`` | $($uploads.Count) | [$when]($rel/summary.md) |")
             }

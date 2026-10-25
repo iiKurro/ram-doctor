@@ -1,4 +1,4 @@
-#requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.5.0' }
+﻿#requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.5.0' }
 # The one string table (src\lib\Strings.ps1): Arabic and English must stay in step, and nothing user-facing may live anywhere else.
 # ASCII only (Arabic is matched by code point).
 
@@ -75,7 +75,7 @@ Describe 'String table: it is the only place with user-facing text' {
         $used = New-Object System.Collections.Generic.HashSet[string]
         foreach ($f in $script:SrcFiles) {
             $text = [IO.File]::ReadAllText($f.FullName)
-            foreach ($m in [regex]::Matches($text, "'((?:sig|obs|verdict|tag|anom|trust|level|rpt|gui|share|sum|sep|tour)\.[A-Za-z0-9.\-]*)'")) { [void]$used.Add($m.Groups[1].Value) }
+            foreach ($m in [regex]::Matches($text, "'((?:sig|obs|verdict|tag|anom|trust|level|rpt|gui|share|sum|sep|tour|store|restore)\.[A-Za-z0-9.\-]*)'")) { [void]$used.Add($m.Groups[1].Value) }
         }
         $used.Count | Should -BeGreaterThan 100
         # a trailing dot marks a prefix that the code completes at run time; 'share.config.json' is a file name, not a key

@@ -7,9 +7,9 @@ BeforeAll {
     . (Join-Path $PSScriptRoot 'Fixtures.ps1')
     $script:ToolVersion = (Get-Content -LiteralPath (Join-Path $script:Repo 'build\VERSION') -Raw).Trim()
 
-    
 
-    
+
+
 }
 
 Describe 'Username validation' -Tag 'Unit' {
@@ -415,5 +415,52 @@ Describe 'Request body' -Tag 'Unit' {
         @($o.files | ForEach-Object { $_.name }) | Should -Be @('summary.md', 'report.html', 'plan.json')
         $o2 = (New-ShareRequestJson -Profile ([pscustomobject]@{ displayName = 'Friend'; userId = 'a1b2c3d4' }) -Code 'inv-123456' -Bundle $b) | ConvertFrom-Json
         $o2.code | Should -Be 'inv-123456'
+    }
+    It 'carries a requestId (the relay format: 16-64 of A-Z a-z 0-9 -), new for every upload, or the one given' {
+        $d = Join-Path $TestDrive 'reqid'; New-Item -ItemType Directory -Force -Path $d | Out-Null
+        $f = New-TestPlanFiles -Dir $d
+        $p = [pscustomobject]@{ displayName = 'Friend'; userId = 'a1b2c3d4' }
+        $b = New-ShareBundle -PlanPath $f.Plan -Profile $p
+        $a = (New-ShareRequestJson -Profile $p -Bundle $b) | ConvertFrom-Json
+        $a.requestId | Should -Match '^[A-Za-z0-9-]{16,64}$'
+        ((New-ShareRequestJson -Profile $p -Bundle $b) | ConvertFrom-Json).requestId | Should -Not -Be $a.requestId
+        ((New-ShareRequestJson -Profile $p -Bundle $b -RequestId 'fixed-0123456789abcdef') | ConvertFrom-Json).requestId | Should -Be 'fixed-0123456789abcdef'
+        $a.PSObject.Properties.Name | Should -Be @('v', 'displayName', 'userId', 'requestId', 'tool', 'createdAt', 'host', 'files')
+    }
+}
+
+Describe 'Profile file: crash-safe and damage-aware (M4)' -Tag 'Unit' {
+    BeforeEach { $script:pd2 = Join-Path $TestDrive ('pd-' + [guid]::NewGuid().ToString('N')) }
+    It 'is written with a schema field and its previous version is kept as profile.json.bak' {
+        [void](Save-ShareProfile -Username 'Friend' -ProfileDir $pd2)
+        [void](Save-ShareProfile -Username 'Friend' -Code 'code-1234' -ProfileDir $pd2)
+        (Get-Content (Join-Path $pd2 'profile.json') -Raw -Encoding UTF8 | ConvertFrom-Json).schema | Should -Be 1
+        Test-Path (Join-Path $pd2 'profile.json.bak') | Should -BeTrue
+    }
+    It 'reads a 1.0.x profile (no schema field)' {
+        New-Item -ItemType Directory -Force -Path $pd2 | Out-Null
+        [IO.File]::WriteAllText((Join-Path $pd2 'profile.json'), '{ "v": 1, "displayName": "Friend", "userId": "0a1b2c3d", "createdAt": "2026-10-01T10:00:00Z", "code": "" }', (New-Object Text.UTF8Encoding($true)))
+        (Get-ShareProfile -ProfileDir $pd2).userId | Should -Be '0a1b2c3d'
+        (Get-ShareProfileState -ProfileDir $pd2).Status | Should -Be 'Ok'
+    }
+    It 'a damaged profile is reported as Damaged (not as "no profile"), and a new one keeps the old userId' {
+        New-Item -ItemType Directory -Force -Path $pd2 | Out-Null
+        [IO.File]::WriteAllText((Join-Path $pd2 'profile.json'), '{ "v": 1, "displayName": "Friend", "userId": "0a1b2c3d", "crea', (New-Object Text.UTF8Encoding($true)))
+        $st = Get-ShareProfileState -ProfileDir $pd2
+        $st.Status | Should -Be 'Damaged'
+        $st.Profile | Should -BeNullOrEmpty
+        (Get-ShareProfileState -ProfileDir $pd2).Status | Should -Be 'Damaged' -Because 'it stays damaged until a new profile is saved'
+        $r = Save-ShareProfile -Username 'Friend' -ProfileDir $pd2
+        $r.Ok | Should -BeTrue
+        $r.Profile.userId | Should -Be '0a1b2c3d'
+        (Get-ShareProfileState -ProfileDir $pd2).Status | Should -Be 'Ok'
+    }
+    It 'delete removes the profile, its backup and the damaged copies (the user asked for their data to go)' {
+        [void](Save-ShareProfile -Username 'Friend' -ProfileDir $pd2)
+        [void](Save-ShareProfile -Username 'Friend' -ProfileDir $pd2)
+        [IO.File]::WriteAllText((Join-Path $pd2 'profile.json.damaged-20261025-101500'), 'x')
+        [IO.File]::WriteAllText((Join-Path $pd2 'other.txt'), 'not ours')
+        Remove-ShareProfile -ProfileDir $pd2
+        @(Get-ChildItem $pd2 -File | ForEach-Object Name) | Should -Be @('other.txt')
     }
 }

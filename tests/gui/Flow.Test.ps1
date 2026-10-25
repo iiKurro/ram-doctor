@@ -221,7 +221,7 @@ Check 'clipboard has text' ($clip.Length -gt 20)
 Check 'clipboard summary is in the window language' ($clip -match [regex]::Escape((Get-Text 'sum.title')))
 Check 'clipboard text has no Windows user name' (-not ($clip -match [regex]::Escape($env:USERNAME)))
 Check 'clipboard text has no drive path' (-not ($clip -match '[A-Za-z]:\\'))
-Check 'share preview temp folder removed' (-not (Test-Path (Join-Path $env:TEMP 'RAM-Doctor-share-preview')))
+Check 'share preview temp folders removed' (@(Get-ChildItem $env:TEMP -Directory -Filter 'RAM-Doctor-share-*' -Force -ErrorAction SilentlyContinue).Count -eq 0)
 
 Log2 '== live language switch (no restart, nothing saved)'
 $other = $(if ($flow -eq 'ar') { 'en' } else { 'ar' })
@@ -292,7 +292,7 @@ Check 'share toast is Success' ($toast.Visible -and $toast.Level -eq 'Success')
 Check 'profile file written to the test profile dir' (@(Get-ChildItem (Join-Path $work 'profile') -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0)
 $del = Invoke-Cli (Share-Args 'DeleteProfile') 30
 Check 'DeleteProfile OK' ($del.Output -match 'RESULT:\s*OK')
-Check 'share preview temp folder removed after sharing' (-not (Test-Path (Join-Path $env:TEMP 'RAM-Doctor-share-preview')))
+Check 'share preview temp folders removed after sharing' (@(Get-ChildItem $env:TEMP -Directory -Filter 'RAM-Doctor-share-*' -Force -ErrorAction SilentlyContinue).Count -eq 0)
 
 Log2 '== clear reports'
 Check 'reports exist before' (Test-Path $ReportsDir)

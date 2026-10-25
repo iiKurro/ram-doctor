@@ -15,8 +15,10 @@
 // Design rules
 //  * Fail closed, generic errors. Secrets and report contents are never echoed and never logged.
 //  * One credential only: a fine-grained PAT scoped to the single data repo (secret GITHUB_TOKEN).
-//  * Paths are built only from validated pieces (slug [a-z0-9-], hex userId, server timestamp, whitelisted file
-//    names) and asserted against a strict regex before every commit.
+//  * Paths are built only from validated pieces (slug [a-z0-9-], hex userId, server timestamp + random suffix,
+//    whitelisted file names) and asserted against a strict regex before every commit.
+//  * Retries are safe: a client may send a requestId; the same id again returns the first result (no second commit).
+//    The per-user quota is counted only after a successful commit.
 //  * Uploaded files are inspected: plan.json must be a bounded JSON object, summary.md is sanitised, report.html is
 //    accepted only if it looks like our generator's output AND is inert (no external loads, no active content).
 //  * Pure ES modules, no npm runtime dependencies. Runs on Cloudflare Workers and on Node >= 18 (tests).
@@ -33,6 +35,9 @@ export const ALLOWED_FILES = Object.freeze(['summary.md', 'report.html', 'plan.j
 export const LIMITS = Object.freeze({ perIpPerHour: 6, perIpPerDay: 20, perUserPerHour: 10, perUserPerDay: 20 });
 export const REPORT_MARKER = '<!-- ram-doctor-report';
 export const MAX_SCRIPT_BYTES = 3 * 1024;
+export const REQUEST_TTL_SECONDS = 24 * 3600; // how long a requestId is remembered (KV)
+export const PENDING_STALE_MS = 120 * 1000; // an unfinished upload older than this is checked against GitHub
+export const IN_PROGRESS_RETRY_SECONDS = 10;
 
 const MAX_PLAN_DEPTH = 10;
 const MAX_PLAN_NODES = 50000;
@@ -45,6 +50,7 @@ const BOT_NAME = 'ram-doctor-relay[bot]';
 const BOT_EMAIL = 'ram-doctor-relay@users.noreply.github.com';
 
 const RE_USER_ID = /^[0-9a-f]{8}$/;
+const RE_REQUEST_ID = /^[A-Za-z0-9-]{16,64}$/; // client-generated, e.g. a GUID; the same id is sent again on retries
 const RE_CODE = /^[\x21-\x7E]{1,128}$/; // printable ASCII, no spaces
 const RE_CONFIGURED_CODE = /^[\x21-\x7E]{6,128}$/;
 const RE_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+][0-9A-Za-z.-]{1,32})?$/;
@@ -56,9 +62,12 @@ const RE_LABEL = /^[\p{L}\p{Nd} _.-]{0,40}$/u;
 const RE_LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 // control chars, whitespace, zero-width / bidi marks and line separators that browsers strip inside URL schemes
 const RE_URL_JUNK = new RegExp('[\\u0000-\\u0020\\u007f-\\u009f\\u200b-\\u200f\\u2028\\u2029\\ufeff]', 'g');
-// Final safety net: every path we ever send to GitHub must match this.
+// Final safety net: every path we ever send to GitHub must match this. The upload folder is the server's UTC time plus
+// 6 random characters, so two uploads in the same second never share (and never replace) a folder.
+const RE_SAFE_FOLDER = /^reports\/[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{8}\/\d{8}-\d{6}-[a-z0-9]{6}$/;
 const RE_SAFE_PATH =
-  /^reports\/[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{8}\/\d{8}-\d{6}\/(?:summary\.md|report\.html|plan\.json|meta\.json)$/;
+  /^reports\/[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{8}\/\d{8}-\d{6}-[a-z0-9]{6}\/(?:summary\.md|report\.html|plan\.json|meta\.json)$/;
+const SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 // Display name: 2-24 code points; Arabic or Latin letters, combining marks, decimal digits, space, "_" and "-";
 // no leading/trailing space.
@@ -134,6 +143,15 @@ export function utcStamp(ms) {
   );
 }
 
+/** 6 random characters [a-z0-9]: the part of the folder name that keeps same-second uploads apart. */
+export function folderSuffix() {
+  const b = new Uint8Array(6);
+  crypto.getRandomValues(b);
+  let s = '';
+  for (let i = 0; i < b.length; i++) s += SUFFIX_ALPHABET[b[i] % SUFFIX_ALPHABET.length];
+  return s;
+}
+
 /** ASCII-safe slug (max 20 chars). Arabic-only (or otherwise non-Latin) names fall back to "user". */
 export function slugify(name) {
   const s = String(name)
@@ -171,11 +189,12 @@ function bad(field) {
 
 /**
  * Strict schema check for protocol v1. Returns { ok:true, value } or { ok:false, status, code, field }.
- * `field` is a fixed vocabulary word (never client data). `code` (invite code) is optional in the body.
+ * `field` is a fixed vocabulary word (never client data). `code` (invite code) and `requestId` (idempotency key, sent
+ * unchanged on every retry of one upload) are optional in the body.
  */
 export function validatePayload(o) {
   if (!isPlainObject(o)) return bad('body');
-  const allowed = ['v', 'displayName', 'userId', 'code', 'tool', 'createdAt', 'host', 'files'];
+  const allowed = ['v', 'displayName', 'userId', 'code', 'requestId', 'tool', 'createdAt', 'host', 'files'];
   for (const k of Object.keys(o)) if (allowed.indexOf(k) === -1) return bad('unknown_field');
 
   // Cheap length gates come first so no regex ever sees a huge attacker-controlled string.
@@ -184,6 +203,8 @@ export function validatePayload(o) {
   if (typeof o.userId !== 'string' || o.userId.length !== 8 || !RE_USER_ID.test(o.userId)) return bad('userId');
   // optional; '' is treated like "no code" (clients that have no code configured may send an empty string)
   if (o.code !== undefined && (typeof o.code !== 'string' || o.code.length > 128 || (o.code !== '' && !RE_CODE.test(o.code)))) return bad('code');
+  // optional (1.0.x clients do not send it); when present it must be well-formed
+  if (o.requestId !== undefined && (typeof o.requestId !== 'string' || o.requestId.length > 64 || !RE_REQUEST_ID.test(o.requestId))) return bad('requestId');
 
   if (!isPlainObject(o.tool)) return bad('tool');
   for (const k of Object.keys(o.tool)) if (k !== 'name' && k !== 'version') return bad('tool');
@@ -218,6 +239,7 @@ export function validatePayload(o) {
       displayName: o.displayName,
       userId: o.userId,
       code: typeof o.code === 'string' ? o.code : '',
+      requestId: typeof o.requestId === 'string' ? o.requestId : '',
       tool: { name: o.tool.name, version: o.tool.version },
       createdAt: o.createdAt,
       host: o.host,
@@ -673,28 +695,114 @@ export function authMode(env) {
  */
 export async function rateHit(kv, key, lim, nowMs) {
   if (!hasKv(kv)) return { ok: true, unbound: true };
-  const hb = Math.floor(nowMs / HOUR_MS);
-  const db = Math.floor(nowMs / DAY_MS);
   try {
-    let h = 0;
-    let d = 0;
-    const raw = await kv.get(key);
-    if (raw) {
-      try {
-        const o = JSON.parse(raw);
-        if (o && Array.isArray(o.h) && o.h[0] === hb) h = o.h[1] | 0;
-        if (o && Array.isArray(o.d) && o.d[0] === db) d = o.d[1] | 0;
-      } catch (_) {
-        /* corrupted value: start from zero */
-      }
-    }
-    if (d >= lim.day) return { ok: false, retryAfter: Math.max(1, Math.ceil(((db + 1) * DAY_MS - nowMs) / 1000)) };
-    if (h >= lim.hour) return { ok: false, retryAfter: Math.max(1, Math.ceil(((hb + 1) * HOUR_MS - nowMs) / 1000)) };
-    await kv.put(key, JSON.stringify({ h: [hb, h + 1], d: [db, d + 1] }), { expirationTtl: 90000 });
+    const w = await readWindows(kv, key, nowMs);
+    const blocked = overLimit(w, lim, nowMs);
+    if (blocked) return blocked;
+    await writeWindows(kv, key, w);
     return { ok: true };
   } catch (_) {
     log('rate_kv_error', {});
     return { ok: true, error: true };
+  }
+}
+
+/** Like rateHit, but only looks: nothing is counted (the per-user quota is counted after a successful commit). */
+export async function rateCheck(kv, key, lim, nowMs) {
+  if (!hasKv(kv)) return { ok: true, unbound: true };
+  try {
+    return overLimit(await readWindows(kv, key, nowMs), lim, nowMs) || { ok: true };
+  } catch (_) {
+    log('rate_kv_error', {});
+    return { ok: true, error: true };
+  }
+}
+
+/** Counts one event without checking the limit (it has already happened). Same result shapes as rateHit. */
+export async function rateCount(kv, key, nowMs) {
+  if (!hasKv(kv)) return { ok: true, unbound: true };
+  try {
+    await writeWindows(kv, key, await readWindows(kv, key, nowMs));
+    return { ok: true };
+  } catch (_) {
+    log('rate_kv_error', {});
+    return { ok: true, error: true };
+  }
+}
+
+/** Gives back one event counted by rateHit at `nowMs` (same hour/day windows only; never below zero). */
+export async function rateRefund(kv, key, nowMs) {
+  if (!hasKv(kv)) return { ok: true, unbound: true };
+  try {
+    const w = await readWindows(kv, key, nowMs);
+    if (w.h === 0 && w.d === 0) return { ok: true };
+    await kv.put(key, JSON.stringify({ h: [w.hb, Math.max(0, w.h - 1)], d: [w.db, Math.max(0, w.d - 1)] }), { expirationTtl: 90000 });
+    return { ok: true };
+  } catch (_) {
+    log('rate_kv_error', {});
+    return { ok: true, error: true };
+  }
+}
+
+async function readWindows(kv, key, nowMs) {
+  const w = { hb: Math.floor(nowMs / HOUR_MS), db: Math.floor(nowMs / DAY_MS), h: 0, d: 0 };
+  const raw = await kv.get(key);
+  if (raw) {
+    try {
+      const o = JSON.parse(raw);
+      if (o && Array.isArray(o.h) && o.h[0] === w.hb) w.h = o.h[1] | 0;
+      if (o && Array.isArray(o.d) && o.d[0] === w.db) w.d = o.d[1] | 0;
+    } catch (_) {
+      /* corrupted value: start from zero */
+    }
+  }
+  return w;
+}
+
+function overLimit(w, lim, nowMs) {
+  if (w.d >= lim.day) return { ok: false, retryAfter: Math.max(1, Math.ceil(((w.db + 1) * DAY_MS - nowMs) / 1000)) };
+  if (w.h >= lim.hour) return { ok: false, retryAfter: Math.max(1, Math.ceil(((w.hb + 1) * HOUR_MS - nowMs) / 1000)) };
+  return null;
+}
+
+async function writeWindows(kv, key, w) {
+  await kv.put(key, JSON.stringify({ h: [w.hb, w.h + 1], d: [w.db, w.d + 1] }), { expirationTtl: 90000 });
+}
+
+// ---------------------------------------------------------------------------------------------- idempotency (requestId)
+
+// One KV key per (userId, requestId): {"s":"pending"|"done","f":"<folder>","t":<ms>}. "pending" is written just before
+// the commit, "done" right after it. KV is eventually consistent between locations, so this is best effort; a retry
+// normally reaches the same location within seconds and sees the first attempt's state.
+function requestKey(userId, requestId) {
+  return 'rq:' + userId + ':' + requestId;
+}
+
+async function readRequest(kv, key) {
+  const raw = await kv.get(key);
+  if (!raw) return { state: 'none' };
+  let o = null;
+  try {
+    o = JSON.parse(raw);
+  } catch (_) {
+    return { state: 'none' };
+  }
+  if (!isPlainObject(o) || typeof o.f !== 'string' || !RE_SAFE_FOLDER.test(o.f) || !Number.isFinite(o.t)) return { state: 'none' };
+  if (o.s === 'done') return { state: 'done', folder: o.f, at: o.t };
+  if (o.s === 'pending') return { state: 'pending', folder: o.f, at: o.t };
+  return { state: 'none' };
+}
+
+async function writeRequest(kv, key, state, folder, nowMs) {
+  await kv.put(key, JSON.stringify({ s: state, f: folder, t: nowMs }), { expirationTtl: REQUEST_TTL_SECONDS });
+}
+
+/** Best-effort KV write/delete after the commit: failures are logged, never reported to the client. */
+async function quietly(fn) {
+  try {
+    await fn();
+  } catch (_) {
+    log('request_kv_error', {});
   }
 }
 
@@ -744,6 +852,8 @@ function ghClient(env, deps) {
   const token = cleanToken(env.GITHUB_TOKEN);
   return async function gh(method, path, body) {
     const doFetch = deps.fetch || globalThis.fetch;
+    // what the log may say about the call: no hashes, no report folder (it contains the user's slug and id)
+    const step = method + ' ' + path.replace(/[0-9a-f]{40}/g, '<sha>').replace(/^\/contents\/.*$/, '/contents/<folder>');
     let res;
     try {
       res = await doFetch('https://api.github.com/repos/' + owner + '/' + repo + path, {
@@ -758,15 +868,38 @@ function ghClient(env, deps) {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (_) {
-      throw new GitHubError(0);
+      throw new GitHubError(0, step);
     }
     if (!res.ok) {
       let detail = '';
       try { const j = await res.json(); detail = String((j && j.message) || '').slice(0, 160); } catch (_) { /* no JSON body */ }
-      throw new GitHubError(res.status, method + ' ' + path.replace(/[0-9a-f]{40}/g, '<sha>'), detail);
+      throw new GitHubError(res.status, step, detail);
     }
     return res.json();
   };
+}
+
+/**
+ * Was `folder` committed? Used only when an earlier attempt's outcome is unknown (its ref update got no answer, or it
+ * never finished). Reads one path the relay built itself; nothing is ever returned to the client.
+ */
+export async function folderExists(env, deps, folder) {
+  const path = folder + '/meta.json';
+  if (!RE_SAFE_PATH.test(path)) throw new HttpError(500, 'server_error');
+  const gh = ghClient(env, deps);
+  const branch = env.GITHUB_BRANCH || 'main';
+  try {
+    await gh('GET', '/contents/' + path.split('/').map(encodeURIComponent).join('/') + '?ref=' + encodeURIComponent(branch));
+    return true;
+  } catch (err) {
+    if (err instanceof GitHubError && err.status === 404) return false;
+    throw err;
+  }
+}
+
+/** The ref update failed without a clear "no" (network error or 5xx): it may have been applied anyway. */
+function maybeApplied(err) {
+  return err instanceof GitHubError && err.step.indexOf('PATCH ') === 0 && (err.status === 0 || err.status >= 500);
 }
 
 /**
@@ -858,13 +991,24 @@ async function postReport(request, env, deps, now) {
   const declared = parseInt(request.headers.get('content-length') || '', 10);
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new HttpError(413, 'too_large');
 
-  // Per-IP brake first (every POST counts, even invalid ones). The per-user limit is applied after the payload is
-  // validated so garbage cannot burn somebody else's quota by guessing a userId.
+  // Per-IP brake first: every POST reserves one slot BEFORE any work (so parallel requests count too, also invalid ones);
+  // a retry that is answered from an existing requestId record (a replay or 409 in_progress: no work, nothing stored)
+  // gets its slot back. The per-user limit is checked after the payload is validated and counted only after a successful
+  // commit, so neither garbage that guesses a userId nor a GitHub outage can burn somebody's quota.
   const ip = (request.headers.get('CF-Connecting-IP') || 'unknown').slice(0, 64);
-  const ipRate = await rateHit(env.RATE, 'ip:' + ip, { hour: LIMITS.perIpPerHour, day: LIMITS.perIpPerDay }, now);
+  const ipKey = 'ip:' + ip;
+  const ipRate = await rateHit(env.RATE, ipKey, { hour: LIMITS.perIpPerHour, day: LIMITS.perIpPerDay }, now);
   if (ipRate.error && openMode) throw new HttpError(503, 'unavailable');
   if (!ipRate.ok) throw new HttpError(429, 'rate_limited', { retryAfter: ipRate.retryAfter });
+  const attempt = { countIp: true };
+  try {
+    return await acceptReport(request, env, deps, now, mode, openMode, attempt);
+  } finally {
+    if (!attempt.countIp && ipRate.ok && !ipRate.unbound && !ipRate.error) await rateRefund(env.RATE, ipKey, now);
+  }
+}
 
+async function acceptReport(request, env, deps, now, mode, openMode, attempt) {
   const raw = await readLimited(request, MAX_BODY_BYTES);
 
   let parsed;
@@ -891,13 +1035,52 @@ async function postReport(request, env, deps, now) {
   }
   const files = insp.files;
 
-  const userRate = await rateHit(env.RATE, 'u:' + p.userId, { hour: LIMITS.perUserPerHour, day: LIMITS.perUserPerDay }, now);
+  const kv = hasKv(env.RATE) ? env.RATE : null;
+  const kvFailed = () => {
+    log('request_kv_error', {});
+    if (openMode) throw new HttpError(503, 'unavailable'); // open mode never runs without its KV safeguards
+  };
+
+  // Idempotency: the same requestId again returns the first result and never commits a second time. Without a
+  // requestId (1.0.x clients) or without KV (code mode) every request is a new upload, exactly as before.
+  let rqKey = p.requestId && kv ? requestKey(p.userId, p.requestId) : '';
+  if (rqKey) {
+    let prev = { state: 'none' };
+    try {
+      prev = await readRequest(kv, rqKey);
+    } catch (_) {
+      kvFailed();
+      rqKey = '';
+    }
+    if (prev.state === 'done') {
+      attempt.countIp = false;
+      log('report_replay', { userId: p.userId });
+      return okResponse(env, prev.folder, true);
+    }
+    if (prev.state === 'pending') {
+      if (now - prev.at < PENDING_STALE_MS) {
+        attempt.countIp = false;
+        throw new HttpError(409, 'in_progress', { retryAfter: IN_PROGRESS_RETRY_SECONDS });
+      }
+      // The first attempt never finished. Did its commit land?
+      if (await folderExists(env, deps, prev.folder)) {
+        attempt.countIp = false;
+        await quietly(() => writeRequest(kv, rqKey, 'done', prev.folder, now));
+        log('report_replay', { userId: p.userId, confirmed: true });
+        return okResponse(env, prev.folder, true);
+      }
+    }
+  }
+
+  // Per-user quota: checked here, but counted only after a successful commit (a failed upload costs the user nothing).
+  const userKey = 'u:' + p.userId;
+  const userRate = await rateCheck(env.RATE, userKey, { hour: LIMITS.perUserPerHour, day: LIMITS.perUserPerDay }, now);
   if (userRate.error && openMode) throw new HttpError(503, 'unavailable');
   if (!userRate.ok) throw new HttpError(429, 'rate_limited', { retryAfter: userRate.retryAfter });
 
-  // Folder name comes from the SERVER clock, never from the client.
-  const stamp = utcStamp(now);
-  const folder = 'reports/' + slugify(p.displayName) + '-' + p.userId + '/' + stamp;
+  // Folder name comes from the SERVER clock (plus a random suffix), never from the client.
+  const leaf = utcStamp(now) + '-' + folderSuffix();
+  const folder = 'reports/' + slugify(p.displayName) + '-' + p.userId + '/' + leaf;
 
   const meta = {
     schema: 1,
@@ -912,18 +1095,62 @@ async function postReport(request, env, deps, now) {
   };
   const entries = files.map((f) => ({ path: folder + '/' + f.name, content: f.content }));
   entries.push({ path: folder + '/meta.json', content: JSON.stringify(meta, null, 2) + '\n' });
+  const message = 'report: ' + p.displayName + ' ' + p.userId + ' ' + leaf;
 
-  const message = 'report: ' + p.displayName + ' ' + p.userId + ' ' + stamp;
-  await commitFiles(env, deps, entries, message, now);
+  if (rqKey) {
+    try {
+      await writeRequest(kv, rqKey, 'pending', folder, now);
+    } catch (_) {
+      kvFailed();
+      rqKey = '';
+    }
+  }
+
+  const work = commitAndRecord(env, deps, entries, message, now, folder, kv, rqKey, userKey);
+  // keep the Worker alive until the commit and its bookkeeping are done, even if the client hangs up meanwhile
+  if (typeof deps.waitUntil === 'function') deps.waitUntil(work.catch(() => {}));
+  await work;
 
   log('report_ok', { userId: p.userId, files: files.length, bytes: files.reduce((n, f) => n + f.bytes, 0), mode: openMode ? 'open' : 'code' });
+  return okResponse(env, folder, false);
+}
 
+/** Commit, then (only on success) count the per-user quota and mark the requestId done. */
+async function commitAndRecord(env, deps, entries, message, now, folder, kv, rqKey, userKey) {
+  try {
+    await commitFiles(env, deps, entries, message, now);
+  } catch (err) {
+    let landed = false;
+    let unknown = false;
+    if (maybeApplied(err)) {
+      // the ref update got no clear answer: look before calling it a failure (a retry would duplicate the report)
+      try {
+        landed = await folderExists(env, deps, folder);
+      } catch (_) {
+        unknown = true;
+      }
+    }
+    if (!landed) {
+      // Definitely not committed: forget the requestId so the client's retry can start again at once. When the
+      // outcome is unknown the "pending" mark stays; a retry after PENDING_STALE_MS checks GitHub again.
+      if (rqKey && !unknown) await quietly(() => kv.delete(rqKey));
+      throw err;
+    }
+    log('commit_confirmed', {});
+  }
+  await rateCount(kv, userKey, now);
+  if (rqKey) await quietly(() => writeRequest(kv, rqKey, 'done', folder, now));
+}
+
+function okResponse(env, folder, replayed) {
   const branch = env.GITHUB_BRANCH || 'main';
-  return jsonResponse(200, {
+  const body = {
     ok: true,
     folder: folder,
     url: 'https://github.com/' + env.GITHUB_OWNER + '/' + env.GITHUB_REPO + '/tree/' + branch + '/' + folder,
-  });
+  };
+  if (replayed) body.replayed = true;
+  return jsonResponse(200, body);
 }
 
 /** Entry point used by the Worker (and by the tests with injected `deps.fetch` / `deps.now`). */

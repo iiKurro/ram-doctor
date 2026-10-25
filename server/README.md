@@ -15,7 +15,7 @@
 ### ما هذا؟
 
 وسيط صغير (Cloudflare Worker مجاني) يستقبل تقرير RAM Doctor بعد حذف البيانات الشخصية منه، ويحفظه في مستودع GitHub **خاص** باسمك
-(`iiKurro/ram-doctor-reports`) داخل مجلد باسم الشخص: `reports/<الاسم>-<المعرّف>/<التاريخ>/`. فتقرأ التقرير مباشرة على GitHub.
+(`iiKurro/ram-doctor-reports`) داخل مجلد باسم الشخص: `reports/<الاسم>-<المعرّف>/<التاريخ>-<6 أحرف عشوائية>/`. فتقرأ التقرير مباشرة على GitHub.
 
 ```
 تطبيق صديقك  ──POST (JSON)──▶  Worker (هذا المجلد)  ──Git Data API──▶  مستودع خاص ram-doctor-reports
@@ -28,7 +28,8 @@
 | الطبقة | ما تفعله |
 |---|---|
 | لا مسار قراءة | الخادم **يكتب فقط**. لا قائمة، لا تنزيل، لا حذف، لا تعديل. أسوأ ما يفعله غريب: إرسال تقارير مزعجة محدودة العدد. |
-| تحديد المعدل (KV) | لكل IP: 6 في الساعة و20 في اليوم. لكل معرّف مستخدم: 10 في الساعة و20 مجلدًا في اليوم. **إجباري في الوضع المفتوح**: إن لم يوجد KV يرد الخادم `503` (يفشل مغلقًا). |
+| تحديد المعدل (KV) | لكل IP: 6 في الساعة و20 في اليوم (كل محاولة تحجز مكانها قبل أي عمل، فتُحسب الطلبات المتوازية أيضًا؛ وإعادة المحاولة التي يُرد عليها من سجل `requestId` تسترجعه). لكل معرّف مستخدم: 10 في الساعة و20 مجلدًا في اليوم، **تُحسب بعد الحفظ الناجح فقط** (عطل GitHub لا يستهلك حصة أحد). **إجباري في الوضع المفتوح**: إن لم يوجد KV يرد الخادم `503` (يفشل مغلقًا). |
+| إعادة المحاولة بلا تكرار | إن أرسل التطبيق `requestId` (اختياري) فالطلب نفسه مرة ثانية يحصل على الرد الأول (`"replayed": true`) دون حفظ ثانٍ؛ وأثناء الحفظ الأول `409 in_progress`. إن ضاع رد GitHub على تحديث الفرع، يسأل الخادم GitHub هل وصل المجلد قبل أن يعدّ الرفع فاشلًا. لكل رفع مجلد `<الوقت>-<6 أحرف عشوائية>` فلا يحلّ رفع محل آخر. |
 | مفتاح إيقاف | المتغير `DISABLED=1` يوقف الاستقبال فورًا. |
 | مخطط صارم | حقول معروفة فقط، 3 أسماء ملفات فقط، حدود أحجام، ‎`plan.json` يجب أن يكون JSON سليمًا بعمق/حجم محدودين. |
 | تنظيف `summary.md` | يُسمح بماركداون عادي + `<div dir="rtl">` و`</div>` و`<br>` فقط؛ أي HTML آخر يُعطَّل. |
@@ -37,7 +38,7 @@
 
 > كن حذرًا عند القراءة: افتح **`summary.md`** على GitHub أولًا. تعامل مع `report.html` كملف غير موثوق (نزّله وافتحه ولا تشغّل شيئًا مما فيه).
 
-**الحدود الدقيقة (بالبايت):** ‎summary.md ≤ 131072 (128 KB) · eport.html ≤ 524288 (512 KB) · plan.json ≤ 524288 (512 KB) · أي ملف ≤ 1572864 (1.5 MB) · الطلب كله ≤ 2097152 (2 MB) · السكربت الداخلي ≤ 3072. تجاوزها: 413 too_large.
+**الحدود الدقيقة (بالبايت):** ‎summary.md ≤ 131072 (128 KB) · report.html ≤ 524288 (512 KB) · plan.json ≤ 524288 (512 KB) · أي ملف ≤ 1572864 (1.5 MB) · الطلب كله ≤ 2097152 (2 MB) · السكربت الداخلي ≤ 3072. تجاوزها: 413 too_large.
 
 ### الإعداد خطوة بخطوة (مرة واحدة، ~15 دقيقة)
 
@@ -85,6 +86,8 @@ powershell -File build\Build-SingleFile.ps1
 * **إيقاف طارئ:** `npx wrangler secret put DISABLED` ثم اكتب `1` (لإعادة التشغيل: احذفه `npx wrangler secret delete DISABLED`).
 * **تدوير المفتاح:** أنشئ مفتاحًا دقيقًا جديدًا ← `npx wrangler secret put GITHUB_TOKEN` ← احذف القديم من GitHub.
 * **حذف بيانات شخص:** راجع `README.md` داخل المستودع الخاص (`git rm -r reports/<الاسم>-<المعرّف>`).
+* **بعد تحديث الخادم إلى نسخة المجلدات ذات اللاحقة:** انسخ `server/data-repo-template/.github/workflows/index.yml` إلى المستودع الخاص؛
+  النسخة القديمة لا ترى المجلدات الجديدة في `INDEX.md` (التقارير نفسها تُحفظ في الحالتين).
 * **أكواد دعوة (اختياري، لا حاجة لها افتراضيًا):**
   `powershell -File server\scripts\New-InviteCode.ps1 -Label ali` يطبع كودًا وسطر JSON؛ ثم
   `npx wrangler secret put INVITE_CODES`. بعدها يصبح الكود إلزاميًا للجميع. للإلغاء احذف الكود من JSON وأعد الأمر،
@@ -95,12 +98,12 @@ powershell -File build\Build-SingleFile.ps1
 | من | ماذا يستطيع | ماذا لا يستطيع |
 |---|---|---|
 | غريب يعرف الرابط | إرسال تقارير سليمة الشكل لكن محدودة المعدل (6/ساعة، 20/يوم لكل IP). قد يملأ المستودع بالمزعج ببطء، أو يستهلك حصة كتابة KV (1000/يوم) فيعطّل الخدمة مؤقتًا (503). | القراءة، الحذف، التعديل، رؤية أي تقرير، تنفيذ شيء عندك (التقارير تُفحص وتُنظَّف)، معرفة المفتاح. |
-| غريب ينتحل `userId` شخص آخر | إضافة مجلد جديد باسمه (لا يستطيع الكتابة فوق القديم؛ الاسم الزمني من ساعة الخادم). | إثبات الهوية: **لا تثق بهوية المرسل** في الوضع المفتوح. |
+| غريب ينتحل `userId` شخص آخر | إضافة مجلد جديد باسمه (لا يستطيع الكتابة فوق القديم؛ الاسم من ساعة الخادم مع لاحقة عشوائية). | إثبات الهوية: **لا تثق بهوية المرسل** في الوضع المفتوح. |
 | مفتاح GitHub (PAT) تسرّب | قراءة/كتابة هذا المستودع فقط. | أي مستودع آخر. ألغِه وأنشئ بدلًا منه. |
 | تقرير خبيث يحاول إصابتك عند القراءة | يمر فقط إن بدا كمخرجات الأداة وكان خاملًا؛ وإلا يُرفض. | تشغيل سكربت عن بعد من `report.html` (ممنوع شبكة/تنفيذ ديناميكي/عناصر نشطة). ومع ذلك: اقرأ `summary.md` أولًا. |
 
 **حدود الطبقة المجانية:** Workers Free = 100,000 طلب/يوم و**10ms CPU للطلب** (التقرير العادي ~50KB خفيف جدًا؛ تقرير قريب من 2MB قد يتجاوز الحد
-فيفشل بـ 1102). KV Free = 100,000 قراءة و**1,000 كتابة/يوم**: كل رفع ناجح يكتب مرتين، فالسقف العملي ≈ 500 رفعة/يوم. إن امتلأ يرد الخادم `503`
+فيفشل بـ 1102). KV Free = 100,000 قراءة و**1,000 كتابة/يوم**: كل رفع ناجح يكتب مرتين، وأربع مرات إن حمل `requestId`، فالسقف العملي ≈ 250 إلى 500 رفعة/يوم. إن امتلأ يرد الخادم `503`
 (بدون كشف أي شيء). في Cloudflare يمكنك إضافة قاعدة Rate Limiting/WAF مجانية أمامه كطبقة إضافية.
 
 ### الاختبار محليًا
@@ -118,14 +121,15 @@ npx wrangler dev     # تشغيل محلي (اختياري)
 ### What is this?
 
 A tiny Cloudflare Worker (free tier) that receives a **redacted** RAM Doctor report and commits it to a **private** GitHub repository
-(`iiKurro/ram-doctor-reports`) under `reports/<name>-<userId>/<yyyyMMdd-HHmmss>/`, so you can read it on GitHub.
+(`iiKurro/ram-doctor-reports`) under `reports/<name>-<userId>/<yyyyMMdd-HHmmss>-<6 random chars>/`, so you can read it on GitHub.
 
 **Default = OPEN mode (no invite codes).** Anyone who finds the URL can POST, so the relay defends itself in depth:
 
 | Layer | What it does |
 |---|---|
 | No read route | The Worker only **appends**. No list, download, delete or modify route exists. The worst a stranger can do is send rate-limited junk. |
-| KV rate limits | Per IP: 6/hour and 20/day. Per userId: 10/hour and 20 folders/day. **Mandatory in open mode**: without the KV binding it answers `503` (fails closed), except `/v1/health`. |
+| KV rate limits | Per IP: 6/hour and 20/day (every attempt reserves its slot before any work, so parallel requests count too; a retry answered from its `requestId` record gets it back). Per userId: 10/hour and 20 folders/day, **counted only after a successful commit** (a GitHub outage costs nobody their quota). **Mandatory in open mode**: without the KV binding it answers `503` (fails closed), except `/v1/health`. |
+| Safe retries | When the client sends the optional `requestId`, the same request again gets the first answer (`"replayed": true`) and no second commit; while the first one is still committing it gets `409 in_progress`. If GitHub's answer to the ref update is lost, the relay checks whether the folder landed before calling the upload failed. Every upload gets its own `<stamp>-<6 random chars>` folder, so none can replace another. |
 | Kill switch | `DISABLED=1` makes uploads answer `503` immediately. |
 | Strict schema | Known fields only, exactly three file names, size caps (summary 128 KB, report 512 KB, plan 512 KB, body 2 MB), `plan.json` must be a JSON object with the expected keys and bounded depth/size. |
 | `summary.md` sanitised | Plain Markdown plus `<div dir="rtl">`, `</div>`, `<br>` only; any other HTML is neutralised. |
@@ -134,7 +138,7 @@ A tiny Cloudflare Worker (free tier) that receives a **redacted** RAM Doctor rep
 
 > As a reader: open **`summary.md`** on GitHub first. Treat `report.html` as untrusted (download it, never run anything it mentions).
 
-**Exact limits (bytes):** summary.md <= 131072 (128 KB) · eport.html <= 524288 (512 KB) · plan.json <= 524288 (512 KB) · any single file <= 1572864 (1.5 MB) · whole request <= 2097152 (2 MB) · inline script <= 3072. Exceeding any: 413 too_large.
+**Exact limits (bytes):** summary.md <= 131072 (128 KB) · report.html <= 524288 (512 KB) · plan.json <= 524288 (512 KB) · any single file <= 1572864 (1.5 MB) · whole request <= 2097152 (2 MB) · inline script <= 3072. Exceeding any: 413 too_large.
 
 ### Setup, step by step (once, ~15 minutes)
 
@@ -182,6 +186,8 @@ powershell -File build\Build-SingleFile.ps1
 * **Emergency stop:** `npx wrangler secret put DISABLED` → `1` (re-enable: `npx wrangler secret delete DISABLED`).
 * **Rotate the PAT:** create a new fine-grained token → `npx wrangler secret put GITHUB_TOKEN` → delete the old one on GitHub.
 * **Delete someone's data:** see the data repo's own `README.md` (`git rm -r reports/<name>-<userId>`).
+* **After upgrading to the relay with suffixed folders:** copy `server/data-repo-template/.github/workflows/index.yml` into the data repo;
+  the old copy leaves the new folders out of `INDEX.md` (the reports themselves are stored either way).
 * **Invite codes (optional, not needed by default):** `powershell -File server\scripts\New-InviteCode.ps1 -Label ali` prints a code and the JSON;
   then `npx wrangler secret put INVITE_CODES`. From then on every upload needs a code. Revoke by removing it from the JSON and re-putting the
   secret (or `-Revoke <code>`). With `INVITE_CODES` set, KV becomes optional (still recommended).
@@ -191,13 +197,13 @@ powershell -File build\Build-SingleFile.ps1
 | Who | Can | Cannot |
 |---|---|---|
 | A stranger who finds the URL | POST well-formed, sanitised, rate-limited reports (6/h, 20/day per IP); slowly litter the repo; burn the KV write quota (1,000/day) so the service answers `503` for a while. | Read, list, modify or delete anything; see any report; run anything on your machine (content is inspected/sanitised); learn the token. |
-| Someone spoofing another person's `userId` | Add a *new* folder under that id (the timestamp comes from the server clock, so existing folders can't be overwritten). | Prove identity — **never trust who a report claims to be from** in open mode. |
+| Someone spoofing another person's `userId` | Add a *new* folder under that id (the name comes from the server clock plus a random suffix, so existing folders can't be overwritten). | Prove identity — **never trust who a report claims to be from** in open mode. |
 | A leaked PAT | Read/write that single repository. | Anything else. Revoke it and rotate. |
 | A malicious report trying to hit you while you read it | Passes only if it looks like tool output and is inert; otherwise rejected. | Remote script execution through `report.html` (no network/dynamic code/active elements). Still: read `summary.md` first. |
 
 **Free-tier limits:** Workers Free = 100,000 requests/day and **10 ms CPU per request** (a normal ~50 KB report is tiny; an upload near the 2 MB cap
-may exceed it and fail with Cloudflare error 1102). KV Free = 100,000 reads and **1,000 writes/day**; each accepted upload writes twice, so the
-practical ceiling is ≈ 500 uploads/day. When exhausted the relay answers `503` and reveals nothing. You can add a free Cloudflare WAF/rate-limit rule in front as one more layer.
+may exceed it and fail with Cloudflare error 1102). KV Free = 100,000 reads and **1,000 writes/day**; each accepted upload writes twice (four times
+when it carries a `requestId`), so the practical ceiling is ≈ 250-500 uploads/day. When exhausted the relay answers `503` and reveals nothing. You can add a free Cloudflare WAF/rate-limit rule in front as one more layer.
 
 ### Run the tests locally
 
@@ -210,6 +216,16 @@ npx wrangler dev     # optional local run
 ### Protocol v1 (for client authors)
 
 `POST {endpoint}/v1/reports`, `Content-Type: application/json`, body:
-`{"v":1,"displayName":"2-24 chars","userId":"8 hex","code":"(optional)","tool":{"name":"RAM-Doctor","version":"1.0.0"},"createdAt":"ISO-8601 UTC","host":"<PC name or the literal <PC>>","files":[{"name":"summary.md|report.html|plan.json","content":"UTF-8 text"}]}`.
-`200 {"ok":true,"folder":"reports/<slug>-<userId>/<stamp>","url":"https://github.com/…"}`. Errors: `400 invalid_request|report_rejected`, `401 unauthorized` (code mode),
-`413 too_large`, `429 rate_limited` (+`Retry-After`), `502 upstream_error`, `503 unavailable|disabled`, `500 server_error`. `GET /v1/health` → `{"ok":true,"v":1}`.
+`{"v":1,"displayName":"2-24 chars","userId":"8 hex","code":"(optional)","requestId":"(optional) 16-64 of A-Z a-z 0-9 -","tool":{"name":"RAM-Doctor","version":"1.0.0"},"createdAt":"ISO-8601 UTC","host":"<PC name or the literal <PC>>","files":[{"name":"summary.md|report.html|plan.json","content":"UTF-8 text"}]}`.
+Any other field is rejected (`400 invalid_request`, `field: unknown_field`).
+`200 {"ok":true,"folder":"reports/<slug>-<userId>/<yyyyMMdd-HHmmss>-<6 of a-z0-9>","url":"https://github.com/…"}`; an answer repeated for a known
+`requestId` adds `"replayed":true`. Errors: `400 invalid_request|report_rejected`, `401 unauthorized` (code mode), `409 in_progress` (+`Retry-After`:
+the first attempt with this `requestId` is still committing), `413 too_large`, `429 rate_limited` (+`Retry-After`), `502 upstream_error`,
+`503 unavailable|disabled`, `500 server_error`. `GET /v1/health` → `{"ok":true,"v":1}`.
+
+**Retries.** Generate one `requestId` per upload (a GUID is fine) and send it unchanged on every retry of that upload. Retry network errors and
+`5xx`; on `409 in_progress` wait `Retry-After` seconds and ask again. The relay remembers a `requestId` for 24 hours, per `userId`, in KV
+(eventually consistent between Cloudflare locations, so this is best effort; a retry normally reaches the same location). Without the KV binding
+(code mode) the field is accepted but not honoured. Clients without `requestId` keep working; each request is then a new upload.
+The RAM Doctor client sends `requestId`; against a relay deployed before this field (`400 unknown_field`) it sends the same body
+once more without it, so uploads keep working, but **deploy this relay before shipping that client** to get the protection.

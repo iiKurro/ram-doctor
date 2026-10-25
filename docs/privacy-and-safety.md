@@ -133,13 +133,19 @@ your PC ──HTTPS──▶ relay (Cloudflare Worker) ──▶ helper's PRIVAT
 Created **only if you use Share**, in `%APPDATA%\RAM-Doctor\`: your display
 name, a random 8-hex id (it makes your folder name unique), and, only if the
 helper has required one, an invite code **protected with Windows DPAPI** (bound
-to your Windows account). The GUI has a **delete my profile** button that
-removes the file.
+to your Windows account). It is saved crash-safe: the previous version is kept
+as `profile.json.bak`, and a copy that cannot be read is renamed to
+`profile.json.damaged-<time>` instead of being silently replaced. The GUI has a
+**delete my profile** button that removes the file, its backup and any damaged
+copies.
 
 ### Deleting data
 
-* **Local**: the delete-profile button removes `profile.json`; the
-  clear-reports button removes the reports folder.
+* **Local**: the delete-profile button removes `profile.json` (with its backup
+  and damaged copies); the clear-reports button removes the reports folder. The
+  redacted preview / summary files are written to a fresh, randomly named
+  folder `%TEMP%\RAM-Doctor-share-<random>` that the window deletes when it is
+  done.
 * **Uploaded**: bundles live in the helper's repository, which RAM Doctor
   cannot delete from. Ask your helper to remove `reports/<name>-<id>/`; they
   control it.

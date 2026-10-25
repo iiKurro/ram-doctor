@@ -53,6 +53,7 @@ flowchart TB
 | `src/RAM-Doctor-Actions.ps1` | `Quarantine`, `Restore`, `Purge`, `List`. The only code that changes the system. |
 | `src/lib/Native.cs` | Read-only P/Invoke helpers (see below), compiled with `Add-Type` (C# 5). |
 | `src/lib/Report.ps1` | Builds the HTML report from the scan's data object. Self-contained (inline CSS, no scripts, no network). |
+| `src/lib/Store.ps1` | Crash-safe JSON files and an inter-process lock: `Write-JsonAtomic` (write `<file>.tmp`, flush, one rename that keeps the previous version as `<file>.bak`, adds a `schema` field), `Read-JsonSafe` (falls back to `.bak`, never throws, keeps a damaged file as `<file>.damaged-<stamp>`, reads 1.0.x files without `schema` as schema 1, refuses files from a newer schema) and `Use-StoreLock` (named mutex, `Busy` on timeout). |
 | `build/Build-SingleFile.ps1` | Packs `src/` into the one-file `dist/RAM-Doctor.bat`. |
 | `server/` | The relay (Cloudflare Worker) behind the optional *Share with my helper* button. Deployed and operated by the maintainer/helper. See [server/README.md](../server/README.md). |
 
@@ -108,8 +109,14 @@ Default folder: `Desktop\RAM-Doctor-Reports` (override with `-OutDir`).
 | `Plan-<HOST>-<yyyyMMdd-HHmmss>.json` | The plan: verdict, observations, memory summary, suspects with everything needed to act on them. About 15 KB. |
 | `RAMDoctor-<HOST>-<stamp>.json` | Full raw data. **Only** with `-KeepRawJson`. |
 
-The newest **3** scans per host are kept; older files are deleted after each
-scan.
+Every file is written crash-safe (`<file>.tmp`, flushed, then renamed into
+place by `lib/Store.ps1`), so a power cut never leaves a half-written plan. The
+newest **3** scans of this PC are kept (the scan just written always counts as
+one of them, even when the clock runs behind); files of other PC names are never
+touched. The last console line
+`SCAN_STAMP: <yyyyMMdd-HHmmss>` tells the window which plan is new; it builds
+the file names from its own PC name, so no path has to survive the console code
+page.
 
 ## Plan JSON (schema v1, informal)
 
@@ -119,6 +126,7 @@ also what the optional upload bundle and the copied summary are derived from
 
 ```jsonc
 {
+  "schema": 1,                                   // written since 1.1; a plan without it is schema 1 too. A newer schema is refused.
   "tool": "RAM-Doctor", "version": "1.0", "lang": "en", "host": "DESKTOP-DEMO",   // "lang" ar|en: language of every text below; absent in plans of older releases (= ar)
   "created": "2026-10-24 21:52:51", "isAdmin": true,
   "report": "C:\\Users\\Friend\\Desktop\\RAM-Doctor-Reports\\RAMDoctor-DESKTOP-DEMO-20261024-215251.html",
@@ -182,23 +190,66 @@ the typed `YES` (or `-Yes`), create a restore point, then per suspect:
    boot/system start.
 5. Disable scheduled tasks; remove Run values (value compared with the plan and
    saved); move startup shortcuts; remove WMI consumers (definition saved).
-6. Move the file to `<store>\Quarantine\<batch>\files\NNN_<name>.quar`.
-7. Write `manifest.json` after every suspect.
+6. Move the file to `<store>\Quarantine\<batch>\files\NNN_<name>.quar` (names
+   are kept short and never reused).
+7. The undo record `manifest.json` is written **before** the first change and
+   then around every step ("write-ahead"): each change is first recorded as
+   `pending` with everything needed to undo it, then marked `done` or
+   `failed`. It is replaced atomically (`manifest.json.tmp` + rename, previous
+   version kept as `manifest.json.bak`). If it cannot be saved, the run stops
+   before changing anything else.
 
-**Restore** reverses the manifest in reverse order; a fully successful restore
-stamps `restoredAt`. **Purge** deletes the `files` folders (typed `DELETE` or
-`-Yes`) and stamps `purgedAt`. Actions log to
-`<store>\actions-<stamp>.log`.
+**Restore** reverses the manifest in reverse order. Each item that is back gets
+`undoneAt`; an item that is refused or whose quarantined copy is missing counts
+as a failure. Before a file is moved back, its target is recorded (`restoringTo`),
+so a restore interrupted after the move is recognised and finished by the next
+run. Only when nothing failed is the batch stamped `restoredAt` (if that last save
+fails: `UNSAVED`, exit 3, safe to run again); otherwise the run says
+`Restore INCOMPLETE`, exits with 2 and a later run only retries what is not back
+yet. A `pending` step (a crash) is undone if it
+happened. **Purge** deletes the `files` folders (typed `DELETE` or `-Yes`) and
+stamps `purgedAt`. A batch whose record is damaged (and its `.bak` too) or was
+never written is listed as `damaged` / `orphan`: it cannot be restored, but its
+files can be purged. A record that exists but cannot be opened right now (held by
+another program) is `unreadable`: refused for now, never replaced by its older
+`.bak` and never overwritten. Quarantine, Restore and Purge hold a per-store lock; a
+second run answers `BUSY` (exit 4) and changes nothing. The lock's name comes
+from a random secret in `<store>\lock.id` that only SYSTEM and Administrators can
+read, and the secret is replaced before every release, so a non-elevated program
+cannot predict or squat the name. When elevated, batch folders, their `files`
+folder and every `manifest.json.tmp` are **created** with owner Administrators and
+SYSTEM + Administrators only (never protected afterwards), and a batch is trusted
+only if its folders and records have such an owner and no allow-rule, explicit or
+inherited, for anybody else (1.0.x batches, which inherit the store's permissions,
+pass). Actions log to
+`<store>\actions-<stamp>.log` (the newest 30 are kept).
+
+Every run ends with a machine-readable line for the window:
+`RESULT: OK [...]`, `PARTIAL <n>` (exit 2), `UNSAVED` (exit 3),
+`FAILED <reason>` (exit 1; `nosave` = the undo record could not be saved,
+`error` = an unexpected error, `unreadable`, `damaged`, ...), `BUSY` (exit 4) or
+`NONE`. `-Mode List` prints one
+`BATCH_JSON: {"name","state","items","files","bytes","seq","created"}` line per
+batch (state `restorable|restored|purged|damaged|orphan|toonew|unreadable`), newest first;
+the window reads only these lines, never the manifests themselves.
 
 ### Quarantine manifest
 
 ```jsonc
-{ "batch": "20261024-215344", "created": "…", "host": "DESKTOP-DEMO", "plan": "…",
+{ "schema": 1,                                      // since 1.1; 1.0.x manifests have none and are schema 1
+  "batch": "20261024-215344", "created": "…", "host": "DESKTOP-DEMO", "plan": "…",
+  "seq": 3,                                         // since 1.1: "newest batch" without trusting the clock (absent = 0)
   "restoredAt": "…", "purgedAt": "…",              // present only when it happened
   "entries": [ { "id": 1, "name": "…", "risk": "High", "path": "…", "sha256": "…",
                  "ops": [ { "type": "StopProcess|DisableService|DisableDriver|DisableTask|RemoveRunValue|MoveStartupFile|RemoveWmi|QuarantineFile",
-                            "status": "done|failed", /* plus type-specific undo data */ } ] } ] }
+                            "status": "pending|done|failed",   // pending: written before the step, the run stopped around it
+                            "undoneAt": "…",                   // since 1.1: put back by a (partial) restore
+                            "restoringTo": "…", "restoringSha256": "…",   // since 1.1: written just before a file is moved back
+                            /* plus type-specific undo data */ } ] } ] }
 ```
+
+The format stays readable by 1.0.x (which ignores the new fields and skips
+`pending` steps); an unknown operation type is never counted as restored.
 
 WMI removals store the full definition but cannot be restored automatically.
 
@@ -259,11 +310,11 @@ When double-clicked the header:
 
 1. relaunches itself minimised (`start /min`), then requests administrator
    rights (`Start-Process -Verb RunAs`) if needed;
-2. creates `%ProgramData%\RAM-Doctor-run\<guid>` atomically with an ACL that only SYSTEM and Administrators can use (inheritance off, by SID), and refuses to run anything from it unless the parent and child are not junctions, have a trusted owner and carry no other allow-rules (this closes a time-of-check/time-of-use hole: the scripts then run elevated, so a same-user process must not be able to edit them); folders older than a day are swept;
+2. creates `%ProgramData%\RAM-Doctor-run\<guid>` atomically with an ACL that only SYSTEM and Administrators can use (inheritance off, by SID), and refuses to run anything from it unless the parent and child are not junctions, have a trusted owner and carry no other allow-rules (this closes a time-of-check/time-of-use hole: the scripts then run elevated, so a same-user process must not be able to edit them); folders older than a day are swept, except one whose `in-use.lock` is still held open by the copy that is running from it;
 3. runs a short PowerShell one-liner that reads the `.bat` itself and writes
    each `#@@FILE` section to that folder with a UTF-8 BOM (the BOM is stripped
    in the repository build step and restored here);
-4. runs `src\RAM-Doctor-GUI.ps1`, waits, and always deletes the folder afterwards.
+4. holds `in-use.lock` open in that folder, runs `src\RAM-Doctor-GUI.ps1`, waits, and always deletes the folder afterwards.
 
 `cmd.exe` never parses past `exit /b`, so the payload is inert text to it.
 
