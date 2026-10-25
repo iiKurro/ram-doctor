@@ -227,3 +227,5 @@ the first attempt with this `requestId` is still committing), `413 too_large`, `
 `5xx`; on `409 in_progress` wait `Retry-After` seconds and ask again. The relay remembers a `requestId` for 24 hours, per `userId`, in KV
 (eventually consistent between Cloudflare locations, so this is best effort; a retry normally reaches the same location). Without the KV binding
 (code mode) the field is accepted but not honoured. Clients without `requestId` keep working; each request is then a new upload.
+The RAM Doctor client sends `requestId`; against a relay deployed before this field (`400 unknown_field`) it sends the same body
+once more without it, so uploads keep working, but **deploy this relay before shipping that client** to get the protection.

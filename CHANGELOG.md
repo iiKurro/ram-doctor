@@ -46,7 +46,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Relay: a failed upload (GitHub error) no longer counts against the per-user
+- Quarantine: the undo record (`manifest.json`) is written before the first
+  change and around every step, atomically, with a `.bak` copy. A power cut,
+  a full disk or a killed process can no longer lose the undo data of removed
+  startup entries or changed services, and a truncated record is recovered
+  from its backup. A batch whose record is damaged or missing is listed and can
+  still be purged instead of being hidden with its files.
+- Restore tells the truth: an item that cannot be put back (a refused or
+  missing quarantined file, an unknown operation from a newer version) is a
+  failure, the batch stays restorable, the window says "finished with
+  problems", and a second try only retries what is not back yet.
+- Purge reports what it really did; batches dated in the future (wrong clock)
+  are handled; "Undo the last quarantine" picks the newest batch by a sequence
+  number instead of the clock.
+- Two actions can no longer run on the quarantine store at the same time (per
+  store lock; the second one answers "busy"); the window ignores clicks while
+  it waits for a helper process.
+- The scan writes its report and plan crash-safe, never prunes the plan it just
+  wrote (clock behind), removes files of other PC names after 30 days, and the
+  window picks this PC's plan by its stamp. A damaged plan no longer breaks
+  every start of the window.
+- Share: one `requestId` per upload, the same on every retry (no duplicate
+  folders when an answer is lost); `409 in_progress` is waited for; a relay
+  without the field gets the report again without it. The profile is saved
+  crash-safe and a damaged one is reported (its user id is kept) instead of
+  being silently replaced by a new identity; an unreadable saved invite code is
+  reported as such.
+- The redacted share preview is written to a fresh, randomly named private
+  folder instead of a fixed folder in `%TEMP%` that an elevated process could
+  be tricked into following (junction).
+- The single-file edition no longer deletes the unpack folder of a copy that has
+  been running for more than a day (`in-use.lock`).
+- The window retries deleting the output files of its helper processes and
+  sweeps them again later, so none is left in `%TEMP%`; action logs are pruned
+  to the newest 30.- Relay: a failed upload (GitHub error) no longer counts against the per-user
   limit; the quota is counted only after a successful commit.
 - Relay: two uploads of one user in the same second no longer share a folder
   (the second silently replaced the first). Folders are now
