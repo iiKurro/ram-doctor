@@ -12,7 +12,7 @@
 #
 # Windows PowerShell 5.1. Contains Arabic => keep this file UTF-8 with BOM.
 
-$script:ShareToolVersion = '1.0.0'
+$script:ShareToolVersion = '1.0.1'
 $script:ShareReservedUserNames = @('public', 'default', 'default user', 'all users', 'defaultuser0', 'desktop.ini')
 # account names that are ordinary words: a whole-word search for them would damage the prose, so only the
 # C:\Users\<name> form is masked for these.

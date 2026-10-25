@@ -1,5 +1,5 @@
 {
-  "endpoint": "",
+  "endpoint": "https://ram-doctor-relay.gamenetkit-server.workers.dev",
   "helperName": "7san",
   "maxBytes": 2000000
 }
