@@ -452,3 +452,100 @@ Describe 'Get-StoreLockOwners' {
         @($list | Select-Object -Unique).Count | Should -Be $list.Count
     }
 }
+Describe 'Files created with a given security descriptor' {
+    It 'Write-JsonAtomic -FileSecurity creates the .tmp (so the file) with exactly that DACL, also when it replaces one' {
+        $dir = New-CaseDir 'filesec'
+        $file = Join-Path $dir 'manifest.json'
+        $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $sec = New-Object Security.AccessControl.FileSecurity
+        $sec.SetAccessRuleProtection($true, $false)
+        foreach ($id in @($me, (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')))) {
+            $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)))
+        }
+        Write-JsonAtomic -Path $file -Object @{ v = 1 } -Schema 1 -FileSecurity $sec
+        Write-JsonAtomic -Path $file -Object @{ v = 2 } -Schema 1 -FileSecurity $sec
+        foreach ($f in $file, "$file.bak") {
+            $acl = [IO.File]::GetAccessControl($f)
+            $acl.AreAccessRulesProtected | Should -BeTrue -Because "$f must not inherit anything"
+            $sids = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+            ($sids -join ',') | Should -Be ((@($me.Value, 'S-1-5-18') | Sort-Object) -join ',')
+        }
+        (Read-JsonSafe -Path $file -MaxSchema 1).Data.v | Should -Be 2
+    }
+    It 'New-StoreFileSecurity: owner Administrators, inheritance off, SYSTEM and Administrators only' {
+        $s = New-StoreFileSecurity
+        $s.GetOwner([Security.Principal.SecurityIdentifier]).Value | Should -Be 'S-1-5-32-544'
+        $s.AreAccessRulesProtected | Should -BeTrue
+        (@($s.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value } | Sort-Object) -join ',') | Should -Be 'S-1-5-18,S-1-5-32-544'
+    }
+}
+
+Describe 'Enter-StoreSecretLock (a lock name nobody can predict)' {
+    BeforeAll {
+        function Start-SecretHolder([string]$Dir, [int]$TimeoutMs) {
+            $ready = New-Object Threading.ManualResetEvent($false)
+            $release = New-Object Threading.ManualResetEvent($false)
+            $state = [hashtable]::Synchronized(@{ Status = '' })
+            $ps = [powershell]::Create()
+            [void]$ps.AddScript({
+                    param($lib, $dir, $timeout, $ready, $release, $state)
+                    . $lib
+                    $h = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs $timeout -TrustedOwners @()
+                    $state.Status = $h.Status
+                    [void]$ready.Set()
+                    [void]$release.WaitOne(30000)
+                    Exit-StoreSecretLock $h
+                }).AddArgument($script:StoreLib).AddArgument($Dir).AddArgument($TimeoutMs).AddArgument($ready).AddArgument($release).AddArgument($state)
+            $handle = $ps.BeginInvoke()
+            return [pscustomobject]@{ PS = $ps; Handle = $handle; Ready = $ready; Release = $release; State = $state }
+        }
+        function Stop-SecretHolder($H) { [void]$H.Release.Set(); [void]$H.PS.EndInvoke($H.Handle); $H.PS.Dispose(); $H.Ready.Dispose(); $H.Release.Dispose() }
+    }
+
+    It 'derives the name from a random secret in lock.id (not from the path) and replaces the secret on every release' {
+        $dir = New-CaseDir 'secret'
+        $h = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 0 -TrustedOwners @()
+        $h.Status | Should -Be 'Ok'
+        $h.SecretName | Should -BeTrue
+        $s1 = [IO.File]::ReadAllText((Join-Path $dir 'lock.id')).Trim()
+        $s1 | Should -Match '^[0-9a-f]{64}$'
+        $h.Name | Should -Be ('test-' + $s1.Substring(0, 40))
+        $h.Name | Should -Not -Be (Get-StoreLockName -Prefix 'test' -Path $dir)
+        $other = Start-SecretHolder $dir 100
+        try { [void]$other.Ready.WaitOne(10000); $other.State.Status | Should -Be 'Busy' } finally { Stop-SecretHolder $other }
+        Exit-StoreSecretLock $h
+        $s2 = [IO.File]::ReadAllText((Join-Path $dir 'lock.id')).Trim()
+        $s2 | Should -Match '^[0-9a-f]{64}$'
+        $s2 | Should -Not -Be $s1 -Because 'a name seen while the lock was held must be useless afterwards'
+    }
+
+    It 'a copy that waited on the old name moves on to the new one: two copies never both hold the lock' {
+        $dir = New-CaseDir 'secret-rotate'
+        $first = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 0 -TrustedOwners @()
+        $waiter = Start-SecretHolder $dir 8000                  # starts waiting on the current (soon old) name
+        Start-Sleep -Milliseconds 400
+        Exit-StoreSecretLock $first                               # rotates the secret, then releases the old name
+        try {
+            $waiter.Ready.WaitOne(15000) | Should -BeTrue
+            $waiter.State.Status | Should -Be 'Ok'
+            $third = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 200 -TrustedOwners @()
+            $third.Status | Should -Be 'Busy' -Because 'the waiter now holds the CURRENT name'
+        }
+        finally { Stop-SecretHolder $waiter }
+        $again = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 2000 -TrustedOwners @()
+        $again.Status | Should -Be 'Ok'
+        Exit-StoreSecretLock $again
+    }
+
+    It 'falls back to the path-derived name when the folder does not exist (yet)' {
+        $missing = Join-Path $script:Work ('no-such-' + [guid]::NewGuid().ToString('N'))
+        $h = Enter-StoreSecretLock -Prefix 'test' -Dir $missing -TimeoutMs 0 -TrustedOwners @()
+        try {
+            $h.Status | Should -Be 'Ok'
+            $h.SecretName | Should -BeFalse
+            $h.Name | Should -Be (Get-StoreLockName -Prefix 'test' -Path $missing)
+        }
+        finally { Exit-StoreSecretLock $h }
+        Test-Path -LiteralPath $missing | Should -BeFalse
+    }
+}

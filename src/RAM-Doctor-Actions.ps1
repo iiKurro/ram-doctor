@@ -286,13 +286,34 @@ function Initialize-StoreRoot {
         $chk = Test-StoreRootSecure $DataRoot
         if (-not $chk.Secure -and $chk.Reason -match 'owner is') { try { Protect-StoreRoot $DataRoot } catch { }; $chk = Test-StoreRootSecure $DataRoot }   # one more try at making Administrators the owner
         if (-not $chk.Secure) { Log "refusing to use the quarantine store: $($chk.Reason)" 'Red'; return $false }
-        [void][IO.Directory]::CreateDirectory($QRoot)
+        # the Quarantine folder gets the same treatment: created locked, and repaired when its owner or permissions are not
+        # the locked ones (1.0.x created it with inherited permissions; every batch inside is verified on its own anyway)
+        if (-not (Test-Path -LiteralPath $QRoot)) { [void][IO.Directory]::CreateDirectory($QRoot, (New-StoreSecurity)) }
         if (Test-IsReparse $QRoot) { Log 'refusing to use the quarantine store: Quarantine folder is a reparse point' 'Red'; return $false }
+        $q = Test-StoreRootSecure $QRoot
+        if (-not $q.Secure) { try { Protect-StoreRoot $QRoot } catch { }; $q = Test-StoreRootSecure $QRoot }
+        if (-not $q.Secure) { Log "refusing to use the quarantine store: Quarantine folder: $($q.Reason)" 'Red'; return $false }
         return $true
     } catch { Log "refusing to use the quarantine store: $($_.Exception.Message)" 'Red'; return $false }
 }
 
-# a batch folder is trusted when it is a real folder (not a junction) and owned by SYSTEM / Administrators
+# Allow-rules of a file or folder (explicit AND inherited) for anybody but SYSTEM / Administrators: '' when there are
+# none, else the first such SID (or the reason the permissions could not be read).
+function Get-ForeignAllowRule([string]$path) {
+    try {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        foreach ($rule in $item.GetAccessControl().GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
+            if (@($SidSystem, $SidAdmins) -notcontains $rule.IdentityReference.Value) { return $rule.IdentityReference.Value }
+        }
+        return ''
+    } catch { return "unreadable permissions ($($_.Exception.Message))" }
+}
+
+# A batch folder is trusted when it is a real folder (not a junction) and, when elevated, its folder, files folder and
+# undo records are owned by SYSTEM / Administrators AND nobody else holds an allow-rule on them (explicit or inherited):
+# an owner or an extra rule would let a non-elevated program rewrite the undo record that an elevated Restore acts on.
+# Batches of 1.0.x (inherited permissions of the locked store, owner Administrators) pass.
 function Test-BatchTrusted([string]$dir) {
     if (Test-IsReparse $dir) { return $false }
     $fd = Join-Path $dir 'files'
@@ -300,29 +321,30 @@ function Test-BatchTrusted([string]$dir) {
     $mf = Join-Path $dir 'manifest.json'
     $records = @(@($mf, "$mf.bak") | Where-Object { Test-Path -LiteralPath $_ })
     foreach ($x in $records) { if (Test-IsReparse $x) { return $false } }
-    if ($script:Hardened) { foreach ($p in @($dir) + $records) { if ($TrustedOwners -notcontains (Get-OwnerSid $p)) { return $false } } }
+    if ($script:Hardened) {
+        $all = @($dir) + @(@($fd) | Where-Object { Test-Path -LiteralPath $_ }) + $records
+        foreach ($p in $all) {
+            if ($TrustedOwners -notcontains (Get-OwnerSid $p)) { return $false }
+            if (Get-ForeignAllowRule $p) { return $false }
+        }
+    }
     return $true
 }
 
-# The manifest is the undo record. Crash-safe: manifest.json.tmp is flushed and renamed into place and the previous
-# version stays as manifest.json.bak. Throws when it cannot be written (callers stop before changing anything else).
-function Save-Manifest($manifest, [string]$dir) {
-    Write-JsonAtomic -Path (Join-Path $dir 'manifest.json') -Object $manifest -Schema $ManifestSchema -Depth 12
-    Set-AdminOwner (Join-Path $dir 'manifest.json')
+# A new batch folder (and its files folder) is CREATED with its final, locked permissions and Administrators as owner,
+# never created first and protected afterwards (in between, the owner could hand rights to somebody else).
+function New-BatchFolder([string]$dir) {
+    if (-not $script:Hardened) { [void][IO.Directory]::CreateDirectory($dir); return }
+    [void][IO.Directory]::CreateDirectory($dir, (New-StoreSecurity $true))
 }
-# Where the "object creator" owner policy is set (or UAC is off for the built-in Administrator), what an elevated process
-# creates is owned by the user's own SID. An owner may always rewrite permissions, so the user's NON-elevated programs could
-# then take over an undo record; Test-BatchTrusted would also (rightly) ignore such a batch. Batch folders and records are
-# therefore handed to Administrators explicitly. On a normal system they already are, and nothing is done.
-function Set-AdminOwner([string]$path) {
-    if (-not $script:Hardened) { return }
-    try {
-        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
-        $acl = $item.GetAccessControl()
-        if ($TrustedOwners -contains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { return }
-        $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier($SidAdmins)))
-        $item.SetAccessControl($acl)
-    } catch { Log "could not give $path to Administrators: $($_.Exception.Message)" 'Yellow' }
+
+# The manifest is the undo record. Crash-safe: manifest.json.tmp is flushed and renamed into place and the previous
+# version stays as manifest.json.bak; when elevated, the .tmp is created with the locked permissions and Administrators as
+# owner. Throws when it cannot be written (callers stop before changing anything else).
+function Save-Manifest($manifest, [string]$dir) {
+    $sec = $null
+    if ($script:Hardened) { $sec = New-StoreFileSecurity }
+    Write-JsonAtomic -Path (Join-Path $dir 'manifest.json') -Object $manifest -Schema $ManifestSchema -Depth 12 -FileSecurity $sec
 }
 # Status Ok | Recovered (the .bak was used) | Missing | Damaged | TooNew, Data, Message (see lib\Store.ps1)
 function Read-ManifestState([string]$dir) {
@@ -659,16 +681,16 @@ function Invoke-QuarantineMode {
     $batchDir = Join-Path $QRoot $batchName
     $filesDir = Join-Path $batchDir 'files'
     $seq = 1 + [int](@(@(Get-BatchInfos) | ForEach-Object { $_.Seq }) + @(0) | Measure-Object -Maximum).Maximum   # "undo last" must not depend on the clock
-    [void][IO.Directory]::CreateDirectory($filesDir)
-    Set-AdminOwner $batchDir; Set-AdminOwner $filesDir
-    $manifest = [pscustomobject]@{ batch = $batchName; version = $ToolVersion; created = (IsoDate (Get-Date)); host = $env:COMPUTERNAME; plan = $Plan; seq = $seq; entries = @() }
-    $entries = New-Object System.Collections.ArrayList
-
     function Remove-EmptyBatch {
         foreach ($n in 'manifest.json', 'manifest.json.bak', 'manifest.json.tmp') { Remove-Item -LiteralPath (Join-Path $batchDir $n) -Force -ErrorAction SilentlyContinue }
         try { [IO.Directory]::Delete($filesDir) } catch { }
         try { [IO.Directory]::Delete($batchDir) } catch { }
     }
+    try { New-BatchFolder $batchDir; New-BatchFolder $filesDir }
+    catch { Log "refusing to start: the batch folder could not be created with locked permissions ($($_.Exception.Message)). Nothing was changed." 'Red'; Remove-EmptyBatch; Write-Host 'RESULT: FAILED store'; exit 1 }
+    if (-not (Test-BatchTrusted $batchDir)) { Log 'refusing to start: the new batch folder did not get the locked permissions. Nothing was changed.' 'Red'; Remove-EmptyBatch; Write-Host 'RESULT: FAILED store'; exit 1 }
+    $manifest = [pscustomobject]@{ batch = $batchName; version = $ToolVersion; created = (IsoDate (Get-Date)); host = $env:COMPUTERNAME; plan = $Plan; seq = $seq; entries = @() }
+    $entries = New-Object System.Collections.ArrayList
 
     # The undo record is written BEFORE anything is changed and then after every step ("write-ahead"): each change is first
     # recorded as "pending" with everything needed to undo it, then marked "done" or "failed". If the PC loses power, the disk
@@ -935,18 +957,24 @@ if ($LoadFunctionsOnly) { return }
 if (-not $IsAdmin -and -not $AllowNonAdmin) { Write-Host 'This needs administrator rights. Run RAM-Doctor.bat (it asks for administrator rights automatically).' -ForegroundColor Red; exit 1 }
 if (-not $IsAdmin) { Write-Host 'WARNING: not elevated - service/driver/system-wide changes will fail (testing mode).' -ForegroundColor Yellow }
 if ($Mode -eq 'List' -and -not (Test-Path -LiteralPath $DataRoot)) { Write-Host 'No quarantine batches.'; exit 0 }   # listing never creates the store
+if (-not (Initialize-StoreRoot)) { Write-Host 'The quarantine store could not be secured, so nothing was done.' -ForegroundColor Red; Write-Host 'RESULT: FAILED store'; exit 1 }
 # One action at a time per store: a second window, a double click or a scripted run must not work on the same batches.
-# The lock is held until this script ends (Windows releases it if the process dies).
+# The lock's name comes from a secret in the (now verified, locked) store that only administrators can read, so a
+# non-elevated program cannot squat it; it is held until this script ends and released (secret rotated) in the finally
+# block at the bottom. Windows releases it as well if the process dies.
+$script:StoreLock = $null
 if ($Mode -ne 'List') {
-    $script:StoreLock = Enter-StoreLock -Name (Get-StoreLockName -Prefix 'store' -Path $DataRoot) -TimeoutMs 2000
+    $lockSec = $null
+    if ($script:Hardened) { $lockSec = New-StoreFileSecurity }
+    $script:StoreLock = Enter-StoreSecretLock -Prefix 'store' -Dir $DataRoot -TimeoutMs 2000 -FileSecurity $lockSec
     if ($script:StoreLock.Status -eq 'Busy') {
         Write-Host 'Another RAM Doctor action is already running on this quarantine store. Wait until it has finished, then try again.' -ForegroundColor Red
         Write-Host 'RESULT: BUSY'; exit 4
     }
     if (-not $script:StoreLock.Guarded) { Write-Host "WARNING: running without the store lock ($($script:StoreLock.Message))" -ForegroundColor Yellow }
+    Remove-OldLogs
 }
-if (-not (Initialize-StoreRoot)) { Write-Host 'The quarantine store could not be secured, so nothing was done.' -ForegroundColor Red; Write-Host 'RESULT: FAILED store'; exit 1 }
-if ($Mode -ne 'List') { Remove-OldLogs }
+try {
 
 # ================================================================ LIST
 if ($Mode -eq 'List') {
@@ -1018,3 +1046,5 @@ if ($Mode -eq 'Purge') {
 }
 # ================================================================ QUARANTINE
 Invoke-QuarantineMode
+}
+finally { if ($script:StoreLock) { Exit-StoreSecretLock $script:StoreLock } }

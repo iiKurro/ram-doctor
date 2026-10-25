@@ -493,6 +493,37 @@ Describe 'Actions: forged manifests are refused in the real store' -Tag 'Elevate
         $l = Invoke-Act 'List'
         $l.StdOut | Should -Match 'ignoring untrusted batch folder'
     }
+
+    It 'creates a new batch and its record locked from the start (owner Administrators, SYSTEM + Administrators only)' {
+        $c = New-QuarantinedCase -Label 'lockedbatch'
+        $c.Q.ExitCode | Should -Be 0 -Because ($c.Q.StdOut + $c.Q.StdErr)
+        foreach ($p in $c.Batch, (Join-Path $c.Batch 'files'), (Join-Path $c.Batch 'manifest.json')) {
+            $acl = (Get-Item -LiteralPath $p -Force).GetAccessControl()
+            $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value | Should -Be 'S-1-5-32-544' -Because $p
+            $acl.AreAccessRulesProtected | Should -BeTrue -Because $p
+            $sids = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.AccessControlType -eq 'Allow' } | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+            ($sids -join ',') | Should -Be 'S-1-5-18,S-1-5-32-544' -Because $p
+        }
+    }
+
+    It 'ignores a batch that gives anybody but SYSTEM / Administrators an allow-rule, and still trusts a 1.0.x-style batch' {
+        $null = Invoke-ActionsSnippet -Code 'Initialize-StoreRoot | Out-Null'
+        $old = Join-Path $script:DefaultStore ('Quarantine\{0}-v10' -f $script:Tag)
+        $bad = Join-Path $script:DefaultStore ('Quarantine\{0}-aced' -f $script:Tag)
+        foreach ($d in $old, $bad) {
+            $script:CleanDirs.Add($d)
+            New-Item -ItemType Directory -Path (Join-Path $d 'files') -Force | Out-Null      # as 1.0.x did: plain folders, permissions inherited from the store
+            $m = @{ batch = (Split-Path $d -Leaf); version = '1.0.0'; created = '2026-10-01 10:00:00'; host = $env:COMPUTERNAME; plan = ''; entries = @() }
+            [IO.File]::WriteAllText((Join-Path $d 'manifest.json'), ($m | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($true)))
+        }
+        $acl = Get-Acl -LiteralPath $bad
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier('S-1-5-11')), 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+        Set-Acl -LiteralPath $bad -AclObject $acl
+        $l = Invoke-Act 'List'
+        $l.StdOut | Should -Match ('BATCH_JSON: \{"name":"' + [regex]::Escape((Split-Path $old -Leaf)) + '"')
+        $l.StdOut | Should -Not -Match ('"name":"' + [regex]::Escape((Split-Path $bad -Leaf)) + '"')
+        $l.StdOut | Should -Match 'ignoring untrusted batch folder'
+    }
 }
 
 # ====================================================================================================================

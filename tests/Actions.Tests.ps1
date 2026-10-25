@@ -302,7 +302,8 @@ Describe 'Actions: crash-safe undo record and honest results' -Tag 'Integration'
 
     It 'answers BUSY (exit 4) and changes nothing while another action holds the store lock (M2)' {
         $c = New-Case 'busy'
-        $h = Enter-StoreLock -Name (Get-StoreLockName -Prefix 'store' -Path $c.Store) -TimeoutMs 0 -TrustedOwners @()
+        [void][IO.Directory]::CreateDirectory($c.Store)
+        $h = Enter-StoreSecretLock -Prefix 'store' -Dir $c.Store -TimeoutMs 0 -TrustedOwners @()   # the name comes from <store>\lock.id
         try {
             $h.Status | Should -Be 'Ok'
             $r = Invoke-Actions $c @('-Mode', 'Quarantine', '-Plan', $c.Plan, '-Select', '1')
@@ -310,7 +311,7 @@ Describe 'Actions: crash-safe undo record and honest results' -Tag 'Integration'
             Get-ResultLine $r | Should -Be 'RESULT: BUSY'
             Test-Path -LiteralPath $c.Victim | Should -BeTrue
         }
-        finally { Exit-StoreLock $h }
+        finally { Exit-StoreSecretLock $h }
         (Invoke-Actions $c @('-Mode', 'Quarantine', '-Plan', $c.Plan, '-Select', '1')).ExitCode | Should -Be 0
     }
 
@@ -443,5 +444,31 @@ Invoke-$($Mode)Mode
         $r2.ExitCode | Should -Be 0 -Because $r2.StdOut
         $r2.StdOut | Should -Match 'already put back by an earlier restore'
         (Get-Manifest $c).restoredAt | Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Actions: permission checks of batch folders' -Tag 'Integration' {
+    It 'Get-ForeignAllowRule sees explicit AND inherited allow-rules for anybody but SYSTEM / Administrators' {
+        $code = @(
+            '$base = Join-Path $env:TEMP (''ramdoc-acl-'' + [guid]::NewGuid().ToString(''N'').Substring(0, 6))'
+            '[void][IO.Directory]::CreateDirectory($base, (New-StoreSecurity $false))     # SYSTEM + Administrators only (owner: this user)'
+            '$clean = Get-ForeignAllowRule $base'
+            '$acl = (Get-Item -LiteralPath $base).GetAccessControl()'
+            '$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier(''S-1-1-0'')), ''ReadAndExecute'', ''ContainerInherit,ObjectInherit'', ''None'', ''Allow'')))'
+            '(Get-Item -LiteralPath $base).SetAccessControl($acl)'
+            '$explicit = Get-ForeignAllowRule $base'
+            '[IO.Directory]::Delete($base)'
+            '$parent = Join-Path $env:TEMP (''ramdoc-acl2-'' + [guid]::NewGuid().ToString(''N'').Substring(0, 6)); [void][IO.Directory]::CreateDirectory($parent)'
+            '$child = Join-Path $parent ''child''; [void][IO.Directory]::CreateDirectory($child)      # only INHERITED rules'
+            '$inheritedOnly = -not @((Get-Item -LiteralPath $child).GetAccessControl().GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])).Count'
+            '$inherited = Get-ForeignAllowRule $child'
+            '[IO.Directory]::Delete($child); [IO.Directory]::Delete($parent)'
+            '''RESULT:'' + (@{ clean = $clean; explicit = $explicit; inherited = $inherited; inheritedOnly = $inheritedOnly } | ConvertTo-Json -Compress)'
+        ) -join "`r`n"
+        $res = Get-SnippetResult -Run (Invoke-ActionsSnippet -Code $code)
+        $res.clean | Should -Be ''
+        $res.explicit | Should -Be 'S-1-1-0'
+        $res.inheritedOnly | Should -BeTrue -Because 'the child folder must carry inherited rules only for this check to mean anything'
+        $res.inherited | Should -Match '^S-1-' -Because 'an inherited rule (here: the user''s own, from %TEMP%) counts too'
     }
 }

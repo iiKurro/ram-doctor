@@ -25,7 +25,8 @@
 #        Runs the script block while holding a named mutex (Global\ namespace, Local\ when that is not possible).
 #        Returns  Status = Ok (Value = the script's output) | Busy (the script did not run).
 #        Enter-StoreLock / Exit-StoreLock are the same lock for scripts that hold it until they exit;
-#        Get-StoreLockName -Prefix <p> -Path <folder> gives one lock name per folder.
+#        Get-StoreLockName -Prefix <p> -Path <folder> gives one lock name per folder; Enter-/Exit-StoreSecretLock use a
+#        name derived from a secret file only administrators can read (rotated on every release), so it cannot be squatted.
 #
 #    New-StorePrivateDir -Parent <dir> -Prefix <p>   /   Remove-StorePrivateDir -Path <dir>
 #        A fresh, randomly named folder that an elevated process can write in %TEMP% without a junction trap, and a
@@ -176,7 +177,10 @@ function Write-JsonAtomic {
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)]$Object,
         [Parameter(Mandatory)][ValidateRange(1, 1000000)][int]$Schema,
-        [ValidateRange(2, 99)][int]$Depth = 12
+        [ValidateRange(2, 99)][int]$Depth = 12,
+        # optional: the .tmp file is CREATED with this security descriptor (owner + DACL), so there is no moment in which
+        # it belongs to somebody else (see New-StoreFileSecurity)
+        [Security.AccessControl.FileSecurity]$FileSecurity = $null
     )
     try { $full = [IO.Path]::GetFullPath($Path) } catch { throw "Write-JsonAtomic: invalid path '$Path': $(Get-StoreErrorText $_)" }
     $dir = [IO.Path]::GetDirectoryName($full)
@@ -198,25 +202,38 @@ function Write-JsonAtomic {
         if (-not (Move-StoreDamaged $full)) { throw "Write-JsonAtomic: '$full' is damaged and could not be set aside ($script:StoreLastError); nothing was written." }
     }
 
-    Install-StoreText -Path $full -Text $json -Who 'Write-JsonAtomic'
+    Install-StoreText -Path $full -Text $json -Who 'Write-JsonAtomic' -FileSecurity $FileSecurity
 }
 
 function Write-TextAtomic {
     <# Writes -Text (UTF-8 with BOM) to -Path the same crash-safe way as Write-JsonAtomic (.tmp, flush, one rename,
        previous version kept as .bak). No schema, no parsing: for reports and other text files. Throws on failure. #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$Text, [Security.AccessControl.FileSecurity]$FileSecurity = $null)
     try { $full = [IO.Path]::GetFullPath($Path) } catch { throw "Write-TextAtomic: invalid path '$Path': $(Get-StoreErrorText $_)" }
     $dir = [IO.Path]::GetDirectoryName($full)
     if (-not $dir -or -not [IO.Directory]::Exists($dir)) { throw "Write-TextAtomic: the folder of '$full' does not exist." }
     if ([IO.Directory]::Exists($full)) { throw "Write-TextAtomic: '$full' is a folder." }
-    Install-StoreText -Path $full -Text $Text -Who 'Write-TextAtomic'
+    Install-StoreText -Path $full -Text $Text -Who 'Write-TextAtomic' -FileSecurity $FileSecurity
+}
+
+# A file security descriptor for files that only SYSTEM and Administrators may touch: owner Administrators, inheritance
+# off, full control for those two (by SID, so it works on every Windows language). Creating a file with an owner other than
+# oneself needs an elevated administrator token.
+function New-StoreFileSecurity {
+    $sec = New-Object Security.AccessControl.FileSecurity
+    $sec.SetAccessRuleProtection($true, $false)
+    foreach ($sid in 'S-1-5-18', 'S-1-5-32-544') {
+        $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($sid)), [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)))
+    }
+    $sec.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))
+    return $sec
 }
 
 # Writes <Path>.tmp (CreateNew, UTF-8 with BOM, flushed) and installs it with one rename. Throws "<Who>: ..." on failure,
 # after removing the .tmp; the previous version is then unchanged.
 function Install-StoreText {
-    param([string]$Path, [string]$Text, [string]$Who)
+    param([string]$Path, [string]$Text, [string]$Who, [Security.AccessControl.FileSecurity]$FileSecurity = $null)
     $full = $Path
     $tmp = $full + '.tmp'
     $bak = $full + '.bak'
@@ -226,7 +243,10 @@ function Install-StoreText {
     }
     $fs = $null
     try {
-        $fs = [IO.FileStream]::new($tmp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        if ($FileSecurity) {
+            $fs = [IO.FileStream]::new($tmp, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]'Write, ReadData, Synchronize', [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $FileSecurity)
+        }
+        else { $fs = [IO.FileStream]::new($tmp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None) }
         $pre = $script:StoreUtf8Bom.GetPreamble()
         $body = $script:StoreUtf8Bom.GetBytes($Text)
         $fs.Write($pre, 0, $pre.Length)
@@ -472,6 +492,80 @@ function Use-StoreLock {
     return $lkRes
 }
 
+# ------------------------------------------------------------------------------------------ store lock with a secret name
+# A lock name that a NON-elevated program cannot know: it comes from a random secret in <Dir>\lock.id, a file that only
+# SYSTEM and Administrators can read when -FileSecurity is the locked one (see New-StoreFileSecurity). A program that
+# cannot read it can neither predict the name nor squat it, so it cannot make every action answer "busy".
+# Mutex names can be listed while a lock is held, so the secret is replaced (atomically) before every release, and a copy
+# that waited on the old name re-reads the secret after acquiring and moves on to the current name.
+function Read-StoreLockSecret([string]$Dir, $FileSecurity) {
+    $f = Join-Path $Dir 'lock.id'
+    for ($i = 0; $i -lt 6; $i++) {
+        try {
+            if ([IO.File]::Exists($f)) {
+                $s = ([IO.File]::ReadAllText($f)).Trim()
+                if ($s -match '^[0-9a-f]{64}$') { return $s }
+                if ($i -ge 3) { Install-StoreText -Path $f -Text (New-StoreLockSecret) -Who 'lock.id' -FileSecurity $FileSecurity }   # unusable content: replace it
+            }
+            else {
+                $fs = $null
+                try {
+                    if ($FileSecurity) { $fs = [IO.FileStream]::new($f, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]'Write, ReadData, Synchronize', [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $FileSecurity) }
+                    else { $fs = [IO.FileStream]::new($f, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None) }
+                    $b = [Text.Encoding]::ASCII.GetBytes((New-StoreLockSecret))
+                    $fs.Write($b, 0, $b.Length); $fs.Flush($true)
+                } finally { if ($fs) { $fs.Dispose() } }
+            }
+        } catch { }                                              # another copy created or replaced it at the same moment
+        Start-Sleep -Milliseconds (40 * ($i + 1))
+    }
+    return ''
+}
+function New-StoreLockSecret {
+    $b = New-Object byte[] 32
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($b) } finally { $rng.Dispose() }
+    return ((@($b) | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Enter-StoreSecretLock {
+    <# Like Enter-StoreLock, for the lock of the folder -Dir (it must already exist): Status Ok | Busy. When the secret
+       cannot be read or created, the folder's path-derived name is used (Get-StoreLockName), as a safe fallback. #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Prefix,
+        [Parameter(Mandatory)][string]$Dir,
+        [ValidateRange(0, 600000)][int]$TimeoutMs = 3000,
+        [Security.AccessControl.FileSecurity]$FileSecurity = $null,
+        [string[]]$TrustedOwners = @()
+    )
+    $more = @{}
+    if ($PSBoundParameters.ContainsKey('TrustedOwners')) { $more['TrustedOwners'] = @($TrustedOwners) }
+    $end = (Get-Date).AddMilliseconds($TimeoutMs)
+    for ($round = 0; $round -lt 10; $round++) {
+        $secret = Read-StoreLockSecret $Dir $FileSecurity
+        $name = if ($secret) { $Prefix + '-' + $secret.Substring(0, 40) } else { Get-StoreLockName -Prefix $Prefix -Path $Dir }
+        $left = [int][Math]::Max(0, ($end - (Get-Date)).TotalMilliseconds)
+        $h = Enter-StoreLock -Name $name -TimeoutMs $left @more
+        $h | Add-Member -NotePropertyName Dir -NotePropertyValue $Dir -Force
+        $h | Add-Member -NotePropertyName FileSecurity -NotePropertyValue $FileSecurity -Force
+        $h | Add-Member -NotePropertyName SecretName -NotePropertyValue ([bool]$secret) -Force
+        if ($h.Status -ne 'Ok' -or -not $secret) { return $h }
+        if ((Read-StoreLockSecret $Dir $FileSecurity) -eq $secret) { return $h }   # still the current name: ours
+        Exit-StoreLock $h                                                         # the holder rotated it while we waited
+    }
+    return [pscustomobject]@{ Status = 'Busy'; Name = ''; Mutex = $null; Scope = ''; Guarded = $true; Abandoned = $false; Message = 'the lock name kept changing'; Dir = $Dir; FileSecurity = $FileSecurity; SecretName = $true }
+}
+
+function Exit-StoreSecretLock {
+    <# Releases a handle from Enter-StoreSecretLock; the secret is replaced first, so a name seen while it was held is useless. #>
+    param($Handle)
+    if (-not $Handle) { return }
+    if ($Handle.Mutex -and $Handle.SecretName) {
+        try { Install-StoreText -Path (Join-Path $Handle.Dir 'lock.id') -Text (New-StoreLockSecret) -Who 'lock.id' -FileSecurity $Handle.FileSecurity } catch { }
+    }
+    Exit-StoreLock $Handle
+}
 # ------------------------------------------------------------------------------------------ private temp folders
 # A folder for files that an ELEVATED process writes into a place the user can write to (%TEMP%): a fresh random name
 # (nothing can be planted there in advance), created with its final permissions in one step when elevated (owner
