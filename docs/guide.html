@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>طريقة الاستخدام — RAM Doctor | دليل مصوّر خطوة بخطوة</title>
+<meta name="description" content="دليل مصوّر لمن يستخدم RAM Doctor أول مرة: ماذا يفعل كل جزء في النافذة، من «ابدأ الفحص» إلى قراءة النتيجة والعزل والتراجع.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b">
+<link rel="canonical" href="https://iikurro.github.io/ram-doctor/guide.html">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="RAM Doctor">
+<meta property="og:title" content="طريقة استخدام RAM Doctor — دليل مصوّر">
+<meta property="og:description" content="كل جزء في نافذة RAM Doctor بالصور، لمن يستخدمها أول مرة.">
+<meta property="og:url" content="https://iikurro.github.io/ram-doctor/guide.html">
+<meta property="og:image" content="https://iikurro.github.io/ram-doctor/assets/og-image.png">
+<script>
+/* apply the saved theme before first paint (no flash); the same keys as the home page */
+(function(){try{var t=localStorage.getItem('rd-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t)}}catch(e){}document.documentElement.className='js'})();
+</script>
+<style>
+/* ---------- tokens: the same as the home page (index.html) ---------- */
+:root{
+  --bg:#fafafa;--fg:#18181b;--muted:#71717a;--muted2:#52525b;--card:#ffffff;--card2:#f4f4f5;--border:#e4e4e7;--line:rgba(24,24,27,.11);
+  --accent:#0067c0;--accent-fg:#ffffff;--accent-soft:rgba(0,103,192,.11);
+  --ok:#0f7b0f;--ok-bg:#dff6dd;--warn:#8a5200;--warn-bg:#fff4ce;--err:#c42b1c;--err-bg:#fde7e9;--info:#0067c0;--info-bg:#e8f1fa;
+  --glass:rgba(250,250,250,.74);
+  --shadow:0 1px 2px rgba(0,0,0,.05),0 22px 44px -14px rgba(0,0,0,.2);
+  --font:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Tahoma,Arial,sans-serif;
+  --font-d:"Segoe UI Variable Display","Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Tahoma,Arial,sans-serif;
+  --mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#09090b;--fg:#f4f4f5;--muted:#a1a1aa;--muted2:#d4d4d8;--card:#111113;--card2:#18181b;--border:#27272a;--line:rgba(244,244,245,.09);
+    --accent:#60cdff;--accent-fg:#00263d;--accent-soft:rgba(96,205,255,.14);
+    --ok:#6ccb5f;--ok-bg:#16301a;--warn:#f5c451;--warn-bg:#3a2e12;--err:#ff99a4;--err-bg:#3a1c1f;--info:#60cdff;--info-bg:#0f2633;
+    --glass:rgba(9,9,11,.74);
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 22px 44px -14px rgba(0,0,0,.7);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#09090b;--fg:#f4f4f5;--muted:#a1a1aa;--muted2:#d4d4d8;--card:#111113;--card2:#18181b;--border:#27272a;--line:rgba(244,244,245,.09);
+  --accent:#60cdff;--accent-fg:#00263d;--accent-soft:rgba(96,205,255,.14);
+  --ok:#6ccb5f;--ok-bg:#16301a;--warn:#f5c451;--warn-bg:#3a2e12;--err:#ff99a4;--err-bg:#3a1c1f;--info:#60cdff;--info-bg:#0f2633;
+  --glass:rgba(9,9,11,.74);
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 22px 44px -14px rgba(0,0,0,.7);
+  color-scheme:dark;
+}
+
+/* ---------- base ---------- */
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;scroll-padding-top:76px}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+img,svg{max-width:100%}
+a{color:inherit}
+h1,h2,h3,p{margin:0}
+.wrap{max-width:68rem;margin-inline:auto;padding-inline:1.5rem}
+.skip{position:absolute;inset-inline-start:1rem;top:-4rem;z-index:100;background:var(--fg);color:var(--bg);padding:.6rem 1rem;border-radius:.6rem;text-decoration:none;font-weight:600}
+.skip:focus{top:1rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
+.ic{width:1.25em;height:1.25em;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.ic-fill{fill:currentColor;stroke:none}
+.ltr{direction:ltr;unicode-bidi:isolate}
+kbd{font-family:var(--mono);font-size:.82em;padding:.05rem .4rem;border:1px solid var(--border);border-bottom-width:2px;border-radius:.35rem;background:var(--card);direction:ltr;unicode-bidi:isolate;white-space:nowrap}
+b.btn-name{font-weight:650}
+
+/* ---------- nav (glass) ---------- */
+.nav{position:sticky;top:0;z-index:50;background:var(--glass);-webkit-backdrop-filter:saturate(1.6) blur(14px);backdrop-filter:saturate(1.6) blur(14px);border-bottom:1px solid var(--border)}
+.nav .wrap{display:flex;align-items:center;gap:1rem;height:60px}
+.brand{display:flex;align-items:center;gap:.6rem;font-weight:700;font-family:var(--font-d);font-size:1.05rem;text-decoration:none;letter-spacing:-.01em}
+.brand svg{width:28px;height:28px}
+.nav-links{display:flex;gap:.15rem;margin-inline-start:1rem}
+.nav-links a{padding:.4rem .8rem;border-radius:.55rem;color:var(--muted2);text-decoration:none;font-size:.9rem;transition:background .2s,color .2s}
+.nav-links a:hover{background:var(--card2);color:var(--fg)}
+.nav-links a[aria-current="page"]{color:var(--fg);background:var(--card2);font-weight:600}
+.nav-end{margin-inline-start:auto;display:flex;gap:.5rem;align-items:center}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--border);border-radius:.6rem;background:var(--card);color:var(--fg);font:inherit;font-size:.85rem;font-weight:600;cursor:pointer;transition:background .2s}
+.icon-btn:hover{background:var(--card2)}
+.theme-sun{display:none}
+:root[data-theme="dark"] .theme-sun{display:block}
+:root[data-theme="dark"] .theme-moon{display:none}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .theme-sun{display:block}:root:not([data-theme="light"]) .theme-moon{display:none}}
+
+/* ---------- hero ---------- */
+.hero{position:relative;isolation:isolate;overflow:hidden;padding:4.2rem 0 3rem}
+.cols{position:absolute;inset:0;z-index:-1;pointer-events:none;
+  background-image:repeating-linear-gradient(to right,var(--line) 0 1px,transparent 1px 80px);background-position:center top;
+  -webkit-mask-image:radial-gradient(ellipse 62% 78% at 50% 30%,#000 30%,transparent 70%);mask-image:radial-gradient(ellipse 62% 78% at 50% 30%,#000 30%,transparent 70%)}
+.hero-grid{display:grid;grid-template-columns:1fr 1.05fr;gap:3rem;align-items:center}
+.kicker{display:inline-block;font-size:.75rem;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:.8rem}
+h1.display{font-family:var(--font-d);font-size:clamp(2rem,4.6vw,3.2rem);line-height:1.22;font-weight:700;letter-spacing:-.02em;text-wrap:balance;margin-bottom:1rem}
+.sub{color:var(--muted);font-size:1.08rem;margin-bottom:1.6rem;max-width:34rem}
+.cta{display:flex;flex-wrap:wrap;gap:.8rem;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:.6rem;height:3rem;padding-inline:1.6rem;border-radius:999px;background:var(--fg);color:var(--bg);font-weight:600;font-size:.95rem;text-decoration:none;transition:opacity .2s,transform .2s}
+.pill:hover{opacity:.88;transform:translateY(-1px)}
+.ghost{display:inline-flex;align-items:center;gap:.5rem;height:3rem;padding-inline:1.3rem;border:1px solid var(--border);border-radius:999px;background:var(--card);color:var(--fg);font-weight:600;font-size:.95rem;text-decoration:none;transition:background .2s}
+.ghost:hover{background:var(--card2)}
+.tip{display:flex;gap:.7rem;align-items:flex-start;margin-top:1.6rem;padding:.9rem 1rem;border:1px solid var(--border);border-radius:.9rem;background:var(--card);font-size:.92rem;color:var(--muted2);max-width:34rem}
+.tip .ic{color:var(--accent);margin-top:.25rem}
+.shot{margin:0;border:1px solid var(--border);border-radius:.9rem;overflow:hidden;background:var(--card2);box-shadow:var(--shadow)}
+.shot img{display:block;width:100%;height:auto}
+html[dir="rtl"] .arr{transform:scaleX(-1)}
+
+/* ---------- sections ---------- */
+section.s{padding:4rem 0}
+.s-head{display:flex;flex-direction:column;gap:.6rem;margin-bottom:2.4rem;max-width:44rem}
+.s-head h2{font-family:var(--font-d);font-size:clamp(1.6rem,3.4vw,2.3rem);line-height:1.25;font-weight:650;letter-spacing:-.02em;text-wrap:balance}
+.s-head p{color:var(--muted)}
+.alt{background:var(--card2);border-block:1px solid var(--border)}
+
+/* before you start */
+.prep{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;counter-reset:prep}
+.prep li{list-style:none;padding:1.3rem;border:1px solid var(--border);border-radius:1rem;background:var(--card)}
+.prep h3{display:flex;align-items:center;gap:.6rem;font-family:var(--font-d);font-size:1.08rem;margin-bottom:.4rem}
+.prep p{color:var(--muted2);font-size:.94rem}
+.n{display:inline-grid;place-items:center;width:1.9rem;height:1.9rem;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:.82rem;font-weight:700;flex:none;font-variant-numeric:tabular-nums}
+.prep-ol{padding:0;margin:0}
+.banner-shot{margin-top:1.4rem}
+
+/* the steps */
+.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3.2rem}
+.step{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:2.4rem;align-items:center}
+.step:nth-child(even) .step-txt{order:2}
+.step-txt{display:flex;flex-direction:column;gap:.7rem}
+.step-num{display:inline-grid;place-items:center;width:2.6rem;height:2.6rem;border-radius:50%;border:1px solid var(--border);background:var(--card);font-size:.8rem;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
+.step h3{font-family:var(--font-d);font-size:1.3rem;font-weight:650;letter-spacing:-.01em}
+.step p{color:var(--muted2)}
+.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.45rem;color:var(--muted2);font-size:.95rem}
+.list li{display:flex;gap:.55rem;align-items:flex-start}
+.list .ic{color:var(--accent);margin-top:.3rem;width:1.05em;height:1.05em}
+.legend{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;list-style:none;margin:.2rem 0 0;padding:0;font-size:.92rem}
+.legend li{display:flex;align-items:center;gap:.55rem;padding:.5rem .7rem;border-radius:.6rem;border:1px solid var(--border);background:var(--card)}
+.legend i{width:.8rem;height:.8rem;border-radius:50%;flex:none}
+.legend .g{background:var(--ok)}.legend .bl{background:var(--info)}.legend .y{background:#d39b00}.legend .r{background:var(--err)}
+.step .shot{justify-self:stretch}
+.shot.small{max-width:30rem;justify-self:center}
+/* wide pictures (a whole row of the window) get the full width, so the card text stays readable at 1:1 */
+.step.wide{grid-template-columns:1fr;gap:1.4rem}
+.step.wide .step-txt{order:0;max-width:46rem}
+.step.wide .shot{width:100%;max-width:58.875rem}
+
+/* good to know */
+.know{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem}
+.know div{display:flex;gap:.8rem;padding:1.2rem;border:1px solid var(--border);border-radius:1rem;background:var(--card)}
+.know .ic{color:var(--accent);margin-top:.25rem}
+.know b{display:block;margin-bottom:.15rem}
+.know p{color:var(--muted2);font-size:.93rem}
+.end{display:flex;flex-wrap:wrap;gap:.8rem;justify-content:center;margin-top:2.6rem}
+
+/* footer */
+footer{border-top:1px solid var(--border);padding:2.2rem 0;background:var(--card2);color:var(--muted);font-size:.86rem}
+footer .wrap{display:flex;flex-wrap:wrap;gap:.6rem 1.6rem;justify-content:space-between}
+footer a{color:var(--muted2);text-decoration:none}
+footer a:hover{color:var(--accent);text-decoration:underline}
+
+/* reveal */
+.js .rv{opacity:0;transform:translateY(14px);transition:opacity .6s ease,transform .6s cubic-bezier(.32,.72,0,1)}
+.js .rv.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.js .rv{opacity:1;transform:none}}
+@media (max-width:900px){
+  .hero-grid{grid-template-columns:1fr;gap:2rem}
+  .step{grid-template-columns:1fr;gap:1.2rem}
+  .step:nth-child(even) .step-txt{order:0}
+  .prep,.know{grid-template-columns:1fr}
+}
+@media (max-width:640px){
+  .nav-links{display:none}
+  .wrap{padding-inline:1rem}
+  section.s{padding:3rem 0}
+  .hero{padding:2.6rem 0 2rem}
+  .legend{grid-template-columns:1fr}
+}
+@media print{.nav,.cols{display:none}.js .rv{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main" data-i18n="skip">تخطَّ إلى المحتوى</a>
+
+<!-- icon sprite (the same strokes as the home page) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2b9bff"/><stop offset="1" stop-color="#0058ad"/></linearGradient></defs>
+  <symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="url(#lg)"/><g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="10.5" width="16" height="11" rx="2" stroke-width="1.8"/><path d="M11.5 7.5v3M16 7.5v3M20.5 7.5v3M11.5 21.5v3M16 21.5v3M20.5 21.5v3" stroke-width="1.6"/><path d="M10.5 16h3l1.5-2.6 2 5.2 1.5-2.6h3" stroke-width="1.5"/></g></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2m-7.07-2.93 1.41-1.41m11.32-11.32 1.41-1.41M2 12h2m16 0h2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+  <symbol id="i-restart" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+  <symbol id="i-wifioff" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/><path d="M5 12.859a10 10 0 0 1 5.17-2.69"/><path d="M19 12.859a10 10 0 0 0-2.007-1.523"/><path d="M2 8.82a15 15 0 0 1 4.177-2.643"/><path d="M22 8.82a15 15 0 0 0-11.288-3.764"/><path d="m2 2 20 20"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+</svg>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="RAM Doctor"><svg aria-hidden="true"><use href="#logo"/></svg><span>RAM Doctor</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="index.html" data-i18n="nav.home">الرئيسية</a>
+      <a href="guide.html" aria-current="page" data-i18n="nav.guide">طريقة الاستخدام</a>
+      <a href="#steps" data-i18n="nav.steps">النافذة خطوة بخطوة</a>
+      <a href="#know" data-i18n="nav.know">نصائح مهمة</a>
+    </nav>
+    <div class="nav-end">
+      <button class="icon-btn" id="themeBtn" type="button" data-i18n-attr="aria-label:aria.theme;title:aria.theme" aria-label="تبديل الوضع الفاتح/الداكن" title="تبديل الوضع الفاتح/الداكن"><svg class="ic theme-moon" aria-hidden="true"><use href="#i-moon"/></svg><svg class="ic theme-sun" aria-hidden="true"><use href="#i-sun"/></svg></button>
+      <button class="icon-btn" id="langBtn" type="button" aria-label="English" lang="en" style="font-size:.78rem">EN</button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ====================== HERO ====================== -->
+<section class="hero" aria-labelledby="h1">
+  <div class="cols" aria-hidden="true"></div>
+  <div class="wrap hero-grid">
+    <div class="rv">
+      <span class="kicker" data-i18n="hero.k">دليل مصوّر</span>
+      <h1 class="display" id="h1" data-i18n="hero.h1">طريقة الاستخدام، خطوة بخطوة</h1>
+      <p class="sub" data-i18n="hero.sub">كل جزء في نافذة RAM Doctor بالصور، لمن يستخدمها أول مرة. لا تحتاج أي خبرة: اقرأ الخطوات بالترتيب أو انتقل إلى ما تريد.</p>
+      <div class="cta">
+        <a class="pill" href="https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat" download="RAM-Doctor.bat" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-dl"/></svg><span data-i18n="cta.dl">نزّل الأداة</span></a>
+        <a class="ghost" href="#steps"><span data-i18n="cta.steps">ابدأ بالخطوات</span><svg class="ic arr" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+      </div>
+      <p class="tip"><svg class="ic" aria-hidden="true"><use href="#i-help"/></svg><span data-i18n="hero.tip">الشرح نفسه موجود داخل البرنامج: اضغط <b class="btn-name">«طريقة الاستخدام»</b> أعلى النافذة لتظهر جولة سريعة تضيء كل جزء وتشرحه. في الجولة: <kbd>Enter</kbd> للتالي و<kbd>Esc</kbd> للإغلاق.</span></p>
+    </div>
+    <figure class="shot rv">
+      <img src="assets/tour/tour-window.png" data-src-en="assets/en/tour/tour-window.png" width="942" height="930" decoding="async" alt="نافذة فاحص الذاكرة وفوقها بطاقة الجولة الأولى «أهلًا بك»" data-i18n-attr="alt:alt.window">
+    </figure>
+  </div>
+</section>
+
+<!-- ====================== BEFORE YOU START ====================== -->
+<section class="s alt" id="start" aria-labelledby="start-h">
+  <div class="wrap">
+    <div class="s-head rv">
+      <span class="kicker" data-i18n="start.k">قبل أن تبدأ</span>
+      <h2 id="start-h" data-i18n="start.h">ثلاث خطوات لفتح الأداة</h2>
+    </div>
+    <ol class="prep prep-ol">
+      <li class="rv"><h3><span class="n">1</span><span data-i18n="p1.t">نزّل الملف</span></h3><p data-i18n="p1.b">ملف واحد صغير اسمه <span class="ltr">RAM-Doctor.bat</span>، بدون تثبيت وبدون فك ضغط.</p></li>
+      <li class="rv"><h3><span class="n">2</span><span data-i18n="p2.t">افتحه</span></h3><p data-i18n="p2.b">انقر عليه نقرتين. إن ظهرت رسالة <span class="ltr">Windows protected your PC</span> فاضغط <span class="ltr">More info</span> ثم <span class="ltr">Run anyway</span>، ثم اختر «نعم» عندما يطلب ويندوز الإذن.</p></li>
+      <li class="rv"><h3><span class="n">3</span><span data-i18n="p3.t">خذ الجولة السريعة</span></h3><p data-i18n="p3.b">في أول مرة يظهر شريط أزرق يعرض عليك جولة لمدة دقيقة. اضغط «ابدأ الجولة»، أو افتحها لاحقًا من زر «طريقة الاستخدام».</p></li>
+    </ol>
+    <figure class="shot banner-shot rv">
+      <img src="assets/tour/00-banner.png" data-src-en="assets/en/tour/00-banner.png" width="942" height="235" loading="lazy" decoding="async" alt="أعلى النافذة في أول استخدام: شريط «جديد هنا؟ خذ جولة سريعة» وزر «ابدأ الجولة»" data-i18n-attr="alt:alt.banner">
+    </figure>
+  </div>
+</section>
+
+<!-- ====================== THE STEPS ====================== -->
+<section class="s" id="steps" aria-labelledby="steps-h">
+  <div class="wrap">
+    <div class="s-head rv">
+      <span class="kicker" data-i18n="steps.k">النافذة خطوة بخطوة</span>
+      <h2 id="steps-h" data-i18n="steps.h">ماذا يفعل كل جزء؟</h2>
+      <p data-i18n="steps.p">هذه هي خطوات الجولة نفسها التي تظهر داخل البرنامج، بالترتيب. الجزء المضاء في كل صورة هو الجزء المشروح.</p>
+    </div>
+    <ol class="steps">
+      <li class="step rv" id="s1">
+        <div class="step-txt">
+          <span class="step-num">01</span>
+          <h3 data-i18n="s1.t">ماذا تفعل الأداة؟</h3>
+          <p data-i18n="s1.b">تكتشف سبب امتلاء ذاكرة جهازك (RAM)، وتنبّهك إلى الملفات التي قد تكون ضارة. الفحص يقرأ فقط: لا يتغيّر شيء في جهازك إلا إذا اخترت ذلك بنفسك.</p>
+        </div>
+        <figure class="shot small"><img src="assets/tour/01-welcome.png" data-src-en="assets/en/tour/01-welcome.png" width="496" height="299" loading="lazy" decoding="async" alt="بطاقة «أهلًا بك في فاحص الذاكرة»" data-i18n-attr="alt:alt.s1"></figure>
+      </li>
+      <li class="step rv" id="s2">
+        <div class="step-txt">
+          <span class="step-num">02</span>
+          <h3 data-i18n="s2.t">ابدأ الفحص</h3>
+          <p data-i18n="s2.b">اضغط <b class="btn-name">«ابدأ الفحص»</b> والمشكلة موجودة، مثلًا والجهاز بطيء أو الذاكرة ممتلئة. يستغرق الفحص نحو دقيقة.</p>
+        </div>
+        <figure class="shot small"><img src="assets/tour/02-scan.png" data-src-en="assets/en/tour/02-scan.png" width="429" height="311" loading="lazy" decoding="async" alt="زر «ابدأ الفحص» مضاء" data-i18n-attr="alt:alt.s2"></figure>
+      </li>
+      <li class="step wide rv" id="s3">
+        <div class="step-txt">
+          <span class="step-num">03</span>
+          <h3 data-i18n="s3.t">تابع التقدّم</h3>
+          <p data-i18n="s3.b">الشريط والسطر تحته يوضّحان ما يجري فحصه الآن. اترك النافذة مفتوحة حتى يظهر «اكتمل الفحص».</p>
+        </div>
+        <figure class="shot"><img src="assets/tour/03-progress.png" data-src-en="assets/en/tour/03-progress.png" width="916" height="315" loading="lazy" decoding="async" alt="شريط التقدم وسطر الحالة مضاءان" data-i18n-attr="alt:alt.s3"></figure>
+      </li>
+      <li class="step wide rv" id="s4">
+        <div class="step-txt">
+          <span class="step-num">04</span>
+          <h3 data-i18n="s4.t">اقرأ النتيجة</h3>
+          <p data-i18n="s4.b">المربع الملوّن يلخّص النتيجة بكلمات بسيطة، ولونه يوضّح الأهمية:</p>
+          <ul class="legend">
+            <li><i class="g"></i><span data-i18n="c.g">أخضر: كل شيء سليم</span></li>
+            <li><i class="bl"></i><span data-i18n="c.b">أزرق: معلومة</span></li>
+            <li><i class="y"></i><span data-i18n="c.y">أصفر: يستحق نظرة</span></li>
+            <li><i class="r"></i><span data-i18n="c.r">أحمر: يحتاج انتباهك الآن</span></li>
+          </ul>
+        </div>
+        <figure class="shot"><img src="assets/tour/04-verdict.png" data-src-en="assets/en/tour/04-verdict.png" width="942" height="400" loading="lazy" decoding="async" alt="مربع النتيجة باللون الأحمر مضاء" data-i18n-attr="alt:alt.s4"></figure>
+      </li>
+      <li class="step wide rv" id="s5">
+        <div class="step-txt">
+          <span class="step-num">05</span>
+          <h3 data-i18n="s5.t">احتفظ بالنتيجة أو أرسلها</h3>
+          <ul class="list">
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="s5.1"><b class="btn-name">«افتح التقرير الكامل»</b>: كل التفاصيل في المتصفح.</span></li>
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="s5.2"><b class="btn-name">«مكان ملف التقرير»</b>: المجلد الذي فيه الملف، لترفقه برسالة.</span></li>
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="s5.3"><b class="btn-name">«نسخ ملخص للإرسال»</b>: ملخص قصير بلا معلومات شخصية تلصقه في محادثة.</span></li>
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="s5.4"><b class="btn-name">«مشاركة مع مساعدي»</b>: يظهر فقط إن جهّزه من يساعدك، ويرسل النتيجة إليه بشكل خاص بعد تأكيدك.</span></li>
+          </ul>
+        </div>
+        <figure class="shot"><img src="assets/tour/05-actions.png" data-src-en="assets/en/tour/05-actions.png" width="894" height="328" loading="lazy" decoding="async" alt="أزرار التقرير والملخص والمشاركة مضاءة" data-i18n-attr="alt:alt.s5"></figure>
+      </li>
+      <li class="step wide rv" id="s6">
+        <div class="step-txt">
+          <span class="step-num">06</span>
+          <h3 data-i18n="s6.t">ملفات تستحق المراجعة</h3>
+          <p data-i18n="s6.b">تظهر هذه القائمة فقط إن وجد الفحص ملفات مشبوهة. الوسم الأحمر «عالٍ» يعني أنه غالبًا ضار، والأصفر «متوسط» يحتاج تحققًا. الملفات عالية الخطورة محددة لك مسبقًا، فافتح التقرير قبل أن تقرر.</p>
+        </div>
+        <figure class="shot"><img src="assets/tour/06-findings.png" data-src-en="assets/en/tour/06-findings.png" width="942" height="544" loading="lazy" decoding="async" alt="قائمة الملفات المشبوهة مع وسوم الخطورة" data-i18n-attr="alt:alt.s6"></figure>
+      </li>
+      <li class="step rv" id="s7">
+        <div class="step-txt">
+          <span class="step-num">07</span>
+          <h3 data-i18n="s7.t">العزل: آمن ويمكن التراجع عنه</h3>
+          <p data-i18n="s7.b">حدّد الملفات ثم اضغط <b class="btn-name">«عزل الملفات المحددة»</b> وأكّد. تتوقف الملفات وتُنقل إلى مكان آمن ولا تُحذف. بعدها أعد تشغيل الجهاز وافحص من جديد لتتأكد أن الذاكرة رجعت طبيعية.</p>
+        </div>
+        <figure class="shot small"><img src="assets/tour/07-quarantine.png" data-src-en="assets/en/tour/07-quarantine.png" width="440" height="309" loading="lazy" decoding="async" alt="زر «عزل الملفات المحددة» مضاء" data-i18n-attr="alt:alt.s7"></figure>
+      </li>
+      <li class="step wide rv" id="s8">
+        <div class="step-txt">
+          <span class="step-num">08</span>
+          <h3 data-i18n="s8.t">تراجع وحذف وتنظيف</h3>
+          <ul class="list">
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="s8.1"><b class="btn-name">«تراجع»</b>: يُرجع آخر عزل كما كان تمامًا.</span></li>
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="s8.2"><b class="btn-name">«حذف نهائي»</b>: يمسح الملفات المعزولة بلا رجعة، ويطلب تأكيدك أولًا.</span></li>
+            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="s8.3"><b class="btn-name">«مسح التقارير»</b>: يحذف تقارير الفحص من سطح المكتب.</span></li>
+          </ul>
+        </div>
+        <figure class="shot"><img src="assets/tour/08-more.png" data-src-en="assets/en/tour/08-more.png" width="934" height="604" loading="lazy" decoding="async" alt="قسم «المزيد» مفتوحًا بأزرار التراجع والحذف والتنظيف" data-i18n-attr="alt:alt.s8"></figure>
+      </li>
+      <li class="step wide rv" id="s9">
+        <div class="step-txt">
+          <span class="step-num">09</span>
+          <h3 data-i18n="s9.t">التفاصيل التقنية</h3>
+          <p data-i18n="s9.b">سجلّ للمختصين، ويمكنك تجاهله. إن طلبه منك من يساعدك فافتحه وأرسل له صورة للشاشة.</p>
+        </div>
+        <figure class="shot"><img src="assets/tour/09-details.png" data-src-en="assets/en/tour/09-details.png" width="942" height="328" loading="lazy" decoding="async" alt="قسم «التفاصيل التقنية» مضاء" data-i18n-attr="alt:alt.s9"></figure>
+      </li>
+      <li class="step rv" id="s10">
+        <div class="step-txt">
+          <span class="step-num">10</span>
+          <h3 data-i18n="s10.t">اللغة</h3>
+          <p data-i18n="s10.b">بدّل بين العربية والإنجليزية في أي وقت. الفحص التالي يكتب تقريره باللغة التي اخترتها.</p>
+        </div>
+        <figure class="shot small"><img src="assets/tour/10-language.png" data-src-en="assets/en/tour/10-language.png" width="429" height="303" loading="lazy" decoding="async" alt="زر اللغة مضاء" data-i18n-attr="alt:alt.s10"></figure>
+      </li>
+      <li class="step rv" id="s11">
+        <div class="step-txt">
+          <span class="step-num">11</span>
+          <h3 data-i18n="s11.t">تحتاج مساعدة؟</h3>
+          <p data-i18n="s11.b">زر <b class="btn-name">«طريقة الاستخدام»</b> يفتح الجولة من جديد. وإن احترت فاضغط <b class="btn-name">«نسخ ملخص للإرسال»</b> بعد الفحص، والصقه في محادثة مع من يساعدك.</p>
+        </div>
+        <figure class="shot small"><img src="assets/tour/11-help.png" data-src-en="assets/en/tour/11-help.png" width="429" height="303" loading="lazy" decoding="async" alt="زر «طريقة الاستخدام» مضاء" data-i18n-attr="alt:alt.s11"></figure>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ====================== GOOD TO KNOW ====================== -->
+<section class="s alt" id="know" aria-labelledby="know-h">
+  <div class="wrap">
+    <div class="s-head rv">
+      <span class="kicker" data-i18n="know.k">نصائح مهمة</span>
+      <h2 id="know-h" data-i18n="know.h">أربعة أشياء تفيدك</h2>
+    </div>
+    <div class="know">
+      <div class="rv"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg><p><b data-i18n="k1.t">«إعادة التشغيل» وليس «إيقاف التشغيل»</b><span data-i18n="k1.b">مع ميزة «بدء التشغيل السريع» في ويندوز لا يُمسح تسرّب التعريف عند الإيقاف. أعد التشغيل ثم افحص من جديد.</span></p></div>
+      <div class="rv"><svg class="ic" aria-hidden="true"><use href="#i-wifioff"/></svg><p><b data-i18n="k2.t">الفحص بلا إنترنت</b><span data-i18n="k2.b">لا يتصل الفحص بأي خادم ولا يرسل إحصاءات. لا يخرج شيء من جهازك إلا إذا ضغطت «مشاركة» وأكّدت.</span></p></div>
+      <div class="rv"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg><p><b data-i18n="k3.t">لا إعدادات محفوظة</b><span data-i18n="k3.b">يبقى مجلد التقارير على سطح المكتب (آخر 3 فحوص)، وتحذفه بزر «مسح التقارير». وإن استخدمت العزل أو المشاركة يبقى أيضًا مجلد العزل واسمك للمشاركة، وتحذفهما من النافذة نفسها.</span></p></div>
+      <div class="rv"><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg><p><b data-i18n="k4.t">ليس مضاد فيروسات</b><span data-i18n="k4.b">«مشبوه» لا يعني دائمًا «فيروس». راجع التقرير، وإن شككت فاسأل من يساعدك قبل العزل.</span></p></div>
+    </div>
+    <div class="end rv">
+      <a class="pill" href="https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat" download="RAM-Doctor.bat" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-dl"/></svg><span data-i18n="cta.dl">نزّل الأداة</span></a>
+      <a class="ghost" href="index.html"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg><span data-i18n="cta.home">الصفحة الرئيسية</span></a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>RAM Doctor · © 2026 7san · All rights reserved</span>
+    <span><a href="index.html" data-i18n="ft.home">الرئيسية</a> · <a href="https://github.com/iiKurro/ram-doctor" rel="noopener" data-i18n="ft.repo">المستودع على GitHub</a> · <a href="https://github.com/iiKurro/ram-doctor/issues" rel="noopener" data-i18n="ft.iss">المشاكل والاقتراحات</a></span>
+  </div>
+</footer>
+
+<script>
+(function(){
+'use strict';
+var D=document, R=D.documentElement;
+function $$(s,r){return Array.prototype.slice.call((r||D).querySelectorAll(s))}
+function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+
+/* ---------------- i18n: the markup is Arabic; English lives here (the same keys as the window's tour where they overlap) ---------------- */
+var EN={
+'skip':'Skip to content','nav.home':'Home','nav.guide':'How to use','nav.steps':'The window, step by step','nav.know':'Good to know','aria.theme':'Toggle light/dark theme',
+'hero.k':'Illustrated guide','hero.h1':'How to use RAM Doctor, step by step',
+'hero.sub':'Every part of the RAM Doctor window in pictures, for first-time users. No experience needed: read the steps in order or jump to the one you need.',
+'cta.dl':'Download the tool','cta.steps':'Go to the steps','cta.home':'Home page',
+'hero.tip':'The same guide is built into the program: press <b class="btn-name">“How to use”</b> at the top of the window for a short tour that lights up and explains each part. In the tour: <kbd>Enter</kbd> for the next step, <kbd>Esc</kbd> to close.',
+'alt.window':'The RAM Doctor window with the first tour card, “Welcome to RAM Doctor”, on top',
+'start.k':'Before you start','start.h':'Three steps to open the tool',
+'p1.t':'Download the file','p1.b':'One small file called <span class="ltr">RAM-Doctor.bat</span>. Nothing to install, nothing to unzip.',
+'p2.t':'Open it','p2.b':'Double-click it. If Windows shows <span class="ltr">Windows protected your PC</span>, press <span class="ltr">More info</span> and then <span class="ltr">Run anyway</span>. Answer “Yes” when Windows asks for permission.',
+'p3.t':'Take the short tour','p3.b':'The first time, a blue bar offers a 1-minute tour. Press “Start the tour”, or open it later with the “How to use” button.',
+'alt.banner':'The top of the window on first use: the bar “New here? Take a 1-minute tour” with a “Start the tour” button',
+'steps.k':'The window, step by step','steps.h':'What does each part do?','steps.p':'These are the steps of the tour inside the program, in the same order. In each picture the lit part is the one explained.',
+'s1.t':'What does the tool do?','s1.b':'It finds out why the memory (RAM) of your PC is full, and points out files that may be harmful. The scan only looks: nothing on your PC changes unless you choose it.',
+'alt.s1':'The card “Welcome to RAM Doctor”',
+'s2.t':'Start the scan','s2.b':'Press <b class="btn-name">“Start scan”</b> while the problem is happening, for example when the PC is slow or memory is full. The scan takes about a minute.',
+'alt.s2':'The “Start scan” button, lit',
+'s3.t':'Follow the progress','s3.b':'The bar and the line under it show what is being checked. Keep the window open until it says the scan is complete.',
+'alt.s3':'The progress bar and the status line, lit',
+'s4.t':'Read the result','s4.b':'The coloured box sums up the result in plain words, and its colour tells you how urgent it is:',
+'c.g':'Green: all is well','c.b':'Blue: information','c.y':'Yellow: worth a look','c.r':'Red: needs your attention now',
+'alt.s4':'The result box, in red, lit',
+'s5.t':'Keep or send the result',
+'s5.1':'<b class="btn-name">“Open full report”</b>: all the details, in your browser.',
+'s5.2':'<b class="btn-name">“Report location”</b>: the folder that holds the report file, to attach it to a message.',
+'s5.3':'<b class="btn-name">“Copy summary to send”</b>: a short summary without personal details, to paste into a chat.',
+'s5.4':'<b class="btn-name">“Share with my helper”</b>: only there when the person who helps you set it up; it sends the result to them privately after you confirm.',
+'alt.s5':'The report, summary and share buttons, lit',
+'s6.t':'Files worth reviewing','s6.b':'This list appears only when the scan finds suspicious files. A red “High” label means the file is likely harmful, a yellow “Medium” one needs a check. High-risk files are ticked for you; open the report before you decide.',
+'alt.s6':'The list of suspicious files with their risk labels',
+'s7.t':'Quarantine: safe and reversible','s7.b':'Tick the files, press <b class="btn-name">“Quarantine selected”</b> and confirm. The files are stopped and moved to a safe place, not deleted. Then restart the PC and scan again to check that memory is back to normal.',
+'alt.s7':'The “Quarantine selected” button, lit',
+'s8.t':'Undo, delete and clean up',
+'s8.1':'<b class="btn-name">“Undo”</b>: puts the last quarantine back exactly as it was.',
+'s8.2':'<b class="btn-name">“Delete forever”</b>: removes the quarantined files for good, after asking you to confirm.',
+'s8.3':'<b class="btn-name">“Clear reports”</b>: deletes the scan reports from the desktop.',
+'alt.s8':'The “More” section, open, with the undo, delete and clean-up buttons',
+'s9.t':'Technical details','s9.b':'A log for specialists; you can ignore it. If the person who helps you asks for it, open it and send them a screenshot.',
+'alt.s9':'The “Technical details” section, lit',
+'s10.t':'Language','s10.b':'Switch between English and Arabic at any time. The next scan writes its report in the language you chose.',
+'alt.s10':'The language button, lit',
+'s11.t':'Need help?','s11.b':'The <b class="btn-name">“How to use”</b> button opens the tour again. Stuck? After a scan press <b class="btn-name">“Copy summary to send”</b> and paste the text into a chat with the person who helps you.',
+'alt.s11':'The “How to use” button, lit',
+'know.k':'Good to know','know.h':'Four things that help',
+'k1.t':'“Restart”, not “Shut down”','k1.b':'With Windows Fast Startup, shutting down does not clear a leaking driver. Restart, then scan again.',
+'k2.t':'The scan is offline','k2.b':'The scan contacts no server and sends no statistics. Nothing leaves your PC unless you press “Share” and confirm.',
+'k3.t':'No saved settings','k3.b':'The reports folder on your desktop stays (the newest 3 scans); the “Clear reports” button deletes it. If you use quarantine or sharing, the quarantine folder and your sharing name stay too, and the window can delete them.',
+'k4.t':'Not an antivirus','k4.b':'“Suspicious” does not always mean “virus”. Read the report, and if in doubt ask the person who helps you before quarantining.',
+'ft.home':'Home','ft.repo':'Repository on GitHub','ft.iss':'Issues &amp; ideas',
+'meta.title':'How to use RAM Doctor — an illustrated, step-by-step guide',
+'meta.desc':'An illustrated guide for first-time users of RAM Doctor: what each part of the window does, from “Start scan” to reading the result, quarantine and undo.'
+};
+var AR_TITLE=D.title, metaDesc=D.querySelector('meta[name="description"]'), AR_DESC=metaDesc?metaDesc.getAttribute('content'):'';
+var langBtn=D.getElementById('langBtn');
+function setLang(l){
+  var en=l==='en';
+  R.lang=en?'en':'ar'; R.dir=en?'ltr':'rtl';
+  $$('[data-i18n]').forEach(function(el){
+    if(el._ar===undefined) el._ar=el.innerHTML;
+    var k=el.getAttribute('data-i18n');
+    el.innerHTML=(en&&EN[k]!==undefined)?EN[k]:el._ar;
+  });
+  $$('[data-i18n-attr]').forEach(function(el){
+    el.getAttribute('data-i18n-attr').split(';').forEach(function(p){
+      var kv=p.split(':'), a=kv[0], k=kv[1];
+      if(!el._at) el._at={};
+      if(el._at[a]===undefined) el._at[a]=el.getAttribute(a);
+      el.setAttribute(a,(en&&EN[k]!==undefined)?EN[k]:el._at[a]);
+    });
+  });
+  /* the pictures follow the language: the English ones live in assets/en/ (same names) */
+  $$('img[data-src-en]').forEach(function(img){
+    if(img._ar===undefined) img._ar=img.getAttribute('src');
+    img.setAttribute('src',en?img.getAttribute('data-src-en'):img._ar);
+  });
+  D.title=en?EN['meta.title']:AR_TITLE;
+  if(metaDesc) metaDesc.setAttribute('content',en?EN['meta.desc']:AR_DESC);
+  langBtn.textContent=en?'ع':'EN';
+  langBtn.setAttribute('aria-label',en?'العربية':'English');
+  langBtn.setAttribute('lang',en?'ar':'en');
+  store('rd-lang',l);
+}
+langBtn.addEventListener('click',function(){setLang(R.lang==='en'?'ar':'en')});
+if(store('rd-lang')==='en') setLang('en');
+
+/* ---------------- theme (shared with the home page) ---------------- */
+function effectiveDark(){var t=R.getAttribute('data-theme');return t?t==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches}
+D.getElementById('themeBtn').addEventListener('click',function(){var n=effectiveDark()?'light':'dark';R.setAttribute('data-theme',n);store('rd-theme',n)});
+
+/* ---------------- reveal on scroll ---------------- */
+(function(){
+  var els=$$('.rv');
+  if(!('IntersectionObserver' in window)){els.forEach(function(e){e.classList.add('in')});return}
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{rootMargin:'0px 0px -6% 0px',threshold:.06});
+  els.forEach(function(e){io.observe(e)});
+})();
+})();
+</script>
+</body>
+</html>

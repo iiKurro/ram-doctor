@@ -99,6 +99,10 @@
 
 ## البدء السريع
 
+> **أول مرة؟** اقرأ [طريقة الاستخدام بالصور](https://iikurro.github.io/ram-doctor/guide.html)، أو اضغط زر
+> **طريقة الاستخدام** أعلى النافذة لتظهر جولة سريعة (دقيقة واحدة) تضيء كل جزء وتشرحه. الجولة لا تفحص
+> ولا تغيّر شيئًا، وتعرضها النافذة تلقائيًا في أول استخدام.
+
 1. **نزّل** [`RAM-Doctor.bat`](https://github.com/iiKurro/ram-doctor/releases/latest/download/RAM-Doctor.bat)
    من [آخر إصدار](https://github.com/iiKurro/ram-doctor/releases/latest).
    وللتحقق (اختياري): `Get-FileHash .\RAM-Doctor.bat -Algorithm SHA256` وقارن
@@ -345,7 +349,8 @@ ram-doctor/
 │  ├─ RAM-Doctor-Actions.ps1    عزل / تراجع / حذف نهائي / عرض
 │  └─ lib/
 │     ├─ Native.cs              مساعدات P/Invoke للقراءة فقط (وسوم المجمّع، فحص PID ...)
-│     ├─ Fluent.cs              عناصر WinForms بطابع ويندوز 11
+│     ├─ Fluent.cs              عناصر WinForms بطابع ويندوز 11 (ومنها طبقة الجولة)
+│     ├─ Tour.ps1               الجولة التعريفية داخل النافذة
 │     └─ Report.ps1             منشئ تقرير HTML
 ├─ server/                      الوسيط (Cloudflare Worker) خلف زر المشاركة
 ├─ build/Build-SingleFile.ps1   يحزم src/ في dist/RAM-Doctor.bat
