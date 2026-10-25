@@ -17,6 +17,10 @@
   -Lang en   English, left-to-right; pictures go to docs\assets\en
   -Only      a subset, e.g. -Only gui-light,report-sample
 
+  Tour pictures (scenarios tour, tour-banner): every step of the guided tour (lib\Tour.ps1), cut to the card and the control it
+  lights up, as <OutDir>\tour\NN-<step>.png, the whole window at the first step (tour-window.png) and the first-use banner
+  (00-banner.png). The website's illustrated guide (docs\guide.html) shows them.
+
   powershell -NoProfile -ExecutionPolicy Bypass -File tests\gui\Make-Screenshots.ps1 -Lang en
 #>
 [CmdletBinding()]
@@ -88,6 +92,7 @@ function Force-Foreground($f) {
     }
 }
 function Fit-Window {
+    if ($form.WindowState -ne 'Normal') { $form.WindowState = 'Normal' }   # a minimised or maximised window cannot be photographed
     $col.PerformLayout()
     $form.ClientSize = New-Object System.Drawing.Size(940, [math]::Min($col.Height + 4, [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 80))
     [System.Windows.Forms.Application]::DoEvents()
@@ -113,6 +118,26 @@ function Dialog-Shot([scriptblock]$show, [string]$path) {
 }
 $script:OUT = '%OUT%'
 $script:DemoShare = [pscustomobject]@{ Configured = $true; Name = '%USER%'; UserId = 'a1b2c3d4e5'; Helper = (Get-Text 'gui.helper.demo'); EndpointConfigured = $true }
+# a picture of the part of the window around the tour card and the lit control (the guide shows them at 1:1)
+function Save-Crop([string]$path, [System.Drawing.Rectangle]$r) {
+    $tmp = Join-Path $env:TEMP ('ramdoctor-shot-' + [guid]::NewGuid().ToString('N') + '.png')
+    Save-WindowShot $tmp
+    $img = [System.Drawing.Bitmap]::FromFile($tmp)
+    try {
+        $r = [System.Drawing.Rectangle]::Intersect($r, (New-Object System.Drawing.Rectangle(0, 0, $img.Width, $img.Height)))
+        $part = $img.Clone($r, $img.PixelFormat)
+        $part.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); $part.Dispose()
+    } finally { $img.Dispose(); Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+}
+function Save-TourShot([string]$path) {
+    $o = $script:Tour.Overlay
+    $frame = [Fluent.Win]::FrameBounds($form.Handle)
+    $r = $o.CardBounds
+    $pad = 28
+    if (-not $o.Hole.IsEmpty) { $r = [System.Drawing.Rectangle]::Union($r, $o.Hole) } else { $pad = 56 }
+    $r = [System.Drawing.Rectangle]::Inflate($r, $pad, $pad)
+    Save-Crop $path (New-Object System.Drawing.Rectangle(($r.X + $o.Left - $frame.X), ($r.Y + $o.Top - $frame.Y), $r.Width, $r.Height))
+}
 '@
 
 $scenarios = @(
@@ -129,6 +154,7 @@ Fit-Window
 Save-WindowShot (Join-Path $script:OUT 'gui-dark.png')
 '@ },
     @{ Name = 'gui-progress'; Reports = 'empty'; Theme = 'Light'; Extra = @(); Body = @'
+Hide-TourBanner   # a real scan hides the first-use banner
 $btnScan.Enabled = $false; $btnScan.Text = Get-Text 'gui.btn.scanning'
 $bar.Value = 46
 Set-Status 'gui.step.8' 46
@@ -167,6 +193,30 @@ Dialog-Shot { [void](Show-ShareDialog $pv) } (Join-Path $script:OUT 'gui-share.p
     @{ Name = 'gui-profile'; Reports = 'high'; Theme = 'Light'; Extra = @('-ShareForceConfigured'); Body = @'
 Load-Results (Get-LatestResult) $false
 Dialog-Shot { [void](Show-ProfileDialog) } (Join-Path $script:OUT 'gui-profile.png')
+'@ },
+    # the guided tour: every step (card + lit control) for the illustrated guide (docs/guide.html), plus the whole window
+    @{ Name = 'tour'; Reports = 'high'; Theme = 'Light'; Extra = @('-ShareForceConfigured'); Body = @'
+Load-Results (Get-LatestResult) $false
+Set-Status 'gui.status.done' 100
+Fit-Window
+$dir = Join-Path $script:OUT 'tour'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$script:TourNoAnimation = $true
+Start-Tour
+for ($i = 0; $i -lt $script:Tour.Steps.Count; $i++) {
+    Show-TourStep $i
+    [System.Windows.Forms.Application]::DoEvents()
+    if ($i -eq 0) { Save-WindowShot (Join-Path $dir 'tour-window.png') }
+    Save-TourShot (Join-Path $dir ('{0:00}-{1}.png' -f ($i + 1), $script:Tour.Steps[$i].Id))
+}
+Stop-Tour
+'@ },
+    # first use: the header with the "take a tour" banner
+    @{ Name = 'tour-banner'; Reports = 'empty'; Theme = 'Light'; Extra = @(); Body = @'
+Fit-Window
+$dir = Join-Path $script:OUT 'tour'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$frame = [Fluent.Win]::FrameBounds($form.Handle)
+$r = [Fluent.Win]::ScreenRect($tourBar.Handle)
+Save-Crop (Join-Path $dir '00-banner.png') (New-Object System.Drawing.Rectangle(0, 0, $frame.Width, ($r.Bottom - $frame.Y + 16)))
 '@ }
 )
 
