@@ -32,6 +32,13 @@ Describe 'Plan JSON contract' {
         $p.suspects[0].procs.Count | Should -Be 0
     }
 
+    It 'accepts the optional language field ("<Lang>") and a plan without it (older releases)' -ForEach @(@{ Lang = 'ar' }, @{ Lang = 'en' }) {
+        $p = ConvertTo-RoundTrip (New-SyntheticPlan)
+        Test-RamPlan -Plan $p | Should -BeNullOrEmpty
+        $p | Add-Member -NotePropertyName lang -NotePropertyValue $Lang
+        Test-RamPlan -Plan (ConvertTo-RoundTrip $p) | Should -BeNullOrEmpty
+    }
+
     It 'accepts a plan with no suspects' {
         $p = New-SyntheticPlan
         $p.suspects = @()
@@ -55,6 +62,7 @@ Describe 'Plan JSON contract' {
         It '<Case>' -ForEach @(
             @{ Case = "missing top-level 'host'"; Mutate = { param($p) $p.PSObject.Properties.Remove('host') }; Expect = "missing 'host'" }
             @{ Case = "wrong tool name"; Mutate = { param($p) $p.tool = 'Other' }; Expect = 'plan.tool' }
+            @{ Case = "unknown language"; Mutate = { param($p) $p | Add-Member -NotePropertyName lang -NotePropertyValue 'fr' }; Expect = 'plan.lang invalid' }
             @{ Case = 'unparseable created date'; Mutate = { param($p) $p.created = 'yesterday-ish' }; Expect = 'plan.created' }
             @{ Case = 'verdict level outside ok/low/med/high'; Mutate = { param($p) $p.verdict.Level = 'purple' }; Expect = 'verdict.Level invalid' }
             @{ Case = 'empty verdict headline'; Mutate = { param($p) $p.verdict.Headline = '' }; Expect = 'Headline is empty' }

@@ -1,4 +1,4 @@
-# Cross-component contract: what the PRODUCT renders and the share client uploads must be accepted by the RELAY's validator.
+﻿# Cross-component contract: what the PRODUCT renders and the share client uploads must be accepted by the RELAY's validator.
 # Each side has its own tests with its own samples; this is the one place where the real report meets the real checker
 # (the first live upload failed exactly here: the relay mistook CSS "scroll-behavior" for the legacy "behavior:" property).
 # Needs Node.js (preinstalled on the CI runners); skipped when it is not available.
@@ -20,15 +20,16 @@ AfterAll {
 }
 
 Describe 'Report and relay contract' {
-    It 'the relay accepts the redacted report.html of the "<Scenario>" scenario' -ForEach @(
-        @{ Scenario = 'leak' }, @{ Scenario = 'miner' }, @{ Scenario = 'clean' }
+    It 'the relay accepts the redacted report.html of the "<Scenario>" scenario in <Lang>' -ForEach @(
+        @{ Scenario = 'leak'; Lang = 'ar' }, @{ Scenario = 'miner'; Lang = 'ar' }, @{ Scenario = 'clean'; Lang = 'ar' },
+        @{ Scenario = 'leak'; Lang = 'en' }, @{ Scenario = 'miner'; Lang = 'en' }, @{ Scenario = 'clean'; Lang = 'en' }
     ) {
         if (-not $script:Node) { Set-ItResult -Skipped -Because 'Node.js is not installed'; return }
-        $dir = Join-Path $script:Work $Scenario
+        $dir = Join-Path $script:Work "$Scenario-$Lang"
         New-Item -ItemType Directory -Path $dir | Out-Null
         $files = New-TestPlanFiles -Dir $dir -Stamp '20260101-120000'
         # swap the fixture's placeholder page for a REAL report rendered by the product
-        $html = New-RamReportHtml (Get-DemoReportData -Scenario $Scenario)
+        $html = New-RamReportHtml (Get-DemoReportData -Scenario $Scenario -Lang $Lang)
         [IO.File]::WriteAllText($files.Html, $html, (New-Object Text.UTF8Encoding($true)))
         $profile0 = [pscustomobject]@{ displayName = 'Friend'; userId = '0123abcd' }
         $bundle = New-ShareBundle -PlanPath $files.Plan -Profile $profile0
@@ -45,6 +46,32 @@ Describe 'Report and relay contract' {
         $out = & node $probe $page 2>&1 | Out-String
         $LASTEXITCODE | Should -Be 0 -Because "the relay refused the report: $out"
         $out | Should -Match '"ok":true'
+    }
+}
+
+Describe 'summary.md and the relay sanitiser' {
+    It 'an Arabic plan keeps its right-to-left block, an English plan needs none and loses nothing (<Lang>)' -ForEach @(@{ Lang = 'ar' }, @{ Lang = 'en' }) {
+        if (-not $script:Node) { Set-ItResult -Skipped -Because 'Node.js is not installed'; return }
+        $dir = Join-Path $script:Work "summary-$Lang"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        $files = New-TestPlanFiles -Dir $dir -Stamp '20260101-120000' -Lang $Lang
+        $bundle = New-ShareBundle -PlanPath $files.Plan -Profile ([pscustomobject]@{ displayName = 'Friend'; userId = '0123abcd' })
+        $summary = ($bundle.Files | Where-Object { $_.name -eq 'summary.md' }).content
+        $page = Join-Path $dir 'summary.md'
+        [IO.File]::WriteAllText($page, $summary, (New-Object Text.UTF8Encoding($false)))
+        $probe = Join-Path $dir 'sanitize.mjs'
+        $js = "import { readFileSync } from 'node:fs';`n" +
+        "import { sanitizeSummary } from '$($script:LibUrl)';`n" +
+        "console.log(JSON.stringify({ out: sanitizeSummary(readFileSync(process.argv[2], 'utf8')) }));`n"
+        [IO.File]::WriteAllText($probe, $js, (New-Object Text.UTF8Encoding($false)))
+        $out = (& node $probe $page 2>&1 | Out-String)
+        $LASTEXITCODE | Should -Be 0 -Because $out
+        if ($Lang -eq 'ar') { $out | Should -Match '<div dir=\\"rtl\\">' }
+        else {
+            $summary | Should -Not -Match '<div'
+            $out | Should -Not -Match '&lt;/?div'
+            $out | Should -Match 'Most likely cause'
+        }
     }
 }
 

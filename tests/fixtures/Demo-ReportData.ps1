@@ -5,22 +5,31 @@
 #  "DESKTOP-DEMO", fictional driver "netflt64.sys", IPs from the documentation range 203.0.113.0/24.
 #
 #  Usage:   . tests\fixtures\Demo-ReportData.ps1
-#           $data = Get-DemoReportData -Scenario leak      # leak | miner | clean
+#           $data = Get-DemoReportData -Scenario leak                 # leak | miner | clean
+#           $data = Get-DemoReportData -Scenario leak -Lang en        # ar (default) | en
 #           . src\lib\Report.ps1 ; New-RamReportHtml $data | Set-Content demo.html -Encoding UTF8
+#
+#  The texts are built from the SAME string-table keys the scan uses (src\lib\Strings.ps1), in the
+#  chosen language, so the demo shows exactly what a real scan writes. The returned object carries Lang.
 #
 #  UTF-8 WITH BOM (Arabic text).
 # ------------------------------------------------------------------------------------------
 
+if (-not (Get-Command Get-Text -CommandType Function -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot '..\..\src\lib\Strings.ps1') }
+
 function New-DemoRow([hashtable]$h) { [pscustomobject]$h }
 
 function Get-DemoReportData {
-    param([ValidateSet('leak', 'miner', 'clean')][string]$Scenario = 'leak')
+    param([ValidateSet('leak', 'miner', 'clean')][string]$Scenario = 'leak', [ValidateSet('ar', 'en')][string]$Lang = 'ar')
+
+    # text in the demo language: Tx 'key' arg1 arg2 ...
+    $Tx = { param([string]$k) Get-Text $k @args -Lang $Lang }
 
     $sys = New-DemoRow @{
         Host = 'DESKTOP-DEMO'; User = 'Friend'; OS = 'Microsoft Windows 11 Pro (10.0.26100)'
         Cpu = 'Intel(R) Core(TM) i5-12400F'; Gpus = 'NVIDIA GeForce RTX 3060'
         InstalledGB = 16; UsableGB = 15.84; ReservedGB = 0.16; Uptime = '12d 4h 31m'; UptimeDays = 12.2
-        FastStartup = $true; Hypervisor = $false; IsAdmin = $true; Culture = 'ar-SA'
+        FastStartup = $true; Hypervisor = $false; IsAdmin = $true; Culture = $(if ($Lang -eq 'en') { 'en-US' } else { 'ar-SA' })
     }
     $counts = New-DemoRow @{ Processes = 142; Services = 258; Tasks = 61; Autoruns = 12; Drivers = 187; Wmi = 0 }
 
@@ -61,22 +70,22 @@ function Get-DemoReportData {
                 CommittedGB = 17.8; CommitLimitGB = 24.3; CacheResidentGB = 0.9; DriverResidentGB = 0.1; WindowSec = 32
                 NonPagedGrowthMB = 118; PagedGrowthMB = 4; CommitGrowthMB = 126; UsedGrowthMB = 131
             }
-            $verdict = New-DemoRow @{ Level = 'high'; Headline = 'السبب الأرجح: تسرّب ذاكرة في تعريف (Driver) على مستوى النواة' }
+            $verdict = New-DemoRow @{ Level = 'high'; Headline = (& $Tx 'verdict.driver') }
             $obs = @(
-                (New-DemoRow @{ Level = 'high'; Title = 'تسرّب محتمل في ذاكرة النواة (Non-paged pool)'; Body = 'حجم مجمّع الذاكرة غير المتصفّح يبلغ 9.6 GB والطبيعي أقل من نحو 1 GB. هذا أقوى مؤشر على تسرّب ذاكرة من تعريف (Driver)، ولا يُنسب في مدير المهام لأي برنامج. أكبر مستهلك داخل المجمّع هو الوسم [ExNf] بحجم 7424 MB (قد يتبع: netflt64.sys).' }),
-                (New-DemoRow @{ Level = 'high'; Title = 'التسرّب نشط الآن'; Body = 'خلال 32 ثانية فقط زاد Non-paged بمقدار 118 MB و Paged بمقدار 4 MB. راجع جدول الوسوم (Pool tags) الأسرع نموًا.' }),
-                (New-DemoRow @{ Level = 'med'; Title = 'التشغيل السريع (Fast Startup) مفعّل والجهاز شغّال منذ مدة'; Body = 'مدة التشغيل 12d 4h 31m. مع Fast Startup خيار «إيقاف التشغيل» لا يصفّر النواة، فأي تسرّب يبقى بعد الإطفاء. استخدم «إعادة التشغيل» (Restart) أو عطّل Fast Startup.' })
+                (New-DemoRow @{ Level = 'high'; Title = (& $Tx 'obs.npp.high.t'); Body = ((& $Tx 'obs.npp.high.b' '9.6') + (& $Tx 'obs.toptag' 'ExNf' 7424 (& $Tx 'obs.toptag.maybe' 'netflt64.sys'))) }),
+                (New-DemoRow @{ Level = 'high'; Title = (& $Tx 'obs.leak.t'); Body = (& $Tx 'obs.leak.b' 32 118 4) }),
+                (New-DemoRow @{ Level = 'med'; Title = (& $Tx 'obs.fast.t'); Body = (& $Tx 'obs.fast.b' '12d 4h 31m') })
             )
             $mk = { param($t, $mb, $d, $al, $known, $cands) New-DemoRow @{ tag = $t; mb = $mb; deltaMB = $d; allocs = $al; known = $known; candidates = @($cands); tooGeneric = $false } }
             $exnf = New-DemoRow @{ file = 'netflt64.sys'; path = 'C:\Windows\System32\drivers\netflt64.sys'; trust = 'Signed'; publisher = 'Example Network Technologies Ltd.' }
             $poolNon = @(
                 (& $mk 'ExNf' 7424 118 3812344 '' @($exnf)),
-                (& $mk 'EtwB' 78 0 412 'مخازن ETW لتتبّع الأحداث - نواة ويندوز' @()),
-                (& $mk 'NVRM' 64 0 3310 'تعريف NVIDIA للشاشة (nvlddmkm.sys)' @()),
-                (& $mk 'smNp' 49 0 912 'مدير المخزن / ضغط الذاكرة (Store Manager) - نواة ويندوز' @()),
-                (& $mk 'File' 33 0 88120 'كائنات الملفات (File objects) - نواة ويندوز' @()),
-                (& $mk 'Thre' 24 0 9120 'كائنات الخيوط (Threads) - نواة ويندوز' @()),
-                (& $mk 'Even' 22 0 41200 'كائنات الأحداث (Events) - نواة ويندوز' @())
+                (& $mk 'EtwB' 78 0 412 (& $Tx 'tag.etwb') @()),
+                (& $mk 'NVRM' 64 0 3310 (& $Tx 'tag.nvrm') @()),
+                (& $mk 'smNp' 49 0 912 (& $Tx 'tag.store') @()),
+                (& $mk 'File' 33 0 88120 (& $Tx 'tag.file') @()),
+                (& $mk 'Thre' 24 0 9120 (& $Tx 'tag.thre') @()),
+                (& $mk 'Even' 22 0 41200 (& $Tx 'tag.even') @())
             )
             $poolPaged = @(
                 (& $mk 'MmSt' 202 1 1022 '' @()),
@@ -95,11 +104,11 @@ function Get-DemoReportData {
                 CommittedGB = 14.9; CommitLimitGB = 24.3; CacheResidentGB = 1.4; DriverResidentGB = 0.1; WindowSec = 31
                 NonPagedGrowthMB = 2; PagedGrowthMB = 1; CommitGrowthMB = 431; UsedGrowthMB = 420
             }
-            $verdict = New-DemoRow @{ Level = 'high'; Headline = 'تم رصد مؤشرات تستحق التدقيق العاجل (قد تكون برمجية خبيثة)' }
+            $verdict = New-DemoRow @{ Level = 'high'; Headline = (& $Tx 'verdict.urgent') }
             $obs = @(
-                (New-DemoRow @{ Level = 'high'; Title = 'ملفات عالية الخطورة (1)'; Body = 'مؤشرات متعددة اجتمعت على: svch0st.exe. هذه مؤشرات وليست حكمًا نهائيًا؛ راجع التفاصيل قبل أي إجراء.' }),
-                (New-DemoRow @{ Level = 'med'; Title = 'ملفات متوسطة الخطورة (1)'; Body = 'تستحق المراجعة: powershell.exe' }),
-                (New-DemoRow @{ Level = 'med'; Title = 'برنامج تتضخّم ذاكرته الآن'; Body = 'svch0st.exe (PID 6124) زادت ذاكرته الخاصة 412 MB خلال 31 ثانية.' })
+                (New-DemoRow @{ Level = 'high'; Title = (& $Tx 'obs.high.t' 1); Body = (& $Tx 'obs.high.b' 'svch0st.exe') }),
+                (New-DemoRow @{ Level = 'med'; Title = (& $Tx 'obs.med.t' 1); Body = (& $Tx 'obs.med.b' 'powershell.exe') }),
+                (New-DemoRow @{ Level = 'med'; Title = (& $Tx 'obs.grower.t'); Body = (& $Tx 'obs.grower.b' 'svch0st.exe' 6124 412 31) })
             )
             $poolNon = @(); $poolPaged = @(); $poolGrow = @()
             $remote = @('203.0.113.50:3333')
@@ -108,7 +117,7 @@ function Get-DemoReportData {
                         id = 1; risk = 'High'; score = 17; name = 'svch0st.exe'; path = 'C:\Users\Friend\AppData\Local\Temp\svch0st.exe'; fileExists = $true; protectedFile = $false
                         sha256 = ('9f2c1b7a' * 8)
                         sizeBytes = 3817472; created = '2026-10-21 03:12:44'; trust = 'Unsigned'; sigStatus = 'NotSigned'; publisher = ''; company = ''; description = ''
-                        reasons = @('اسمه (svch0st.exe) يشبه عملية النظام svchost بفارق حرف واحد', 'اتصال بمنفذ شائع لمجمّعات التعدين (203.0.113.50:3333)', 'يعمل من مجلد مؤقت/عام (Temp) وليس من مجلد تثبيت', 'حجم ذاكرته الخاصة زاد 412 MB خلال فترة الفحص', 'الملف غير موقّع رقميًا', 'مضبوط على التشغيل التلقائي (خدمة / مهمة مجدولة / تشغيل عند الإقلاع) فيعود بعد إعادة التشغيل')
+                        reasons = @((& $Tx 'sig.lookalike' 'svch0st.exe' 'svchost'), (& $Tx 'sig.netmine' '203.0.113.50:3333'), (& $Tx 'sig.zone.temp' 'Temp'), (& $Tx 'sig.growth' 412), (& $Tx 'sig.unsigned'), (& $Tx 'sig.persist'))
                         procs = @((New-DemoRow @{ pid = 6124; start = '2026-10-24 21:03:10'; cmd = ''; privMB = 868; growthMB = 412; remote = $remote }))
                         services = @(); tasks = @()
                         autoruns = @((New-DemoRow @{ via = 'Registry'; location = 'Registry::HKEY_USERS\S-1-5-21-1111111111-2222222222-3333333333-1001\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'; name = 'WindowsUpdateHelper'; value = ''; file = '' }))
@@ -117,7 +126,7 @@ function Get-DemoReportData {
                 (New-DemoRow @{
                         id = 2; risk = 'Medium'; score = 6; name = 'powershell.exe'; path = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; fileExists = $true; protectedFile = $true
                         sha256 = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90'; sizeBytes = 450560; created = '2026-04-02 10:00:00'; trust = 'OS'; sigStatus = 'Valid'; publisher = 'Microsoft Windows'; company = 'Microsoft Corporation'; description = 'Windows PowerShell'
-                        reasons = @('سطر الأوامر مشفّر أو يحمّل ويشغّل كودًا (PowerShell مشفّر / Download cradle)', 'أداة سكربت تشغّل ملفًا من مجلد مؤقت/AppData')
+                        reasons = @((& $Tx 'sig.encoded'), (& $Tx 'sig.argpath'))
                         procs = @(); services = @()
                         tasks = @((New-DemoRow @{ taskPath = '\'; taskName = 'OneDriveSync Helper'; state = 'Ready'; cmd = '' }))
                         autoruns = @(); drivers = @(); wmi = @()
@@ -125,7 +134,7 @@ function Get-DemoReportData {
                 (New-DemoRow @{
                         id = 3; risk = 'Low'; score = 4; name = 'GameBoostTray.exe'; path = 'C:\Users\Friend\AppData\Local\GameBoost\GameBoostTray.exe'; fileExists = $true; protectedFile = $false
                         sha256 = 'c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00'; sizeBytes = 1523712; created = '2026-08-30 17:21:09'; trust = 'Unsigned'; sigStatus = 'NotSigned'; publisher = ''; company = 'GameBoost'; description = 'GameBoost Tray'
-                        reasons = @('يعمل من مجلد بيانات المستخدم (AppData) وليس من Program Files', 'الملف غير موقّع رقميًا')
+                        reasons = @((& $Tx 'sig.zone.data' 'AppData'), (& $Tx 'sig.unsigned'))
                         procs = @((New-DemoRow @{ pid = 8820; start = '2026-10-24 08:41:55'; cmd = ''; privMB = 48; growthMB = 0; remote = @() })); services = @(); tasks = @(); autoruns = @(); drivers = @(); wmi = @()
                     })
             )
@@ -142,10 +151,10 @@ function Get-DemoReportData {
                 CommittedGB = 9.1; CommitLimitGB = 24.3; CacheResidentGB = 1.1; DriverResidentGB = 0.1; WindowSec = 30
                 NonPagedGrowthMB = 0; PagedGrowthMB = 1; CommitGrowthMB = 6; UsedGrowthMB = 4
             }
-            $verdict = New-DemoRow @{ Level = 'ok'; Headline = 'لا يوجد تسرّب أو مؤشر خبيث واضح في هذه اللحظة' }
-            $obs = @((New-DemoRow @{ Level = 'info'; Title = 'ذاكرة التخزين المؤقت (Standby/Cached)'; Body = 'حوالي 5.44 GB. هذي ذاكرة مُخزَّنة للتسريع ويحرّرها ويندوز فورًا عند الحاجة، فهي ليست مشكلة حتى لو ظهرت كاستخدام.' }))
+            $verdict = New-DemoRow @{ Level = 'ok'; Headline = (& $Tx 'verdict.ok') }
+            $obs = @((New-DemoRow @{ Level = 'info'; Title = (& $Tx 'obs.standby.t'); Body = (& $Tx 'obs.standby.b' '5.44') }))
             $mk = { param($t, $mb, $known) New-DemoRow @{ tag = $t; mb = $mb; deltaMB = 0; allocs = 1000; known = $known; candidates = @(); tooGeneric = $false } }
-            $poolNon = @((& $mk 'EtwB' 78 'مخازن ETW لتتبّع الأحداث - نواة ويندوز'), (& $mk 'NVRM' 64 'تعريف NVIDIA للشاشة (nvlddmkm.sys)'), (& $mk 'smNp' 49 'مدير المخزن / ضغط الذاكرة (Store Manager) - نواة ويندوز'))
+            $poolNon = @((& $mk 'EtwB' 78 (& $Tx 'tag.etwb')), (& $mk 'NVRM' 64 (& $Tx 'tag.nvrm')), (& $mk 'smNp' 49 (& $Tx 'tag.store')))
             $poolPaged = @((& $mk 'MmSt' 120 ''), (& $mk 'CM25' 40 ''))
             $poolGrow = @(); $suspects = @(); $topGrowers = @()
             $hidden = @(
@@ -157,7 +166,7 @@ function Get-DemoReportData {
     }
 
     New-DemoRow @{
-        Tool = 'RAM-Doctor'; Version = '1.0.0'; Created = '2026-10-24 21:44:30'; Sys = $sys; Memory = $memory; Verdict = $verdict
+        Tool = 'RAM-Doctor'; Version = '1.0.0'; Lang = $Lang; Created = '2026-10-24 21:44:30'; Sys = $sys; Memory = $memory; Verdict = $verdict
         Observations = @($obs); TopProcesses = @($topProcs); ByProgram = @($byProgram); TopGrowers = @($topGrowers)
         PoolNonPaged = @($poolNon); PoolPaged = @($poolPaged); PoolGrowing = @($poolGrow); PoolAvailable = $pa
         Suspects = @($suspects); Drivers3p = @($drv); Hidden = @($hidden); Defender = $defender; Exhaustion = @($exhaustion)

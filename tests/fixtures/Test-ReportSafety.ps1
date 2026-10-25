@@ -12,12 +12,16 @@
 #        https://www.virustotal.com/gui/file/<64-hex> and https://github.com/...
 #    plus: PC name only once (header chip), no e-mail addresses, balanced tags, size sanity.
 #
-#  Usage:  powershell -File tests\fixtures\Test-ReportSafety.ps1 [-OutDir <folder>]
-#          -OutDir also writes the rendered HTML (light + dark) for screenshots.
+#  Every scenario is rendered in BOTH languages (-Lang ar,en by default). The English report must follow the very
+#  same contract (marker, inert, no external URLs), must contain no Arabic text and no unresolved string-table key
+#  or {0} placeholder; the Arabic report must be right-to-left, the English one left-to-right.
+#
+#  Usage:  powershell -File tests\fixtures\Test-ReportSafety.ps1 [-OutDir <folder>] [-Lang ar,en]
+#          -OutDir also writes the rendered HTML (light + dark) for screenshots: <OutDir>\<lang>\report-<scenario>[-dark].html
 #  Exit code: 0 = all good, 1 = at least one assertion failed.   Windows PowerShell 5.1 compatible.
 # ------------------------------------------------------------------------------------------
 [CmdletBinding()]
-param([string]$OutDir = '')
+param([string]$OutDir = '', [ValidateSet('ar', 'en')][string[]]$Lang = @('ar', 'en'))
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
@@ -32,8 +36,8 @@ function Check([bool]$ok, [string]$what, [string]$scenario) {
 }
 
 # --- hostile variant: every attacker-controlled string carries a payload
-function Get-HostileData {
-    $d = Get-DemoReportData -Scenario miner
+function Get-HostileData([string]$lg) {
+    $d = Get-DemoReportData -Scenario miner -Lang $lg
     $evil = '"><script>alert(1)</script><img src=x onerror=alert(2)> javascript:alert(3) data:text/html,<b>x</b> https://evil.example/payload.exe vbscript:x'
     $d.Observations[0].Title = $evil; $d.Observations[0].Body = $evil
     $d.Verdict.Headline = $evil
@@ -50,15 +54,18 @@ function Get-HostileData {
     return $d
 }
 
-$scenarios = [ordered]@{
-    leak = (Get-DemoReportData -Scenario leak); miner = (Get-DemoReportData -Scenario miner)
-    clean = (Get-DemoReportData -Scenario clean); hostile = (Get-HostileData)
+$scenarios = New-Object System.Collections.Generic.List[object]
+foreach ($l in $Lang) {
+    foreach ($sc in 'leak', 'miner', 'clean') { $scenarios.Add(@{ Kind = $sc; Lang = $l; Data = (Get-DemoReportData -Scenario $sc -Lang $l) }) }
+    $scenarios.Add(@{ Kind = 'hostile'; Lang = $l; Data = (Get-HostileData $l) })
 }
 
-foreach ($name in $scenarios.Keys) {
-    $html = New-RamReportHtml $scenarios[$name]
+foreach ($case in $scenarios) {
+    $kind = $case.Kind; $cl = $case.Lang
+    $name = "$kind/$cl"   # label used in the failure messages
+    $html = New-RamReportHtml $case.Data
     $bytes = [Text.Encoding]::UTF8.GetByteCount($html)
-    Write-Host ("{0,-8} {1,7:N1} KB" -f $name, ($bytes / 1KB))
+    Write-Host ("{0,-10} {1,7:N1} KB" -f $name, ($bytes / 1KB))
 
     # (a) marker right after the doctype
     Check ($html -match '^(?i)<!doctype html>\r?\n<!-- ram-doctor-report v\d+\.\d+\.\d+ -->') 'marker comment must follow the doctype' $name
@@ -108,7 +115,7 @@ foreach ($name in $scenarios.Keys) {
     Check ($html -notmatch '(?i)\s(href|action)\s*=\s*["'']?//') 'no protocol-relative URLs' $name
 
     # privacy shape: no e-mail addresses / tokens; PC name only in the header chip
-    if ($name -ne 'hostile') {
+    if ($kind -ne 'hostile') {
         Check ($html -notmatch '[\w.+\-]+@[\w\-]+\.[\w.\-]+') 'no e-mail addresses' $name
         Check ($html -notmatch '(?i)\b(gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_\-]{20,}\.)') 'no token-like strings' $name
         Check (([regex]::Matches($html, 'DESKTOP-DEMO')).Count -eq 1) 'PC name appears exactly once (header chip)' $name
@@ -116,12 +123,24 @@ foreach ($name in $scenarios.Keys) {
     }
 
     # hostile payloads must be inert text
-    if ($name -eq 'hostile') {
+    if ($kind -eq 'hostile') {
         Check ($html -notmatch '<script>alert') 'raw <script>alert must not survive' $name
         Check ($html -notmatch '(?i)<img\b') 'no <img> element may be injected' $name
         Check ($html -match '&lt;script&gt;alert\(1\)') 'payload is present only as escaped text' $name
         Check ($html -notmatch 'virustotal\.com/gui/file/javascript') 'invalid hash must not create a VirusTotal link' $name
     }
+
+    # language: direction, no foreign script, no unresolved string-table key or placeholder
+    if ($cl -eq 'en') {
+        Check ($html -match '<html lang="en" dir="ltr">') 'English report must be <html lang="en" dir="ltr">' $name
+        Check ($html -notmatch '[؀-ۿ]') 'English report must contain no Arabic text' $name
+    } else {
+        Check ($html -match '<html lang="ar" dir="rtl">') 'Arabic report must be <html lang="ar" dir="rtl">' $name
+        Check ($html -match '[؀-ۿ]') 'Arabic report must contain Arabic text' $name
+    }
+    Check ($html -notmatch '\[\[[a-z]+\.[A-Za-z0-9.\-]+\]\]') 'no unresolved string-table key [[key]]' $name
+    Check ($html -notmatch '(?<![\w}])\{\d\}(?![\w{])') 'no unformatted {0} placeholder' $name
+    Check ($html -notmatch '@@[A-Z]+@@') 'no unreplaced @@TOKEN@@ in the script' $name
 
     # structure: balanced containers
     foreach ($t in 'div', 'details', 'section', 'table', 'ul', 'ol', 'li', 'tr', 'span') {
@@ -131,14 +150,16 @@ foreach ($name in $scenarios.Keys) {
     Check ($bytes -lt 400KB) 'report stays under 400 KB' $name
 
     if ($OutDir) {
-        New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+        $dir = Join-Path $OutDir $cl
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
         $bom = New-Object System.Text.UTF8Encoding($true)
-        [IO.File]::WriteAllText((Join-Path $OutDir "report-$name.html"), $html.Replace('<html lang="ar" dir="rtl">', '<html lang="ar" dir="rtl" data-theme="light">'), $bom)
-        [IO.File]::WriteAllText((Join-Path $OutDir "report-$name-dark.html"), $html.Replace('<html lang="ar" dir="rtl">', '<html lang="ar" dir="rtl" data-theme="dark">'), $bom)
+        $open = $(if ($cl -eq 'en') { '<html lang="en" dir="ltr">' } else { '<html lang="ar" dir="rtl">' })
+        [IO.File]::WriteAllText((Join-Path $dir "report-$kind.html"), $html.Replace($open, $open.Replace('>', ' data-theme="light">')), $bom)
+        [IO.File]::WriteAllText((Join-Path $dir "report-$kind-dark.html"), $html.Replace($open, $open.Replace('>', ' data-theme="dark">')), $bom)
     }
 }
 
 Write-Host ''
-if ($script:fails.Count -eq 0) { Write-Host "OK - $($script:checks) assertions passed across $($scenarios.Count) scenarios." -ForegroundColor Green; exit 0 }
+if ($script:fails.Count -eq 0) { Write-Host "OK - $($script:checks) assertions passed across $($scenarios.Count) scenario/language pairs." -ForegroundColor Green; exit 0 }
 Write-Host "$($script:fails.Count) of $($script:checks) assertions FAILED." -ForegroundColor Red
 exit 1

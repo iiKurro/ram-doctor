@@ -18,6 +18,8 @@ BeforeAll {
     # Runs the CLI in its own powershell.exe (exactly how the GUI will) and returns exit code + UTF-8 output.
     function Invoke-ShareCli {
         param([string[]]$CliArgs, [hashtable]$EnvVars = @{})
+        # the language of the messages follows the Windows UI language by default; the assertions below are Arabic unless a test says -Lang en
+        if ($CliArgs -notcontains '-Lang') { $CliArgs = @($CliArgs) + @('-Lang', 'ar') }
         $out = Join-Path $TestDrive ([guid]::NewGuid().ToString('N') + '.out')
         $argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $script:Cli)) + $CliArgs
         $saved = @{}
@@ -257,5 +259,61 @@ Describe 'CLI: Share against the local mock relay' -Tag 'Integration' {
         (Invoke-Share $pd (Join-Path $TestDrive 'missing.json')).Output | Should -Match 'RESULT: ERROR no-plan '
         $bad = Join-Path $TestDrive 'Plan-X-20260101-000000.json'; Set-Content -LiteralPath $bad -Value '{ nope'
         (Invoke-Share $pd $bad).Output | Should -Match 'RESULT: ERROR bad-plan '
+    }
+}
+
+Describe 'CLI: English (-Lang en)' -Tag 'Integration' {
+    BeforeAll {
+        $script:enPd = Join-Path $TestDrive ('en-' + [guid]::NewGuid().ToString('N'))
+        Save-TestProfile $script:enPd
+        $script:enDir = Join-Path $TestDrive 'scan-en'; New-Item -ItemType Directory -Force -Path $script:enDir | Out-Null
+        $script:enFiles = New-TestPlanFiles -Dir $script:enDir -Lang en
+    }
+    It 'answers profile errors in English' {
+        $d = New-ProfileDir
+        $r = Invoke-ShareCli -CliArgs @('-Action', 'SaveProfile', '-Username', 'a', '-ProfileDir', ('"{0}"' -f $d), '-Lang', 'en')
+        $r.ExitCode | Should -Be 1
+        $r.Output | Should -Match 'RESULT: ERROR The username must be 2 to 24 characters long\.'
+        [void](Invoke-ShareCli -CliArgs @('-Action', 'SaveProfile', '-Username', 'Friend', '-ProfileDir', ('"{0}"' -f $d), '-Lang', 'en'))
+        $r2 = Invoke-ShareCli -CliArgs @('-Action', 'SaveProfile', '-Username', 'Other', '-ProfileDir', ('"{0}"' -f $d), '-Lang', 'en')
+        $r2.Output | Should -Match 'RESULT: ERROR .*permanent'
+        $r2.Output | Should -Not -Match '[؀-ۿ]'
+    }
+    It 'answers relay and setup errors in English' {
+        Reset-Mock
+        $Mock.State.Mode = '413'
+        $r = Invoke-Share $script:enPd $script:enFiles.Plan @('-Lang', 'en')
+        $r.ExitCode | Should -Be 1
+        $r.Output | Should -Match 'RESULT: ERROR 413 The report is too large to upload\.'
+        $off = Invoke-ShareCli -CliArgs @('-Action', 'Share', '-ProfileDir', ('"{0}"' -f $script:enPd), '-PlanPath', ('"{0}"' -f $script:enFiles.Plan), '-Endpoint', 'http://127.0.0.1:1', '-BackoffSeconds', '0', '-Lang', 'en')
+        $off.Output | Should -Match 'RESULT: ERROR offline Could not connect'
+        (Invoke-ShareCli -CliArgs @('-Action', 'Share', '-ProfileDir', ('"{0}"' -f (New-ProfileDir)), '-PlanPath', ('"{0}"' -f $script:enFiles.Plan), '-Endpoint', $Mock.Url, '-Lang', 'en')).Output | Should -Match 'RESULT: ERROR no-profile Your profile has not been created yet'
+        Reset-Mock
+    }
+    It 'an English plan uploads an English summary without a right-to-left block, and the report as it is' {
+        Reset-Mock
+        $r = Invoke-Share $script:enPd $script:enFiles.Plan @('-Lang', 'en')
+        $r.ExitCode | Should -Be 0
+        $r.Output | Should -Match 'RESULT: OK https://'
+        $body = (@($Mock.State.Requests | Where-Object Path -eq '/v1/reports'))[0].Body | ConvertFrom-Json
+        $s = ($body.files | Where-Object name -eq 'summary.md').content
+        $s | Should -Not -Match '<div dir="rtl">'
+        $s | Should -Match '\*\*Most likely cause'
+        $s | Should -Not -Match '[؀-ۿ]'
+        (($body.files | Where-Object name -eq 'plan.json').content | ConvertFrom-Json).lang | Should -Be 'en'
+    }
+    It 'writes the short chat summary with English labels' {
+        $pv = Join-Path $TestDrive 'sum-en'
+        $r = Invoke-ShareCli -CliArgs @('-Action', 'Summary', '-PlanPath', ('"{0}"' -f $script:enFiles.Plan), '-PreviewDir', ('"{0}"' -f $pv), '-Lang', 'en')
+        $r.ExitCode | Should -Be 0
+        $text = [IO.File]::ReadAllText((Join-Path $pv 'summary.txt'), [Text.Encoding]::UTF8)
+        $text | Should -Match 'RAM Doctor report'
+        $text | Should -Match 'Verdict: Most likely cause'
+        $text | Should -Match 'Suspicious files \(2\):'
+        $text | Should -Not -Match '[؀-ۿ]'
+        $text | Should -Not -Match 'Friend|DESKTOP-DEMO|abc123secret99|friend@example\.com'
+    }
+    It 'rejects a language other than ar or en' {
+        (Invoke-ShareCli -CliArgs @('-Action', 'ShowProfile', '-ProfileDir', ('"{0}"' -f (New-ProfileDir)), '-Lang', 'fr')).ExitCode | Should -Not -Be 0
     }
 }

@@ -159,6 +159,8 @@ function Test-RamPlan {
     $dt = [datetime]::MinValue
     if (-not [datetime]::TryParse([string]$Plan.created, [ref]$dt)) { $err.Add("plan.created is not a date: '$($Plan.created)'") }
     if ($Plan.isAdmin -isnot [bool]) { $err.Add('plan.isAdmin must be a boolean') }
+    # optional: the language the scan wrote its texts in (added with the English UI; plans of older releases have none = Arabic)
+    if ((& $has $Plan 'lang') -and (@('ar', 'en') -notcontains [string]$Plan.lang)) { $err.Add("plan.lang invalid: '$($Plan.lang)'") }
 
     # verdict + observations are what the window shows
     foreach ($n in 'Level', 'Headline') { if (-not (& $has $Plan.verdict $n)) { $err.Add("plan.verdict: missing '$n'") } }
