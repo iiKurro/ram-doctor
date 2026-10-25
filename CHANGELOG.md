@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sharp at any display scale.** The window makes itself dpi-aware (Per-Monitor V2 on Windows 10 1703+, per-monitor or system
+  awareness on older builds) before its first window exists, so Windows no longer stretches a blurry bitmap of it at 125-200 %. Every
+  size, font, padding, corner, icon and the custom painting follow the monitor's scale, and the window re-scales itself when it is moved
+  to a monitor with another scale.
+- **Screen readers.** Every control of the window says what it is: buttons, the "More" and "Technical details" expanders (expanded or
+  collapsed), check boxes, the progress bar (with its value), the result bar, the header icon, and the files in the list as check boxes
+  named after the file and its risk; decorative icons are hidden. The tour card is a dialog whose counter, title, text and Back / Next /
+  Skip buttons can be reached and pressed, and each step is announced. While the tour is open the card has the keyboard: Tab moves
+  between its buttons, Enter or Space presses the focused one; the keyboard goes back to the window afterwards.
+- Dark-theme pictures of the window and of the tour (`-dark.png`, both languages): the website and the "How to use" page show them
+  when the page is dark. `tests/gui/Make-Screenshots.ps1 -Dark` makes them.
+- Tests: `tests/Dpi.Tests.ps1` (scaling helpers, fonts, the tour card at 100-200 %), `tests/gui/Scale.Test.ps1` (the real window at
+  100, 125, 150, 175 and 200 % in both languages: nothing cut off or overlapping, the tour card fits, a simulated monitor change), and
+  UI Automation checks in `tests/gui/Flow.Test.ps1` (through `tests/gui/Uia-Probe.ps1`: the tour card's buttons are found by name and
+  pressed, the window's controls have names and roles).
+
+### Changed
+
+- First use shows one calm message instead of two blue bars: the "Ready to scan" bar itself offers the tour ("Start the tour" and a
+  close button) until the tour is taken, the offer is closed or a scan starts. The tour step about that bar says so.
+- `-UiScale` (developer switch of the window): draw it as at a given display scale on any screen, for tests.
+
 ## [1.1.0] - 2026-10-25
 
 ### Added
