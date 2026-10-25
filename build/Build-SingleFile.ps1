@@ -108,7 +108,9 @@ function New-Header([bool]$Dev) {
     $l.Add('rem  RAM Doctor {{VERSION}} - one-file edition.  Plain text: open it in Notepad to read exactly what it does.')
     $l.Add('rem  It unpacks the scripts below into a folder that only administrators can write to, opens the window,')
     $l.Add('rem  and removes the folder when you close it. It does not install anything, does not start with Windows,')
-    $l.Add('rem  and sends nothing over the network.')
+    $l.Add('rem  and sends nothing over the network unless you press Share and confirm.')
+    $l.Add('rem  Copyright (c) 2026 7san. All rights reserved. Free for personal use, do not modify or sell:')
+    $l.Add('rem  read the licence at https://github.com/iiKurro/ram-doctor/blob/main/LICENSE')
     if (-not $Dev) { $l.Add('rem  It reads no settings from the environment: nothing outside this file changes what it does.') }
     $l.Add('setlocal')
     if ($Dev) { $l.Add('echo TEST BUILD - not for distribution') }

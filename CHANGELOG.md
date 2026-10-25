@@ -22,9 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests: `Strings.Tests.ps1` (both tables in step, no untranslated text, no stray literals), both languages in `Test-ReportSafety.ps1`,
   the share client and CLI (`-Lang`), the plan `lang` field, and `tests/gui/Flow.Test.ps1` now runs the whole window flow in Arabic and in
   English, including the live language switch.
+- `TRADEMARKS.md`: the name "RAM Doctor" and the logo are not covered by the
+  licence and may not be used for other builds.
 
 ### Changed
 
+- **Licence: all rights reserved from now on.** Everything after v1.0.1 is under
+  the new `LICENSE` (free personal use, no copying, modifying or selling, no
+  outside code). Versions 1.0.0 and 1.0.1 stay under the MIT License as
+  published; its text is kept in `LICENSE-MIT-v1.0.x.txt`.
+- The README, the website and the package metadata no longer call the project
+  "open source": the code stays visible for review.
+- `CONTRIBUTING.md` now says that code contributions are not accepted; issues
+  and false-positive reports are still welcome.
 - The share client's `summary.md` omits the right-to-left block for English plans (the relay only keeps `<div dir="rtl">`).
 - Docs: Arabic is no longer described as the only language; the roadmap item "English interface" is done.
 

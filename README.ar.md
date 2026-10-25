@@ -11,7 +11,7 @@
 
 [![CI](https://github.com/iiKurro/ram-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/iiKurro/ram-doctor/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/iiKurro/ram-doctor?display_name=tag&sort=semver)](https://github.com/iiKurro/ram-doctor/releases/latest)
-[![License: MIT](https://img.shields.io/github/license/iiKurro/ram-doctor)](LICENSE)
+[![License: all rights reserved](https://img.shields.io/badge/license-all%20rights%20reserved-lightgrey)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4?logo=windows11&logoColor=white)](#أسئلة-شائعة)
 [![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](docs/architecture.md)
 [![No telemetry](https://img.shields.io/badge/telemetry-none-2ea44f)](docs/privacy-and-safety.md)
@@ -273,7 +273,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File src\RAM-Doctor-Actions.ps1 -
 <details>
 <summary><b>لماذا غير موقّع رقميًا؟</b></summary>
 
-شهادات التوقيع مدفوعة، وهذا مشروع مفتوح المصدر ومجاني. التوقيع ضمن خارطة الطريق؛
+شهادات التوقيع مدفوعة، وهذا مشروع مجاني يطوّره مطوّر واحد. التوقيع ضمن خارطة الطريق؛
 وإلى ذلك الحين تحقق من المجموع الاختباري (checksum).
 </details>
 
@@ -369,13 +369,20 @@ ram-doctor/
 
 ## المساهمة
 
-البلاغات عن الأخطاء، و**البلاغات عن الإنذارات الكاذبة**، وطلبات الدمج مرحَّب بها.
-اقرأ [CONTRIBUTING.md](CONTRIBUTING.md) و[مدونة السلوك](CODE_OF_CONDUCT.md).
+البلاغات عن الأخطاء و**البلاغات عن الإنذارات الكاذبة** مرحَّب بها. المساهمة
+بالكود غير مقبولة: المشروع جميع الحقوق محفوظة. اقرأ [CONTRIBUTING.md](CONTRIBUTING.md)
+و[مدونة السلوك](CODE_OF_CONDUCT.md).
 وجدت ثغرة أمنية؟ استخدم القناة الخاصة في [SECURITY.md](SECURITY.md).
 
 ## الرخصة
 
-[MIT](LICENSE) © 2026 7san.
+© 2026 7san. **جميع الحقوق محفوظة.** البرنامج مجاني للاستخدام على أجهزتك ولمساعدة
+الأصدقاء والأهل بدون مقابل، والكود ظاهر لتراجع ماذا يفعل. لا يجوز نسخه أو
+تعديله أو بيعه أو إعادة نشره، والاسم والشعار موضّحان في [TRADEMARKS.md](TRADEMARKS.md).
+النص الكامل (بالإنجليزية، وهو المرجع) في [LICENSE](LICENSE).
+
+الإصداران 1.0.0 و1.0.1 نُشرا برخصة MIT ويبقيان متاحين بها
+([النص](LICENSE-MIT-v1.0.x.txt)).
 
 ## شكر وتقدير
 

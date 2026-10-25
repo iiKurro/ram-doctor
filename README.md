@@ -9,7 +9,7 @@ hidden and suspicious processes, with a reversible clean-up.
 
 [![CI](https://github.com/iiKurro/ram-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/iiKurro/ram-doctor/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/iiKurro/ram-doctor?display_name=tag&sort=semver)](https://github.com/iiKurro/ram-doctor/releases/latest)
-[![License: MIT](https://img.shields.io/github/license/iiKurro/ram-doctor)](LICENSE)
+[![License: all rights reserved](https://img.shields.io/badge/license-all%20rights%20reserved-lightgrey)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4?logo=windows11&logoColor=white)](#faq)
 [![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](docs/architecture.md)
 [![No telemetry](https://img.shields.io/badge/telemetry-none-2ea44f)](docs/privacy-and-safety.md)
@@ -283,7 +283,8 @@ your vendor. See [docs/troubleshooting.md](docs/troubleshooting.md#antivirus-fla
 <details>
 <summary><b>Why is it not signed?</b></summary>
 
-Code-signing certificates cost money and this is a free open-source project.
+Code-signing certificates cost money and this is a free project by a single
+developer.
 Signing is on the roadmap; until then, verify the checksum.
 </details>
 
@@ -384,13 +385,21 @@ Ideas, not promises:
 
 ## Contributing
 
-Bug reports, **false-positive reports** and pull requests are welcome. Read
+Bug reports and **false-positive reports** are welcome. Code contributions are
+not accepted: the project is all rights reserved. Read
 [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 Found a security problem? Use the private channel in [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE) © 2026 7san.
+© 2026 7san. **All rights reserved.** RAM Doctor is free to use on your own PCs
+and to help friends and family without payment; the code is visible so you can
+review what it does. You may not copy, modify, sell or republish it, and the
+name and logo are covered by [TRADEMARKS.md](TRADEMARKS.md). Read the full
+[LICENSE](LICENSE).
+
+Versions 1.0.0 and 1.0.1 were published under the MIT License and stay
+available under it ([text](LICENSE-MIT-v1.0.x.txt)).
 
 ## Acknowledgements
 

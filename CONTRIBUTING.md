@@ -1,26 +1,31 @@
 # Contributing to RAM Doctor
 
+> **Code contributions are not accepted.** RAM Doctor is
+> [all rights reserved](LICENSE), and the maintainer is the only person who
+> writes its code. Pull requests that change code, documentation or tests will
+> be closed without merging. Reports and ideas through issues are welcome, and
+> they help a lot.
+
 Thanks for helping. RAM Doctor is a security-triage tool that people run with
 administrator rights on machines that already have a problem, so the bar is
-**correctness, safety and readability** over cleverness. This guide gets you
-productive quickly.
+**correctness, safety and readability** over cleverness. The rest of this guide
+documents how the maintainer works, so you can read and review the code.
 
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 Security problems go through the private channel in [SECURITY.md](SECURITY.md),
 never a public issue.
 
-## Ways to contribute
+## Ways to help
 
 * **False positives / false negatives** are the most valuable reports. Use the
   [false-positive form](https://github.com/iiKurro/ram-doctor/issues/new?template=false_positive.yml).
 * Bug reports and feature ideas via the other [issue forms](https://github.com/iiKurro/ram-doctor/issues/new/choose).
-* Documentation, translations (the window, the report and the share messages
-  exist in Arabic and English; every text is in
+  Anything you send there may be used by the maintainer without restriction
+  (see section 5 of the [LICENSE](LICENSE)).
+* Reading the code and telling the maintainer what you find, including wrong
+  or unclear wording in either language (every text is in
   [`src/lib/Strings.ps1`](src/lib/Strings.ps1), see
-  [Texts and languages](#texts-and-languages)), and tests.
-* Code, see below.
-
-Open an issue before large changes so we can agree on the approach.
+  [Texts and languages](#texts-and-languages)).
 
 ## Project layout
 
