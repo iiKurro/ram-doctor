@@ -1,3 +1,7 @@
+> **Code contributions are not accepted** (the project is all rights reserved,
+> see [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md)). Please open an
+> issue instead; pull requests that change code will be closed without merging.
+
 ## Summary
 
 <!-- What does this change and why? Link the issue: "Closes #123". -->

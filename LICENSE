@@ -1,0 +1,87 @@
+RAM Doctor Licence
+
+Copyright (c) 2026 7san. All rights reserved.
+
+SCOPE
+
+This licence applies to RAM Doctor and everything in this repository after the
+release v1.0.1, including unreleased code and every later version.
+
+Versions 1.0.0 and 1.0.1 were published under the MIT License. Their text is
+kept in LICENSE-MIT-v1.0.x.txt and those two releases remain available under
+it, exactly as published.
+
+1. OWNERSHIP
+
+The software, its source code, documentation, screenshots, name ("RAM Doctor")
+and logo belong to 7san (the "Owner"). Nothing here transfers ownership. Every
+right that is not expressly granted below is reserved by the Owner.
+
+2. WHAT YOU MAY DO, FREE OF CHARGE
+
+The Owner grants you a personal, non-exclusive, non-transferable and revocable
+licence to:
+
+  a) download the official release from the Owner's GitHub Releases page, or
+     build it, unmodified, from this repository, and run it on computers that
+     you own or are authorised to administer, for personal and non-commercial
+     use, including helping a friend or family member without payment;
+
+  b) read the source code in this repository, including cloning it to read it,
+     for review, learning and security research, and report what you find to
+     the Owner;
+
+  c) pass the unmodified official release file (RAM-Doctor.bat) to other people
+     free of charge, together with this licence.
+
+3. WHAT YOU MAY NOT DO WITHOUT THE OWNER'S WRITTEN PERMISSION
+
+  a) copy, modify, adapt, translate or create derivative works of the software,
+     its source code or its documentation;
+
+  b) sell, rent, lease, sublicense or otherwise commercialise the software,
+     include it in a product, or use it to provide a paid service;
+
+  c) publish modified or re-packaged builds, or publish the source code or any
+     part of it anywhere else;
+
+  d) remove or change copyright notices, licence notices or any activation
+     requirement;
+
+  e) use the name "RAM Doctor", the logo or similar branding for anything else
+     (see TRADEMARKS.md).
+
+4. ACTIVATION
+
+The Owner may require, in any later version, an activation code issued by the
+Owner. Use of such a version without a valid code is outside this licence.
+
+5. FEEDBACK AND CONTRIBUTIONS
+
+The Owner does not accept code contributions. If you send feedback (an issue,
+a bug report, a false-positive report or an idea), you give the Owner the right
+to use it without restriction and without payment.
+
+6. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NON-INFRINGEMENT. The tool reports indicators, not verdicts. You decide whether
+to quarantine or delete anything, and you use it at your own risk. TO THE
+MAXIMUM EXTENT PERMITTED BY LAW, THE OWNER IS NOT LIABLE FOR ANY CLAIM, DAMAGE
+OR LOSS ARISING FROM THE SOFTWARE OR ITS USE.
+
+7. TERMINATION
+
+If you breach this licence it ends automatically. You must then stop using the
+software and delete your copies.
+
+8. THIRD-PARTY MATERIAL
+
+Third-party components and tools used to build or test the project keep their
+own licences; this licence does not change them.
+
+9. OTHER PERMISSIONS
+
+The Owner may grant extra permissions, for example commercial use, separately
+and in writing. Ask the Owner through the GitHub account iiKurro.

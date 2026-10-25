@@ -68,6 +68,11 @@ Describe 'Single-file builder - RELEASE variant' {
             $script:Header | Should -Match 'reads no settings from the environment'
         }
 
+        It 'carries the copyright and licence notice, so a copy passed around on its own still says who owns it' {
+            $script:Header | Should -Match 'rem\s+Copyright \(c\) 2026 7san\. All rights reserved\.'
+            $script:Header | Should -Match 'github\.com/iiKurro/ram-doctor/blob/main/LICENSE'
+        }
+
         It 'contains nothing an antivirus would read as an obfuscated dropper' {
             $script:Header | Should -Not -Match 'Invoke-Expression|\biex\b|FromBase64String|-EncodedCommand|-enc\b|WindowStyle Hidden|DownloadString|Net\.WebClient'
         }

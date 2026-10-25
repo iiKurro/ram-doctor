@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Licence: all rights reserved from now on.** Everything after v1.0.1 is under
+  the new `LICENSE` (free personal use, no copying, modifying or selling, no
+  outside code). Versions 1.0.0 and 1.0.1 stay under the MIT License as
+  published; its text is kept in `LICENSE-MIT-v1.0.x.txt`.
+- The README, the website and the package metadata no longer call the project
+  "open source": the code stays visible for review.
+- `CONTRIBUTING.md` now says that code contributions are not accepted; issues
+  and false-positive reports are still welcome.
+
+### Added
+
+- `TRADEMARKS.md`: the name "RAM Doctor" and the logo are not covered by the
+  licence and may not be used for other builds.
+
 ## [1.0.1] - 2026-10-25
 
 ### Added
