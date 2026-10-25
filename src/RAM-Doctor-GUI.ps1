@@ -1,8 +1,12 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-  RAM Doctor - one Windows 11 (Fluent) styled Arabic window. It only launches the scan / actions scripts
-  and shows their results; it holds no scanning logic of its own.
+  RAM Doctor - one Windows 11 (Fluent) styled window, in Arabic (right-to-left) or English (left-to-right).
+  It only launches the scan / actions scripts and shows their results; it holds no scanning logic of its own.
+
+  Language: -Lang ar|en, otherwise the Windows UI language (Arabic -> ar, everything else -> en). A button in the
+  header switches the open window live (text, layout direction and the language of the next scan). Nothing is saved.
+  Every text lives in lib\Strings.ps1.
 
   Developer-only switches (not needed by users):
     -TestScript   run a script file on the UI thread after the window opens (screenshots / tests)
@@ -24,11 +28,14 @@ param(
     [string]$ShareProfileDir = '',
     [string]$ShareEndpoint = '',
     [switch]$ShareDryRun,
-    [switch]$ShareForceConfigured
+    [switch]$ShareForceConfigured,
+    [ValidateSet('ar', 'en')][string]$Lang
 )
 
 $ErrorActionPreference = 'Continue'
 $AppDir = $PSScriptRoot
+. (Join-Path $AppDir 'lib\Strings.ps1')   # every user-facing text (ar / en)
+Set-UiLang $Lang
 $ScanScript = Join-Path $AppDir 'RAM-Doctor.ps1'
 $ActionsScript = Join-Path $AppDir 'RAM-Doctor-Actions.ps1'
 $ShareScript = Join-Path $AppDir 'RAM-Doctor-Share.ps1'
@@ -92,13 +99,22 @@ try {
         return $b
     }
 
+    # ------------------------------------------------------------ language
+    # A control whose text is one fixed string-table key is registered here: Apply-Language sets (and later re-sets) it.
+    # Texts that depend on state (status line, verdict, button while scanning ...) are rebuilt by Apply-Language itself.
+    $script:i18n = New-Object System.Collections.ArrayList
+    $script:langTip = New-Object System.Windows.Forms.ToolTip
+    function Bind-Text($ctl, [string]$key, [string]$prop = 'Text') { [void]$script:i18n.Add(@{ Ctl = $ctl; Key = $key; Prop = $prop }); $ctl.$prop = (Get-Text $key) }
+    function Test-Rtl { return ((Get-UiLang) -eq 'ar') }
+    function Get-RtlValue { if (Test-Rtl) { 'Yes' } else { 'No' } }
+
     # ------------------------------------------------------------ window
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'فاحص الذاكرة - RAM Doctor'
+    $form.Text = Get-Text 'gui.window.title'
     $form.ClientSize = New-Object System.Drawing.Size(940, 740)
     $form.MinimumSize = New-Object System.Drawing.Size(880, 640)
     $form.StartPosition = 'CenterScreen'
-    $form.RightToLeft = 'Yes'; $form.RightToLeftLayout = $true
+    $form.RightToLeft = Get-RtlValue; $form.RightToLeftLayout = (Test-Rtl)
     $form.Font = Ui 10; $form.BackColor = $cWin
     try { $form.Icon = [Fluent.Win]::MakeIcon([Fluent.Theme]::Accent, [Fluent.Theme]::AccentText, (Glyph 0xE9D9)) } catch { }
 
@@ -111,20 +127,22 @@ try {
     function Add-Block($ctl, [int]$top = 0, [int]$bottom = 12) { $ctl.Dock = 'Fill'; $ctl.Margin = Pad 24 $top 24 $bottom; [void]$col.Controls.Add($ctl) }
 
     # ---- header
-    $hdr = New-Tlp 2 1 $cWin; $hdr.Height = 82
-    Add-Col $hdr 'Absolute' 68; Add-Col $hdr 'Percent' 100; Add-Row $hdr 'Percent' 100
+    $hdr = New-Tlp 3 1 $cWin; $hdr.Height = 82
+    Add-Col $hdr 'Absolute' 68; Add-Col $hdr 'Percent' 100; Add-Col $hdr 'Absolute' 132; Add-Row $hdr 'Percent' 100
     $badge = New-Object Fluent.FBadge
     $badge.Glyph = Glyph 0xE9D9; $badge.GlyphPx = 26; $badge.Size = New-Object System.Drawing.Size(52, 52); $badge.Radius = 13; $badge.Anchor = 'None'
     $tt = New-Tlp 1 2 $cWin; Add-Col $tt 'Percent' 100; Add-Row $tt 'Percent' 58; Add-Row $tt 'Percent' 42
-    $lblTitle = New-Lbl 'فاحص الذاكرة' (Semi 22) $cText $cWin 'BottomLeft'
-    $lblSub = New-Lbl 'اعرف سبب امتلاء الذاكرة (RAM) خلال دقيقة. الفحص آمن ولا يتصل بالإنترنت.' (Ui 10.5) $cSub $cWin 'TopLeft'
+    $lblTitle = New-Lbl '' (Semi 22) $cText $cWin 'BottomLeft'; Bind-Text $lblTitle 'gui.title'
+    $lblSub = New-Lbl '' (Ui 10.5) $cSub $cWin 'TopLeft'   # text: Apply-ShareVisibility (it mentions sharing only when sharing is on)
     $tt.Controls.Add($lblTitle, 0, 0); $tt.Controls.Add($lblSub, 0, 1)
-    $hdr.Controls.Add($badge, 0, 0); $hdr.Controls.Add($tt, 1, 0)
+    # language button: it is named after the language it switches TO ("English" in Arabic mode, the Arabic word for Arabic in English mode)
+    $btnLang = New-Btn '' 'Subtle' (Glyph 0xE774) 120 34; $btnLang.Anchor = 'None'; $btnLang.Font = Semi 10; Bind-Text $btnLang 'gui.lang.other'
+    $hdr.Controls.Add($badge, 0, 0); $hdr.Controls.Add($tt, 1, 0); $hdr.Controls.Add($btnLang, 2, 0)
     Add-Block $hdr 18 4
 
     # ---- admin banner (only when not elevated)
     $banner = New-Object Fluent.FInfoBar
-    $banner.Level = 'Warning'; $banner.Title = 'لم تُشغَّل الأداة كمدير'; $banner.Message = 'أغلق النافذة وافتحها مجددًا ووافق على طلب الصلاحيات (نعم)، وإلا لن تعمل أزرار العزل والتراجع.'
+    $banner.Level = 'Warning'
     $banner.Visible = (-not $CanAct)
     Add-Block $banner 4 10
 
@@ -135,22 +153,21 @@ try {
     Add-Col $ht 'Percent' 100; Add-Row $ht 'Absolute' 60; Add-Row $ht 'Absolute' 16; Add-Row $ht 'Absolute' 10; Add-Row $ht 'Percent' 100
     $top = New-Tlp 2 1 $cCard; Add-Col $top 'Percent' 100; Add-Col $top 'Absolute' 210; Add-Row $top 'Percent' 100
     $topText = New-Tlp 1 2 $cCard; Add-Col $topText 'Percent' 100; Add-Row $topText 'Absolute' 30; Add-Row $topText 'Percent' 100
-    $lblHeroT = New-Lbl 'افحص جهازك' (Semi 14) $cText $cCard 'MiddleLeft'
-    $lblHeroD = New-Lbl 'يستغرق حوالي دقيقة. الفحص لا يحذف ولا يغيّر شيئًا، ولا تغلق النافذة أثناءه.' (Ui 10) $cSub $cCard 'TopLeft'
+    $lblHeroT = New-Lbl '' (Semi 14) $cText $cCard 'MiddleLeft'; Bind-Text $lblHeroT 'gui.hero.t'
+    $lblHeroD = New-Lbl '' (Ui 10) $cSub $cCard 'TopLeft'; Bind-Text $lblHeroD 'gui.hero.d'
     $topText.Controls.Add($lblHeroT, 0, 0); $topText.Controls.Add($lblHeroD, 0, 1)
-    $btnScan = New-Btn 'ابدأ الفحص' 'Accent' (Glyph 0xE721) 190 42; $btnScan.Anchor = 'None'; $btnScan.Font = Semi 11
+    $btnScan = New-Btn '' 'Accent' (Glyph 0xE721) 190 42; $btnScan.Anchor = 'None'; $btnScan.Font = Semi 11   # text: Refresh-Buttons
     $top.Controls.Add($topText, 0, 0); $top.Controls.Add($btnScan, 1, 0)
     $bar = New-Object Fluent.FProgress; $bar.Dock = 'Fill'; $bar.Margin = Pad 0 2 0 2
-    $lblStatus = New-Lbl 'جاهز. اضغط «ابدأ الفحص» عندما تكون المشكلة ظاهرة (الذاكرة ممتلئة).' (Ui 10) $cSub $cCard 'TopLeft'
+    $lblStatus = New-Lbl '' (Ui 10) $cSub $cCard 'TopLeft'   # text: Set-Status
     $lblStatus.Margin = Pad 0 4 0 0
     $ht.Controls.Add($top, 0, 0); $ht.Controls.Add($bar, 0, 2); $ht.Controls.Add($lblStatus, 0, 3)
     $hero.Controls.Add($ht)
     Add-Block $hero 4 12
 
     # ---- step 2: verdict + toast + actions
-    $info = New-Object Fluent.FInfoBar
-    $info.Level = 'Info'; $info.Title = 'جاهز للفحص'
-    $info.Message = 'بعد الفحص تظهر هنا النتيجة، وأي ملفات مشبوهة يمكنك عزلها بضغطة واحدة.'
+    $info = New-Object Fluent.FInfoBar   # text: Show-Info / Load-Results
+    $info.Level = 'Info'
     Add-Block $info 0 12
 
     $toast = New-Object Fluent.FInfoBar
@@ -159,10 +176,10 @@ try {
 
     $acts = New-Object System.Windows.Forms.FlowLayoutPanel
     $acts.Height = 44; $acts.WrapContents = $false; $acts.BackColor = $cWin; $acts.Visible = $false
-    $btnReport = New-Btn 'افتح التقرير الكامل' 'Standard' (Glyph 0xE8A5) 200 40; $btnReport.Margin = Pad 12 0 0 0
-    $btnFolder = New-Btn 'مكان ملف التقرير' 'Standard' (Glyph 0xE838) 190 40; $btnFolder.Margin = Pad 12 0 0 0
-    $btnCopy = New-Btn 'نسخ ملخص للإرسال' 'Standard' (Glyph 0xE8C8) 200 40; $btnCopy.Margin = Pad 12 0 0 0
-    $btnShare = New-Btn 'مشاركة مع مساعدي' 'Accent' (Glyph 0xE72D) 200 40; $btnShare.Margin = Pad 12 0 0 0; $btnShare.Visible = $false
+    $btnReport = New-Btn '' 'Standard' (Glyph 0xE8A5) 200 40; $btnReport.Margin = Pad 12 0 0 0; Bind-Text $btnReport 'gui.btn.report'
+    $btnFolder = New-Btn '' 'Standard' (Glyph 0xE838) 190 40; $btnFolder.Margin = Pad 12 0 0 0; Bind-Text $btnFolder 'gui.btn.folder'
+    $btnCopy = New-Btn '' 'Standard' (Glyph 0xE8C8) 200 40; $btnCopy.Margin = Pad 12 0 0 0; Bind-Text $btnCopy 'gui.btn.copy'
+    $btnShare = New-Btn '' 'Accent' (Glyph 0xE72D) 200 40; $btnShare.Margin = Pad 12 0 0 0; $btnShare.Visible = $false; Bind-Text $btnShare 'gui.btn.share'
     $acts.Controls.AddRange(@($btnReport, $btnFolder, $btnCopy, $btnShare))
     Add-Block $acts 0 12
 
@@ -172,14 +189,14 @@ try {
     $ft = New-Tlp 1 5 $cCard
     Add-Col $ft 'Percent' 100; Add-Row $ft 'Absolute' 34; Add-Row $ft 'Absolute' 196; Add-Row $ft 'Absolute' 12; Add-Row $ft 'Absolute' 44; Add-Row $ft 'Percent' 100
     $fh = New-Tlp 2 1 $cCard; Add-Col $fh 'Percent' 100; Add-Col $fh 'Absolute' 150; Add-Row $fh 'Percent' 100
-    $lblFindT = New-Lbl 'ملفات تستحق المراجعة' (Semi 12.5) $cText $cCard 'MiddleLeft'
-    $lblPick = New-Lbl '' (Ui 10) $cSub $cCard 'MiddleRight'
+    $lblFindT = New-Lbl '' (Semi 12.5) $cText $cCard 'MiddleLeft'; Bind-Text $lblFindT 'gui.find.t'
+    $lblPick = New-Lbl '' (Ui 10) $cSub $cCard 'MiddleRight'   # text: Refresh-Buttons
     $fh.Controls.Add($lblFindT, 0, 0); $fh.Controls.Add($lblPick, 1, 0)
     $list = New-Object Fluent.FList
-    $list.Dock = 'Fill'; $list.RowHeight = 64; $list.EmptyText = 'لا توجد ملفات مشبوهة'; $list.Margin = Pad 0 0 0 0
+    $list.Dock = 'Fill'; $list.RowHeight = 64; $list.Margin = Pad 0 0 0 0; Bind-Text $list 'gui.find.empty' 'EmptyText'
     $fb = New-Tlp 2 1 $cCard; Add-Col $fb 'Absolute' 230; Add-Col $fb 'Percent' 100; Add-Row $fb 'Percent' 100
-    $btnQ = New-Btn 'عزل الملفات المحددة' 'Accent' (Glyph 0xEA18) 214 40; $btnQ.Anchor = 'None'
-    $lblQHint = New-Lbl 'العزل ينقل الملف جانبًا ولا يحذفه، ويمكنك التراجع عنه في أي وقت.' (Ui 9.5) $cSub $cCard 'MiddleLeft'
+    $btnQ = New-Btn '' 'Accent' (Glyph 0xEA18) 214 40; $btnQ.Anchor = 'None'; Bind-Text $btnQ 'gui.btn.q'
+    $lblQHint = New-Lbl '' (Ui 9.5) $cSub $cCard 'MiddleLeft'; Bind-Text $lblQHint 'gui.find.hint'
     $lblQHint.Margin = Pad 8 0 0 0
     $fb.Controls.Add($btnQ, 0, 0); $fb.Controls.Add($lblQHint, 1, 0)
     $ft.Controls.Add($fh, 0, 0); $ft.Controls.Add($list, 0, 1); $ft.Controls.Add($fb, 0, 3)
@@ -190,7 +207,7 @@ try {
     $more = New-Object Fluent.FCard
     $more.Padding = Pad 8 8 8 8
     $mt = New-Tlp 1 2 $cCard; Add-Col $mt 'Percent' 100; Add-Row $mt 'Absolute' 48; Add-Row $mt 'AutoSize' 0
-    $exMore = New-Object Fluent.FExpander; $exMore.Text = 'المزيد: تراجع وحذف وتنظيف'; $exMore.Glyph = Glyph 0xE713; $exMore.Dock = 'Fill'; $exMore.Margin = Pad 0 0 0 0
+    $exMore = New-Object Fluent.FExpander; $exMore.Glyph = Glyph 0xE713; $exMore.Dock = 'Fill'; $exMore.Margin = Pad 0 0 0 0; Bind-Text $exMore 'gui.more.t'
     $moreBody = New-Object System.Windows.Forms.TableLayoutPanel
     $moreBody.Dock = 'Fill'; $moreBody.ColumnCount = 1; $moreBody.AutoSize = $true; $moreBody.AutoSizeMode = 'GrowAndShrink'; $moreBody.BackColor = $cCard; $moreBody.Visible = $false
     Add-Col $moreBody 'Percent' 100
@@ -198,14 +215,15 @@ try {
     $more.Controls.Add($mt)
     Add-Block $more 0 12
 
-    function New-SettingRow([string]$glyph, [string]$title, [string]$desc, $button) {
+    function New-SettingRow([string]$glyph, [string]$titleKey, [string]$descKey, $button) {
         $r = New-Tlp 3 1 $cCard; $r.Height = 66; $r.Margin = Pad 0 0 0 0
         Add-Col $r 'Absolute' 52; Add-Col $r 'Percent' 100; Add-Col $r 'Absolute' 176; Add-Row $r 'Percent' 100
         $ic = New-Object Fluent.FBadge; $ic.Filled = $false; $ic.Glyph = $glyph; $ic.GlyphPx = 20; $ic.Size = New-Object System.Drawing.Size(36, 36); $ic.Anchor = 'None'
         $ic.GlyphColor = [Fluent.Theme]::SubText
         $tx = New-Tlp 1 2 $cCard; Add-Col $tx 'Percent' 100; Add-Row $tx 'Percent' 50; Add-Row $tx 'Percent' 50
-        $lt = New-Lbl $title (Semi 10.5) $cText $cCard 'BottomLeft'
-        $ld = New-Lbl $desc (Ui 9.5) $cSub $cCard 'TopLeft'
+        $lt = New-Lbl '' (Semi 10.5) $cText $cCard 'BottomLeft'; Bind-Text $lt $titleKey
+        $ld = New-Lbl '' (Ui 9.5) $cSub $cCard 'TopLeft'
+        if ($descKey) { Bind-Text $ld $descKey }   # the sharing row sets its own description (Apply-ShareVisibility)
         $ld.Name = 'desc'
         $tx.Controls.Add($lt, 0, 0); $tx.Controls.Add($ld, 0, 1)
         $button.Anchor = 'None'; $button.Size = New-Object System.Drawing.Size(160, 34)
@@ -214,14 +232,14 @@ try {
     }
     function New-Divider { $d = New-Object System.Windows.Forms.Panel; $d.Height = 1; $d.Dock = 'Fill'; $d.BackColor = $cDiv; $d.Margin = Pad 14 0 14 0; return $d }
 
-    $btnRestore = New-Btn 'تراجع' 'Standard' (Glyph 0xE7A7) 160 34
-    $btnPurge = New-Btn 'حذف نهائي' 'Danger' (Glyph 0xE74D) 160 34
-    $btnClean = New-Btn 'مسح التقارير' 'Standard' (Glyph 0xE74D) 160 34
-    $btnShareDel = New-Btn 'حذف ملفي الشخصي' 'Danger' '' 160 34
-    $rowRestore = New-SettingRow (Glyph 0xE777) 'تراجع عن آخر عزل' 'يُرجع الملفات والخدمات التي عُزلت إلى حالتها الأصلية.' $btnRestore
-    $rowPurge = New-SettingRow (Glyph 0xE74D) 'حذف الملفات المعزولة نهائيًا' 'لا يمكن التراجع بعد ذلك.' $btnPurge
-    $rowClean = New-SettingRow (Glyph 0xE8B7) 'مسح تقارير الأداة من جهازك' 'يحذف مجلد التقارير من سطح المكتب، ولا يؤثر على الملفات المعزولة.' $btnClean
-    $rowShare = New-SettingRow (Glyph 0xE72E) 'حسابي للمشاركة' 'غير مُعدّ بعد' $btnShareDel
+    $btnRestore = New-Btn '' 'Standard' (Glyph 0xE7A7) 160 34; Bind-Text $btnRestore 'gui.btn.restore'
+    $btnPurge = New-Btn '' 'Danger' (Glyph 0xE74D) 160 34; Bind-Text $btnPurge 'gui.btn.purge'
+    $btnClean = New-Btn '' 'Standard' (Glyph 0xE74D) 160 34; Bind-Text $btnClean 'gui.btn.clean'
+    $btnShareDel = New-Btn '' 'Danger' '' 160 34; Bind-Text $btnShareDel 'gui.btn.sharedel'
+    $rowRestore = New-SettingRow (Glyph 0xE777) 'gui.row.restore.t' 'gui.row.restore.d' $btnRestore
+    $rowPurge = New-SettingRow (Glyph 0xE74D) 'gui.row.purge.t' 'gui.row.purge.d' $btnPurge
+    $rowClean = New-SettingRow (Glyph 0xE8B7) 'gui.row.clean.t' 'gui.row.clean.d' $btnClean
+    $rowShare = New-SettingRow (Glyph 0xE72E) 'gui.row.share.t' '' $btnShareDel
     $divShare = New-Divider
     $divShare.Visible = $false; $rowShare.Visible = $false
     foreach ($c in @($rowRestore, (New-Divider), $rowPurge, (New-Divider), $rowClean, $divShare, $rowShare)) { $c.Dock = 'Fill'; [void]$moreBody.Controls.Add($c) }
@@ -230,7 +248,7 @@ try {
     $details = New-Object Fluent.FCard
     $details.Padding = Pad 8 8 8 8
     $dt = New-Tlp 1 2 $cCard; Add-Col $dt 'Percent' 100; Add-Row $dt 'Absolute' 48; Add-Row $dt 'Percent' 100
-    $exLog = New-Object Fluent.FExpander; $exLog.Text = 'التفاصيل التقنية (للمختصين)'; $exLog.Glyph = Glyph 0xE9D9; $exLog.Dock = 'Fill'; $exLog.Margin = Pad 0 0 0 0
+    $exLog = New-Object Fluent.FExpander; $exLog.Glyph = Glyph 0xE9D9; $exLog.Dock = 'Fill'; $exLog.Margin = Pad 0 0 0 0; Bind-Text $exLog 'gui.details.t'
     $txtLog = New-Object System.Windows.Forms.TextBox
     $txtLog.Multiline = $true; $txtLog.ReadOnly = $true; $txtLog.ScrollBars = 'Vertical'; $txtLog.Dock = 'Fill'; $txtLog.BorderStyle = 'None'
     $txtLog.Font = [Fluent.Theme]::Mono(9); $txtLog.RightToLeft = 'No'; $txtLog.BackColor = $cField; $txtLog.ForeColor = $cText; $txtLog.Margin = Pad 8 4 8 8; $txtLog.Visible = $false
@@ -250,20 +268,32 @@ try {
 
     # ------------------------------------------------------------ helpers
     function Add-Log([string]$s) { $txtLog.AppendText($s + "`r`n") }
-    function Set-Status([string]$s, [int]$pct = -1) { $lblStatus.Text = $s; if ($pct -ge 0) { $bar.Value = $pct } }
-    $mbOpts = [System.Windows.Forms.MessageBoxOptions]'RtlReading, RightAlign'
+    # The status line and the verdict bar show a string-table key, so they can be re-written when the language changes.
+    $script:statusKey = ''; $script:statusArgs = @()
+    function Set-Status([string]$key, [int]$pct = -1, [object[]]$fmt = @()) {
+        $script:statusKey = $key; $script:statusArgs = $fmt
+        $lblStatus.Text = $(if ($key) { Get-Text $key @fmt } else { '' })
+        if ($pct -ge 0) { $bar.Value = $pct }
+    }
+    # what the verdict bar shows: 'keys' = a fixed pair of string-table keys, 'results' = built from the loaded plan (Load-Results)
+    $script:infoMode = 'keys'; $script:infoLevel = 'Info'; $script:infoTitleKey = 'gui.info.ready.t'; $script:infoMsgKey = 'gui.info.ready.m'
+    function Show-Info([string]$level, [string]$titleKey, [string]$msgKey) {
+        $script:infoMode = 'keys'; $script:infoLevel = $level; $script:infoTitleKey = $titleKey; $script:infoMsgKey = $msgKey
+        $info.Level = $level; $info.Title = Get-Text $titleKey; $info.Message = Get-Text $msgKey; [void]$info.FitHeight()
+    }
+    function Get-MsgBoxOptions { if (Test-Rtl) { [System.Windows.Forms.MessageBoxOptions]'RtlReading, RightAlign' } else { [System.Windows.Forms.MessageBoxOptions]0 } }
     function Info-Box([string]$text, [string]$icon = 'Information') {
         if ($Unattended) { Add-Log "[dialog] $text"; return }
-        [void][System.Windows.Forms.MessageBox]::Show($form, $text, 'فاحص الذاكرة', 'OK', $icon, 'Button1', $mbOpts)
+        [void][System.Windows.Forms.MessageBox]::Show($form, $text, (Get-Text 'gui.msgbox.title'), 'OK', $icon, 'Button1', (Get-MsgBoxOptions))
     }
     function Confirm-Box([string]$text, [string]$title, [string]$icon = 'Question') {
         if ($Unattended) { Add-Log "[confirm:auto-yes] $title"; return $true }
-        return ([System.Windows.Forms.MessageBox]::Show($form, $text, $title, 'YesNo', $icon, 'Button2', $mbOpts) -eq 'Yes')
+        return ([System.Windows.Forms.MessageBox]::Show($form, $text, $title, 'YesNo', $icon, 'Button2', (Get-MsgBoxOptions)) -eq 'Yes')
     }
     function Guard([scriptblock]$b) {
         try { & $b } catch {
             Add-Log ('ERROR: ' + $_.Exception.Message)
-            Info-Box ('حدث خطأ غير متوقع:' + "`n" + $_.Exception.Message) 'Warning'
+            Info-Box ((Get-Text 'gui.err.unexpected') + "`n" + $_.Exception.Message) 'Warning'
         }
     }
     function Read-Shared([string]$p, [bool]$utf8 = $false) {   # scan/actions print ASCII (console code page); the share CLI prints UTF-8 (Arabic)
@@ -304,31 +334,33 @@ try {
     $script:taskKind = ''; $script:cap = 5; $script:tick = 0; $script:current = $null; $script:scanStart = Get-Date; $script:lastOutput = ''
     $script:share = [pscustomobject]@{ Configured = $false; Name = ''; UserId = ''; Helper = ''; EndpointConfigured = $false }
 
+    # the scan prints English progress lines; the first marker found in a line picks the status text (string-table key) and the bar position
     $StatusMap = @(
-        @('Snapshot #1', 'جارٍ قياس الذاكرة ...', 5),
-        @('Collecting system facts', 'جارٍ قراءة معلومات الجهاز ...', 10),
-        @('Inventory: processes', 'جارٍ فحص البرامج الشغّالة ...', 16),
-        @('Inventory: services', 'جارٍ فحص الخدمات ...', 26),
-        @('Inventory: scheduled tasks', 'جارٍ فحص المهام المجدولة ...', 36),
-        @('Inventory: startup', 'جارٍ فحص برامج بدء التشغيل ...', 42),
-        @('Inventory: WMI', 'جارٍ فحص الاشتراكات الخفية ...', 46),
-        @('Inventory: running kernel drivers', 'جارٍ فحص التعريفات ...', 50),
-        @('Hidden-process', 'جارٍ البحث عن عمليات مخفية ...', 56),
-        @('Rating signatures', 'جارٍ تحليل الملفات والتواقيع (أطول خطوة) ...', 62),
-        @('Waiting', 'جارٍ مراقبة نمو الذاكرة ...', 82),
-        @('Snapshot #2', 'جارٍ قياس النمو ...', 87),
-        @('Correlating', 'جارٍ ربط النتائج ...', 91),
-        @('Mapping top pool tags', 'جارٍ ربط ذاكرة النواة بالتعريفات ...', 95),
-        @('Collecting Defender', 'جارٍ جمع الأدلة النهائية ...', 97)
+        @('Snapshot #1', 'gui.step.1', 5),
+        @('Collecting system facts', 'gui.step.2', 10),
+        @('Inventory: processes', 'gui.step.3', 16),
+        @('Inventory: services', 'gui.step.4', 26),
+        @('Inventory: scheduled tasks', 'gui.step.5', 36),
+        @('Inventory: startup', 'gui.step.6', 42),
+        @('Inventory: WMI', 'gui.step.7', 46),
+        @('Inventory: running kernel drivers', 'gui.step.8', 50),
+        @('Hidden-process', 'gui.step.9', 56),
+        @('Rating signatures', 'gui.step.10', 62),
+        @('Waiting', 'gui.step.11', 82),
+        @('Snapshot #2', 'gui.step.12', 87),
+        @('Correlating', 'gui.step.13', 91),
+        @('Mapping top pool tags', 'gui.step.14', 95),
+        @('Collecting Defender', 'gui.step.15', 97)
     )
 
     function Refresh-Buttons {
         $busy = ($null -ne $script:proc -and -not $script:proc.HasExited)
         $btnScan.Enabled = (-not $busy)
-        $btnScan.Text = $(if ($busy -and $script:taskKind -eq 'scan') { 'جارٍ الفحص ...' } else { 'ابدأ الفحص' })
+        $btnScan.Text = $(if ($busy -and $script:taskKind -eq 'scan') { Get-Text 'gui.btn.scanning' } else { Get-Text 'gui.btn.scan' })
         $has = ($null -ne $script:current)
         $btnQ.Enabled = ((-not $busy) -and $CanAct -and ($list.CheckedCount -gt 0) -and $has)
-        $lblPick.Text = $(if ($list.Items.Count -gt 0) { 'محدد ' + $list.CheckedCount + ' من ' + $list.Items.Count } else { '' })
+        $lblPick.Text = $(if ($list.Items.Count -gt 0) { Get-Text 'gui.find.pick' $list.CheckedCount $list.Items.Count } else { '' })
+        $btnLang.Enabled = (-not $busy)   # the language of a running scan / action cannot change halfway
         $btnReport.Enabled = ((-not $busy) -and $has)
         $btnFolder.Enabled = ((-not $busy) -and $has)
         $btnCopy.Enabled = ((-not $busy) -and $has)
@@ -435,11 +467,13 @@ try {
         $plan = Get-Content -LiteralPath $r.Plan -Raw -Encoding UTF8 | ConvertFrom-Json
         $script:current = $r
         $script:currentPlan = $plan
+        $script:currentPrev = $previous
+        $script:infoMode = 'results'
         $lvlMap = @{ high = 'Error'; med = 'Warning'; low = 'Info'; ok = 'Success' }
         $lv = $lvlMap[[string]$plan.verdict.Level]; if (-not $lv) { $lv = 'Info' }
 
         $list.Clear()
-        $risk = @{ High = 'عالٍ'; Medium = 'متوسط' }
+        $risk = @{ High = (Get-Text 'level.high'); Medium = (Get-Text 'level.med') }
         $lowCount = 0
         foreach ($s in @($plan.suspects)) {
             if (-not $s) { continue }
@@ -451,21 +485,24 @@ try {
         }
         $obs = @($plan.observations | Where-Object { $_.Level -in 'high', 'med' })
         $kernel = @($obs | Where-Object { $_.Title -match 'Non-paged|Paged pool' })
-        if ($list.Items.Count -gt 0) { $hint = 'وُجدت ملفات تستحق المراجعة (الملفات عالية الخطر محددة مسبقًا). افتح التقرير للتأكد ثم اضغط «عزل».' }
-        elseif ($kernel.Count -gt 0) { $hint = 'المشكلة غالبًا من تعريف (Driver) في ويندوز وليست ملفًا يُعزل. افتح التقرير: جدول Pool tags يحدد التعريف، ثم حدّثه من موقع الشركة المصنّعة.' }
-        elseif ($obs.Count -gt 0) { $hint = 'لا يوجد ملف يُعزل، لكن هناك ملاحظات في التقرير تستحق القراءة.' }
-        else { $hint = 'لا يوجد ما يحتاج عزلًا الآن. إن كانت المشكلة موجودة فعلًا فأعد الفحص وهي ظاهرة (الذاكرة ممتلئة).' }
-        if ($obs.Count -gt 0) { $hint += "`n" + 'أهم الملاحظات:  ' + ((@($obs | Select-Object -First 3) | ForEach-Object { $_.Title }) -join '   •   ') }
+        if ($list.Items.Count -gt 0) { $hint = Get-Text 'gui.hint.found' }
+        elseif ($kernel.Count -gt 0) { $hint = Get-Text 'gui.hint.kernel' }
+        elseif ($obs.Count -gt 0) { $hint = Get-Text 'gui.hint.obs' }
+        else { $hint = Get-Text 'gui.hint.none' }
+        if ($obs.Count -gt 0) { $hint += "`n" + (Get-Text 'gui.hint.top') + ((@($obs | Select-Object -First 3) | ForEach-Object { $_.Title }) -join '   •   ') }
         if ($lowCount -gt 0) {
-            $lowText = switch ($lowCount) { 1 { 'عنصر واحد منخفض الخطورة مذكور في التقرير فقط' } 2 { 'عنصران منخفضا الخطورة مذكوران في التقرير فقط' } default { "$lowCount عناصر منخفضة الخطورة مذكورة في التقرير فقط" } }
+            $lowText = switch ($lowCount) { 1 { Get-Text 'gui.low.1' } 2 { Get-Text 'gui.low.2' } default { Get-Text 'gui.low.n' $lowCount } }
             $hint += "`n($lowText)"
         }
+        # the texts of a plan keep the language the scan wrote them in (a plan without "lang" comes from the Arabic-only releases)
+        $planLang = $(if ($plan.PSObject.Properties['lang'] -and $plan.lang) { [string]$plan.lang } else { 'ar' })
+        if ($planLang -ne (Get-UiLang)) { $hint += "`n" + (Get-Text 'gui.note.otherlang') }
         # the findings card grows with its content (1 to 3 rows), no empty space
         $rows = [math]::Min(3, [math]::Max(1, $list.Items.Count))
         $lh = $rows * $list.RowHeight + 4
         $ft.RowStyles[1].Height = $lh
         $find.Height = 14 + 34 + $lh + 12 + 44 + 20
-        $pre = if ($previous) { 'آخر فحص (' + $r.Time.ToString('yyyy-MM-dd HH:mm', [Globalization.CultureInfo]::InvariantCulture) + '):  ' } else { '' }
+        $pre = if ($previous) { Get-Text 'gui.prev' $r.Time.ToString('yyyy-MM-dd HH:mm', [Globalization.CultureInfo]::InvariantCulture) } else { '' }
         $info.Level = $lv
         $info.Title = $pre + [string]$plan.verdict.Headline
         $info.Message = $hint
@@ -476,12 +513,12 @@ try {
     function Scan-Done {
         $r = Get-LatestResult
         if (-not $r -or $r.Time -lt $script:scanStart.AddSeconds(-5)) {
-            Set-Status 'لم يكتمل الفحص. راجع «التفاصيل التقنية» أسفل النافذة.' 0
-            Info-Box 'لم يكتمل الفحص. جرّب تشغيل الأداة مجددًا كمدير، وإن تكرر أرسل لقطة من النافذة.' 'Warning'
+            Set-Status 'gui.status.noscan' 0
+            Info-Box (Get-Text 'gui.box.noscan') 'Warning'
             return
         }
         Load-Results $r $false
-        Set-Status 'اكتمل الفحص. النتيجة أعلاه.' 100
+        Set-Status 'gui.status.done' 100
     }
 
     function Count-Problems([string]$out) {
@@ -491,16 +528,16 @@ try {
     # ------------------------------------------------------------ copy-summary (always available; nothing leaves the PC)
     function Build-LocalSummary($plan) {
         $L = New-Object System.Collections.Generic.List[string]
-        $L.Add('ملخص فحص RAM Doctor')
-        $L.Add('النتيجة: ' + [string]$plan.verdict.Headline)
+        $L.Add((Get-Text 'gui.sum.title'))
+        $L.Add((Get-Text 'gui.sum.result') + [string]$plan.verdict.Headline)
         if ($plan.memory) {
-            $L.Add(('الذاكرة: مستخدم {0} من {1} GB | Non-paged {2} GB | Paged {3} GB' -f $plan.memory.UsedGB, $plan.memory.TotalGB, $plan.memory.NonPagedGB, $plan.memory.PagedGB))
+            $L.Add((Get-Text 'gui.sum.mem' $plan.memory.UsedGB $plan.memory.TotalGB $plan.memory.NonPagedGB $plan.memory.PagedGB))
         }
         $o = @($plan.observations | Where-Object { $_.Level -in 'high', 'med' } | Select-Object -First 4)
         foreach ($x in $o) { $L.Add('• ' + [string]$x.Title) }
         $s = @($plan.suspects | Where-Object { $_.risk -in 'High', 'Medium' } | Select-Object -First 5)
-        if ($s.Count -gt 0) { $L.Add('ملفات مشبوهة: ' + (($s | ForEach-Object { "$($_.name) ($(if ($_.risk -eq 'High') { 'عالٍ' } else { 'متوسط' }))" }) -join ' ، ')) }
-        $L.Add('(بدون مسارات أو أسماء مستخدمين)')
+        if ($s.Count -gt 0) { $L.Add((Get-Text 'gui.sum.sus') + (($s | ForEach-Object { "$($_.name) ($(if ($_.risk -eq 'High') { Get-Text 'level.high' } else { Get-Text 'level.med' }))" }) -join (Get-Text 'gui.sum.sep'))) }
+        $L.Add((Get-Text 'gui.sum.nopaths'))
         return ($L -join "`r`n")
     }
 
@@ -516,12 +553,12 @@ try {
 
     function Finish-Copy([string]$text) {
         Clear-ShareTemp
-        if (Copy-Text $text) { Show-Toast 'Success' 'تم النسخ' 'الصقه في واتساب أو أي محادثة.' }
-        else { Show-Toast 'Warning' 'تعذّر النسخ' 'جرّب مرة ثانية، أو أرسل ملف التقرير يدويًا.' }
+        if (Copy-Text $text) { Show-Toast 'Success' (Get-Text 'gui.toast.copied.t') (Get-Text 'gui.toast.copied.m') }
+        else { Show-Toast 'Warning' (Get-Text 'gui.toast.copyfail.t') (Get-Text 'gui.toast.copyfail.m') }
     }
 
     function Share-Args([string]$action) {
-        $a = @(('"{0}"' -f $ShareScript), '-Action', $action)
+        $a = @(('"{0}"' -f $ShareScript), '-Action', $action, '-Lang', (Get-UiLang))
         if ($ShareProfileDir) { $a += @('-ProfileDir', ('"{0}"' -f $ShareProfileDir)) }
         if ($ShareEndpoint) { $a += @('-Endpoint', ('"{0}"' -f $ShareEndpoint)) }
         return $a
@@ -531,7 +568,7 @@ try {
     # Everything below stays invisible unless RAM-Doctor-Share.ps1 -Action ShowProfile reports endpointConfigured=true.
     function Read-ShareProfile {
         $s = [pscustomobject]@{ Configured = $false; Name = ''; UserId = ''; Helper = ''; EndpointConfigured = $false }
-        if ($ShareForceConfigured) { $s.EndpointConfigured = $true; $s.Helper = 'مساعدي'; return $s }
+        if ($ShareForceConfigured) { $s.EndpointConfigured = $true; $s.Helper = (Get-Text 'gui.helper.demo'); return $s }
         if (-not (Test-Path -LiteralPath $ShareScript)) { return $s }
         try {
             $r = Invoke-Cli (Share-Args 'ShowProfile') 25
@@ -559,12 +596,12 @@ try {
     function Apply-ShareVisibility {
         $on = [bool]$script:share.EndpointConfigured
         $btnShare.Visible = $on; $rowShare.Visible = $on; $divShare.Visible = $on
-        $lblSub.Text = $(if ($on) { 'اعرف سبب امتلاء الذاكرة (RAM) خلال دقيقة. الفحص آمن ولا يتصل بالإنترنت. المشاركة اختيارية وبضغطة زر.' } else { 'اعرف سبب امتلاء الذاكرة (RAM) خلال دقيقة. الفحص آمن ولا يتصل بالإنترنت.' })
+        $lblSub.Text = $(if ($on) { Get-Text 'gui.sub.share' } else { Get-Text 'gui.sub' })
         if ($on) {
             $d = $rowShare.Controls | Where-Object { $_ -is [System.Windows.Forms.TableLayoutPanel] } | Select-Object -First 1
             $desc = $d.Controls | Where-Object { $_.Name -eq 'desc' } | Select-Object -First 1
             if ($script:share.Configured) { $desc.Text = ([char]0x202A).ToString() + $script:share.Name + $(if ($script:share.UserId) { '   ·   ' + $script:share.UserId.Substring(0, [Math]::Min(6, $script:share.UserId.Length)) } else { '' }) + ([char]0x202C).ToString() }
-            else { $desc.Text = 'غير مُعدّ بعد' }
+            else { $desc.Text = Get-Text 'gui.share.notset' }
         }
         Resize-Cards
         Refresh-Buttons
@@ -574,34 +611,34 @@ try {
         $d = New-Object System.Windows.Forms.Form
         $d.Text = $title; $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false; $d.ShowInTaskbar = $false
         $d.StartPosition = 'CenterParent'; $d.ClientSize = New-Object System.Drawing.Size($w, $h)
-        $d.RightToLeft = 'Yes'; $d.RightToLeftLayout = $true; $d.BackColor = $cWin; $d.Font = Ui 10; $d.Icon = $form.Icon
+        $d.RightToLeft = Get-RtlValue; $d.RightToLeftLayout = (Test-Rtl); $d.BackColor = $cWin; $d.Font = Ui 10; $d.Icon = $form.Icon
         $d.Add_Shown({ [Fluent.Win]::StyleWindow($this.Handle, $dark, $cWin, $cText) })
         return $d
     }
 
     function Show-ProfileDialog {
         if ($Unattended -and $script:TestProfile) { return $script:TestProfile }
-        $d = New-Dialog 'ملفي الشخصي للمشاركة' 540 350
+        $d = New-Dialog (Get-Text 'gui.profile.title') 540 350
         $t = New-Object System.Windows.Forms.TableLayoutPanel
         $t.Dock = 'Fill'; $t.ColumnCount = 1; $t.BackColor = $cWin; $t.Padding = Pad 28 24 28 18; Add-Col $t 'Percent' 100
         function Add-Dlg($c, [int]$h) { $c.Dock = 'Fill'; $c.Height = $h; $c.Margin = Pad 0 0 0 0; [void]$t.Controls.Add($c) }
-        Add-Dlg (New-Lbl 'إعداد المشاركة (مرة واحدة)' (Semi 15) $cText $cWin 'MiddleLeft') 38
-        Add-Dlg (New-Lbl 'اختر اسم مستخدم يبقى ثابتًا ويظهر لمساعدك.' (Ui 10) $cSub $cWin 'TopLeft') 30
-        Add-Dlg (New-Lbl 'اسم المستخدم' (Semi 10) $cText $cWin 'BottomLeft') 26
-        $fu = New-Object Fluent.FField; $fu.Cue = 'مثال: ahmed_92'; $fu.MaxLen = 24
+        Add-Dlg (New-Lbl (Get-Text 'gui.profile.h') (Semi 15) $cText $cWin 'MiddleLeft') 38
+        Add-Dlg (New-Lbl (Get-Text 'gui.profile.p') (Ui 10) $cSub $cWin 'TopLeft') 30
+        Add-Dlg (New-Lbl (Get-Text 'gui.profile.user') (Semi 10) $cText $cWin 'BottomLeft') 26
+        $fu = New-Object Fluent.FField; $fu.Cue = (Get-Text 'gui.profile.cue'); $fu.MaxLen = 24
         Add-Dlg $fu 44
-        $tog = New-Btn 'رمز دعوة (اختياري)' 'Subtle' (Glyph 0xE70D) 190 34
+        $tog = New-Btn (Get-Text 'gui.profile.code.btn') 'Subtle' (Glyph 0xE70D) 190 34
         $tog.Dock = 'None'; $tog.Anchor = 'Top,Right'; $tog.Margin = Pad 0 6 0 0; $tog.Height = 34
         [void]$t.Controls.Add($tog)
-        $lblCode = New-Lbl 'رمز الدعوة (اختياري)' (Semi 10) $cText $cWin 'BottomLeft'; Add-Dlg $lblCode 26
+        $lblCode = New-Lbl (Get-Text 'gui.profile.code.lbl') (Semi 10) $cText $cWin 'BottomLeft'; Add-Dlg $lblCode 26
         $fc = New-Object Fluent.FField; $fc.Password = $true; Add-Dlg $fc 44
         $lblCode.Visible = $false; $fc.Visible = $false
         $lblErr = New-Lbl '' (Ui 9.5) ([Fluent.Theme]::Danger) $cWin 'MiddleLeft'
         if ($dark) { $lblErr.ForeColor = [System.Drawing.Color]::FromArgb(0xFF, 0x99, 0xA4) }
         Add-Dlg $lblErr 30
         $bt = New-Object System.Windows.Forms.FlowLayoutPanel; $bt.BackColor = $cWin; $bt.WrapContents = $false
-        $ok = New-Btn 'حفظ' 'Accent' '' 130 38; $ok.Margin = Pad 10 0 0 0
-        $cancel = New-Btn 'إلغاء' 'Standard' '' 110 38
+        $ok = New-Btn (Get-Text 'gui.btn.save') 'Accent' '' 130 38; $ok.Margin = Pad 10 0 0 0
+        $cancel = New-Btn (Get-Text 'gui.btn.cancel') 'Standard' '' 110 38
         $bt.Controls.AddRange(@($ok, $cancel))
         Add-Dlg $bt 46
         $d.Controls.Add($t)
@@ -614,9 +651,9 @@ try {
             })
         $ok.Add_Click({
                 $u = $fu.Value.Trim(); $c = $fc.Value.Trim()
-                if ($u.Length -lt 2 -or $u.Length -gt 24) { $lblErr.Text = 'اسم المستخدم يجب أن يكون بين 2 و24 حرفًا.'; return }
-                if ($u -notmatch '^[\p{L}\p{N}_\-\.]+$') { $lblErr.Text = 'استخدم حروفًا وأرقامًا و _ - . فقط (بدون مسافات).'; return }
-                if ($c.Length -gt 0 -and $c.Length -lt 4) { $lblErr.Text = 'رمز الدعوة قصير جدًا. اتركه فارغًا إن لم يكن لديك رمز.'; return }
+                if ($u.Length -lt 2 -or $u.Length -gt 24) { $lblErr.Text = Get-Text 'gui.profile.err.len'; return }
+                if ($u -notmatch '^[\p{L}\p{N}_\-\.]+$') { $lblErr.Text = Get-Text 'gui.profile.err.chars'; return }
+                if ($c.Length -gt 0 -and $c.Length -lt 4) { $lblErr.Text = Get-Text 'gui.profile.err.code'; return }
                 $d.Tag = @{ Username = $u; Code = $c }
                 $d.DialogResult = 'OK'
             })
@@ -630,15 +667,15 @@ try {
 
     function Show-ShareDialog($previewInfo) {
         if ($Unattended) { return @{ Include = $false } }
-        $helper = $script:share.Helper; if (-not $helper) { $helper = 'مساعدك' }
-        $d = New-Dialog ('مشاركة النتيجة مع ' + $helper) 560 520
+        $helper = $script:share.Helper; if (-not $helper) { $helper = Get-Text 'gui.helper.default' }
+        $d = New-Dialog (Get-Text 'gui.share.title' $helper) 560 520
         $t = New-Tlp 1 8 $cWin; $t.Padding = Pad 28 22 28 20
         Add-Col $t 'Percent' 100; Add-Row $t 'Absolute' 36; Add-Row $t 'Absolute' 28; Add-Row $t 'Absolute' 150; Add-Row $t 'Absolute' 64; Add-Row $t 'Absolute' 36; Add-Row $t 'Absolute' 40; Add-Row $t 'Absolute' 10; Add-Row $t 'Percent' 100
-        $t.Controls.Add((New-Lbl ('مشاركة النتيجة مع ' + $helper) (Semi 15) $cText $cWin 'MiddleLeft'), 0, 0)
-        $t.Controls.Add((New-Lbl ('سيُرسل ما يلي فقط، إلى المستودع الخاص لـ ' + $helper + ':') (Ui 10) $cSub $cWin 'MiddleLeft'), 0, 1)
+        $t.Controls.Add((New-Lbl (Get-Text 'gui.share.title' $helper) (Semi 15) $cText $cWin 'MiddleLeft'), 0, 0)
+        $t.Controls.Add((New-Lbl (Get-Text 'gui.share.sub' $helper) (Ui 10) $cSub $cWin 'MiddleLeft'), 0, 1)
         $card = New-Object Fluent.FCard; $card.Dock = 'Fill'; $card.Padding = Pad 10 6 10 6; $card.Margin = Pad 0 4 0 8
         $ct = New-Tlp 1 3 $cCard; Add-Col $ct 'Percent' 100
-        $names = @(@('ملخص النتيجة', 'summary.md'), @('التقرير الكامل', 'report.html'), @('خطة الفحص', 'plan.json'))
+        $names = @(@((Get-Text 'gui.share.f1'), 'summary.md'), @((Get-Text 'gui.share.f2'), 'report.html'), @((Get-Text 'gui.share.f3'), 'plan.json'))
         foreach ($n in $names) {
             Add-Row $ct 'Percent' 33.3
             $r = New-Tlp 3 1 $cCard; Add-Col $r 'Absolute' 36; Add-Col $r 'Percent' 100; Add-Col $r 'Absolute' 90
@@ -651,14 +688,14 @@ try {
         }
         $card.Controls.Add($ct)
         $t.Controls.Add($card, 0, 2)
-        $t.Controls.Add((New-Lbl 'تُحذف تلقائيًا من الملفات: اسم مستخدم ويندوز، اسم الجهاز، البريد الإلكتروني، وأي مفاتيح أو أسرار. لا يُرسل شيء غير ما فوق.' (Ui 9.5) $cSub $cWin 'TopLeft'), 0, 3)
-        $chk = New-Object Fluent.FCheck; $chk.Text = 'تضمين اسم جهازي'; $chk.Dock = 'Fill'; $chk.Margin = Pad 0 4 0 4
+        $t.Controls.Add((New-Lbl (Get-Text 'gui.share.redact') (Ui 9.5) $cSub $cWin 'TopLeft'), 0, 3)
+        $chk = New-Object Fluent.FCheck; $chk.Text = Get-Text 'gui.share.host'; $chk.Dock = 'Fill'; $chk.Margin = Pad 0 4 0 4
         $t.Controls.Add($chk, 0, 4)
-        $prev = New-Btn 'معاينة الملفات' 'Subtle' (Glyph 0xE838) 170 36; $prev.Margin = Pad 0 2 0 2
+        $prev = New-Btn (Get-Text 'gui.share.preview') 'Subtle' (Glyph 0xE838) 170 36; $prev.Margin = Pad 0 2 0 2
         $t.Controls.Add($prev, 0, 5)
         $bt = New-Object System.Windows.Forms.FlowLayoutPanel; $bt.Dock = 'Fill'; $bt.BackColor = $cWin; $bt.WrapContents = $false
-        $send = New-Btn 'إرسال' 'Accent' (Glyph 0xE72D) 140 40; $send.Margin = Pad 10 0 0 0
-        $cancel = New-Btn 'إلغاء' 'Standard' '' 110 40
+        $send = New-Btn (Get-Text 'gui.btn.send') 'Accent' (Glyph 0xE72D) 140 40; $send.Margin = Pad 10 0 0 0
+        $cancel = New-Btn (Get-Text 'gui.btn.cancel') 'Standard' '' 110 40
         $bt.Controls.AddRange(@($send, $cancel))
         $t.Controls.Add($bt, 0, 7)
         $d.Controls.Add($t)
@@ -691,8 +728,8 @@ try {
             New-Item -ItemType Directory -Force -Path $ReportsDir | Out-Null
             $txtLog.Clear(); $script:cap = 5
             $toast.Visible = $false
-            Set-Status 'بدأ الفحص ...' 2
-            Start-Task 'scan' @(('"{0}"' -f $ScanScript), '-NoOpen', '-OutDir', ('"{0}"' -f $ReportsDir), '-SampleSeconds', '30') { Scan-Done }
+            Set-Status 'gui.status.start' 2
+            Start-Task 'scan' @(('"{0}"' -f $ScanScript), '-NoOpen', '-OutDir', ('"{0}"' -f $ReportsDir), '-SampleSeconds', '30', '-Lang', (Get-UiLang)) { Scan-Done }
         } })
 
     $list.Add_ItemChecked({ Guard { Refresh-Buttons } })
@@ -701,26 +738,25 @@ try {
             $ids = @($list.GetChecked() | ForEach-Object { [int]$_.Tag })
             if ($ids.Count -eq 0) { return }
             $names = (@($list.GetChecked() | ForEach-Object { '•  ' + $_.Name }) -join "`n")
-            $ok = Confirm-Box ("سيتم إيقاف هذه الملفات وعزلها جانبًا. لن يُحذف شيء ويمكنك التراجع في أي وقت:`n`n$names`n`nهل تريد المتابعة؟") 'تأكيد العزل' 'Question'
+            $ok = Confirm-Box (Get-Text 'gui.q.confirm' $names) (Get-Text 'gui.q.title') 'Question'
             if (-not $ok) { return }
             $argv = @(('"{0}"' -f $ActionsScript), '-Mode', 'Quarantine', '-Plan', ('"{0}"' -f $script:current.Plan), '-Select', ($ids -join ','), '-Yes')
             if ($QuarantineDir) { $argv += @('-StoreDir', ('"{0}"' -f $QuarantineDir)) }
             if ($AllowNonAdmin) { $argv += '-AllowNonAdmin' }
-            Set-Status 'جارٍ العزل ...' 40
+            Set-Status 'gui.status.q' 40
             Start-Task 'quarantine' $argv {
                 $out = $script:lastOutput
                 $bad = Count-Problems $out
                 if ($out -match 'Done\. Quarantine batch') {
-                    Set-Status 'تم العزل.' 100
-                    $msg = 'تم العزل. أعد تشغيل الجهاز (Restart) ثم افحص مرة أخرى للتأكد أن الذاكرة رجعت طبيعية.'
-                    if ($bad -gt 0) { $msg += "`n`nملاحظة: $bad خطوة لم تكتمل (مثل ملف مقفول). التفاصيل في «التفاصيل التقنية»." }
+                    Set-Status 'gui.status.qdone' 100
+                    $msg = Get-Text 'gui.q.done.box'
+                    if ($bad -gt 0) { $msg += Get-Text 'gui.q.done.bad' $bad }
                     $list.Clear()
-                    $info.Level = 'Success'; $info.Title = 'تم العزل'; $info.Message = 'أعد تشغيل الجهاز ثم افحص من جديد. للتراجع افتح «المزيد» واختر «تراجع عن آخر عزل».'
-                    [void]$info.FitHeight()
+                    Show-Info 'Success' 'gui.q.done.t' 'gui.q.done.m'
                     Info-Box $msg
                 } else {
-                    Set-Status 'لم يكتمل العزل.' 0
-                    Info-Box 'لم يكتمل العزل. التفاصيل في «التفاصيل التقنية».' 'Warning'
+                    Set-Status 'gui.status.qfail' 0
+                    Info-Box (Get-Text 'gui.q.fail.box') 'Warning'
                 }
                 Refresh-Buttons
             }
@@ -753,8 +789,8 @@ try {
                 # name + optional invite code travel in process-scope environment variables, never on a command line or in the log
                 $r = Invoke-Cli (Share-Args 'SaveProfile') 40 @{ RAMDOC_SHARE_NAME = $prof.Username; RAMDOC_SHARE_CODE = $prof.Code }
                 if ($r.Output -notmatch 'RESULT:\s*OK') {
-                    $m = if ($r.Output -match 'RESULT:\s*ERROR\s*(.+)') { $Matches[1].Trim() } else { 'تعذّر حفظ الملف الشخصي.' }
-                    Show-Toast 'Error' 'لم يُحفظ الملف الشخصي' $m; return
+                    $m = if ($r.Output -match 'RESULT:\s*ERROR\s*(.+)') { $Matches[1].Trim() } else { Get-Text 'gui.profile.saveerr' }
+                    Show-Toast 'Error' (Get-Text 'gui.toast.profileerr.t') $m; return
                 }
                 $script:share = Read-ShareProfile; Apply-ShareVisibility
             }
@@ -764,71 +800,72 @@ try {
             $a = (Share-Args 'Share') + @('-PlanPath', ('"{0}"' -f $script:current.Plan))
             if ($choice.Include) { $a += '-IncludeHostName' }
             if ($ShareDryRun) { $a += '-DryRun' }
-            Set-Status 'جارٍ الإرسال ...' 60
+            Set-Status 'gui.status.sending' 60
             Start-Task 'share' $a {
                 Clear-ShareTemp
-                $helper = $script:share.Helper; if (-not $helper) { $helper = 'مساعدك' }
+                $helper = $script:share.Helper; if (-not $helper) { $helper = Get-Text 'gui.helper.default' }
                 if ($script:lastOutput -match 'RESULT:\s*OK') {
-                    Set-Status 'تم الإرسال.' 100
-                    Show-Toast 'Success' 'تم الإرسال ✓' ('يقدر ' + $helper + ' يشوف التقرير الآن.')
+                    Set-Status 'gui.status.sent' 100
+                    Show-Toast 'Success' (Get-Text 'gui.toast.sent.t') (Get-Text 'gui.toast.sent.m' $helper)
                 } else {
-                    $m = if ($script:lastOutput -match 'RESULT:\s*ERROR\s*\S*\s*(.*)') { $Matches[1].Trim() } else { 'حدث خطأ أثناء الإرسال.' }
-                    Set-Status 'لم يكتمل الإرسال.' 0
-                    Show-Toast 'Error' 'لم يكتمل الإرسال' $m
+                    $m = if ($script:lastOutput -match 'RESULT:\s*ERROR\s*\S*\s*(.*)') { $Matches[1].Trim() } else { Get-Text 'gui.share.sendfail' }
+                    Set-Status 'gui.status.sendfail' 0
+                    Show-Toast 'Error' (Get-Text 'gui.toast.sendfail.t') $m
                 }
             }
         } })
 
     $btnShareDel.Add_Click({ Guard {
-            if (-not (Confirm-Box "سيتم حذف ملفك الشخصي للمشاركة (الاسم ورمز الدعوة) من هذا الجهاز.`nالاسم الذي اخترته ثابت، وإن أعدت الإعداد قد تحتاج رمز دعوة جديدًا.`n`nمتأكد؟" 'حذف الملف الشخصي' 'Warning')) { return }
+            if (-not (Confirm-Box (Get-Text 'gui.sharedel.confirm') (Get-Text 'gui.sharedel.title') 'Warning')) { return }
             $r = Invoke-Cli (Share-Args 'DeleteProfile') 30
             $script:share = Read-ShareProfile; Apply-ShareVisibility
-            Show-Toast 'Info' 'تم حذف ملفك الشخصي' 'يمكنك إعداده من جديد عند المشاركة التالية.'
+            Show-Toast 'Info' (Get-Text 'gui.toast.profiledel.t') (Get-Text 'gui.toast.profiledel.m')
         } })
 
     $btnRestore.Add_Click({ Guard {
             $b = @(Get-Batches | Where-Object { $m = Get-Content (Join-Path $_.FullName 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json; -not $m.purgedAt -and -not $m.restoredAt }) | Select-Object -First 1
-            if (-not $b) { Info-Box 'لا توجد عملية عزل سابقة للتراجع عنها.'; return }
-            if (-not (Confirm-Box "سيتم إرجاع الملفات والخدمات التي عُزلت في آخر مرة إلى حالتها الأصلية.`n`nهل تريد المتابعة؟" 'تأكيد التراجع' 'Question')) { return }
+            if (-not $b) { Info-Box (Get-Text 'gui.restore.none'); return }
+            if (-not (Confirm-Box (Get-Text 'gui.restore.confirm') (Get-Text 'gui.restore.title') 'Question')) { return }
             $argv = @(('"{0}"' -f $ActionsScript), '-Mode', 'Restore', '-Batch', $b.Name, '-Yes')
             if ($QuarantineDir) { $argv += @('-StoreDir', ('"{0}"' -f $QuarantineDir)) }
             if ($AllowNonAdmin) { $argv += '-AllowNonAdmin' }
-            Set-Status 'جارٍ التراجع ...' 50
+            Set-Status 'gui.status.restoring' 50
             Start-Task 'restore' $argv {
-                if ($script:lastOutput -match 'Restore finished') { Set-Status 'تم التراجع.' 100; Info-Box 'تم إرجاع كل شيء كما كان. قد تحتاج لإعادة تشغيل الجهاز.' }
-                else { Set-Status 'لم يكتمل التراجع.' 0; Info-Box 'لم يكتمل التراجع. التفاصيل في «التفاصيل التقنية».' 'Warning' }
+                if ($script:lastOutput -match 'Restore finished') { Set-Status 'gui.status.restored' 100; Info-Box (Get-Text 'gui.restore.done.box') }
+                else { Set-Status 'gui.status.restorefail' 0; Info-Box (Get-Text 'gui.restore.fail.box') 'Warning' }
             }
         } })
 
     $btnPurge.Add_Click({ Guard {
             $st = Get-QuarantinedStats
-            if ($st.Count -eq 0) { Info-Box 'لا توجد ملفات معزولة لحذفها.'; return }
-            $ok = Confirm-Box ("سيتم حذف {0} ملف ({1} MB) من الحجر نهائيًا.`nلا يمكن استرجاعها بعد ذلك.`n`nهل أنت متأكد؟" -f $st.Count, $st.MB) 'حذف نهائي' 'Warning'
+            if ($st.Count -eq 0) { Info-Box (Get-Text 'gui.purge.none'); return }
+            $ok = Confirm-Box (Get-Text 'gui.purge.confirm' $st.Count $st.MB) (Get-Text 'gui.purge.title') 'Warning'
             if (-not $ok) { return }
             $argv = @(('"{0}"' -f $ActionsScript), '-Mode', 'Purge', '-OlderThanDays', '0', '-Yes')
             if ($QuarantineDir) { $argv += @('-StoreDir', ('"{0}"' -f $QuarantineDir)) }
             if ($AllowNonAdmin) { $argv += '-AllowNonAdmin' }
-            Set-Status 'جارٍ الحذف ...' 50
-            Start-Task 'purge' $argv { Set-Status 'تم الحذف النهائي.' 100; Info-Box 'تم حذف الملفات المعزولة نهائيًا.' }
+            Set-Status 'gui.status.purging' 50
+            Start-Task 'purge' $argv { Set-Status 'gui.status.purged' 100; Info-Box (Get-Text 'gui.purge.done.box') }
         } })
 
     $btnClean.Add_Click({ Guard {
-            if (-not (Test-Path -LiteralPath $ReportsDir)) { Info-Box 'لا توجد تقارير محفوظة.'; return }
+            if (-not (Test-Path -LiteralPath $ReportsDir)) { Info-Box (Get-Text 'gui.clean.none'); return }
             $n = @(Get-ChildItem -LiteralPath $ReportsDir -File -ErrorAction SilentlyContinue).Count
-            if (-not (Confirm-Box "سيتم حذف مجلد التقارير ($n ملف) من سطح المكتب.`nلن يؤثر ذلك على الملفات المعزولة.`n`nمتأكد؟" 'مسح التقارير' 'Question')) { return }
+            if (-not (Confirm-Box (Get-Text 'gui.clean.confirm' $n) (Get-Text 'gui.clean.title') 'Question')) { return }
             Remove-Item -LiteralPath $ReportsDir -Recurse -Force -ErrorAction SilentlyContinue
             $script:current = $null; $script:currentPlan = $null; $list.Clear(); $toast.Visible = $false
-            $info.Level = 'Info'; $info.Title = 'جاهز للفحص'; $info.Message = 'بعد الفحص تظهر هنا النتيجة، وأي ملفات مشبوهة يمكنك عزلها بضغطة واحدة.'
-            [void]$info.FitHeight()
-            Set-Status 'تم مسح التقارير.' 0
+            Show-Info 'Info' 'gui.info.ready.t' 'gui.info.ready.m'
+            Set-Status 'gui.status.cleaned' 0
             Refresh-Buttons
         } })
+
+    $btnLang.Add_Click({ Guard { Switch-Language } })
 
     $form.Add_FormClosing({
             param($s, $e)
             if ($script:proc -and -not $script:proc.HasExited) {
                 if ($script:taskKind -in 'scan', 'summary') { try { $script:proc.Kill() } catch { } }
-                else { $e.Cancel = $true; Info-Box 'العملية جارية الآن، انتظر حتى تنتهي ثم أغلق النافذة.' 'Warning' }
+                else { $e.Cancel = $true; Info-Box (Get-Text 'gui.closing') 'Warning' }
             }
         })
 
@@ -861,6 +898,39 @@ try {
         $frm.TopMost = $prevTop
     }
 
+    # ------------------------------------------------------------ language switch
+    # Applies the current language (Set-UiLang) to the whole open window: direction (RightToLeft + mirrored frame), every
+    # registered text, and every text that depends on state (status line, verdict bar, list, buttons). Nothing is stored.
+    function Apply-Language {
+        $rtl = Test-Rtl
+        $form.SuspendLayout()
+        $form.RightToLeft = Get-RtlValue
+        $form.RightToLeftLayout = $rtl
+        $form.Text = Get-Text 'gui.window.title'
+        foreach ($b in $script:i18n) { $b.Ctl.($b.Prop) = Get-Text $b.Key }
+        $banner.Title = Get-Text 'gui.banner.t'; $banner.Message = Get-Text 'gui.banner.m'
+        $script:langTip.SetToolTip($btnLang, (Get-Text 'gui.lang.tip')); $btnLang.AccessibleName = Get-Text 'gui.lang.tip'
+        if ($ShareForceConfigured -and $script:share) { $script:share.Helper = Get-Text 'gui.helper.demo' }
+        $toast.Visible = $false
+        Set-Status $script:statusKey -1 $script:statusArgs
+        if ($script:infoMode -eq 'results' -and $script:current) {
+            $ids = @($list.GetChecked() | ForEach-Object { [int]$_.Tag })   # keep the user's selection
+            Load-Results $script:current $script:currentPrev
+            foreach ($it in $list.Items) { $it.Checked = ($ids -contains [int]$it.Tag) }
+            $list.Invalidate()
+        } else { Show-Info $script:infoLevel $script:infoTitleKey $script:infoMsgKey }
+        $form.ResumeLayout($true)
+        if ($form.IsHandleCreated) {   # mirroring the frame re-creates the window: the Windows 11 styling has to be applied again
+            [Fluent.Win]::StyleWindow($form.Handle, $dark, $cWin, $cText)
+            [Fluent.Win]::SetScrollTheme($page.Handle, $dark)
+        }
+        Apply-ShareVisibility
+    }
+    function Switch-Language {
+        Set-UiLang $(if ((Get-UiLang) -eq 'ar') { 'en' } else { 'ar' })
+        Apply-Language
+    }
+
     # ------------------------------------------------------------ start-up
     $form.Add_Shown({
             Guard {
@@ -869,7 +939,7 @@ try {
                 $script:share = Read-ShareProfile
                 Apply-ShareVisibility
                 $r = Get-LatestResult
-                if ($r) { Load-Results $r $true; Set-Status 'هذه نتيجة آخر فحص. اضغط «ابدأ الفحص» لفحص جديد.' 0 }
+                if ($r) { Load-Results $r $true; Set-Status 'gui.status.last' 0 }
                 Refresh-Buttons
                 if ($TestScript) {
                     $script:t2 = New-Object System.Windows.Forms.Timer
@@ -882,11 +952,13 @@ try {
                 }
             }
         })
-    Refresh-Buttons
+    Set-Status 'gui.status.ready' 0
+    Show-Info 'Info' 'gui.info.ready.t' 'gui.info.ready.m'
+    Apply-Language
     [void]$form.ShowDialog()
 }
 catch {
     $msg = $_ | Out-String
     try { Add-Content -LiteralPath (Join-Path $env:TEMP 'ramdoctor-gui-error.log') -Value $msg } catch { }
-    try { [void][System.Windows.Forms.MessageBox]::Show("تعذّر فتح النافذة:`n$($_.Exception.Message)", 'فاحص الذاكرة', 'OK', 'Error') } catch { }
+    try { [void][System.Windows.Forms.MessageBox]::Show(((Get-Text 'gui.err.open') + "`n" + $_.Exception.Message), (Get-Text 'gui.msgbox.title'), 'OK', 'Error') } catch { }
 }
