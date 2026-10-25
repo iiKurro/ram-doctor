@@ -236,6 +236,32 @@ Describe 'Whole .bat, run headless' {
         finally { foreach ($d in $planted) { Remove-TreeForce -Path $d }; Remove-TreeForce -Path $priv }
     }
 
+    It 'never sweeps an old unpack folder that a running copy still holds (in-use.lock open), however long it runs' {
+        $priv = New-TempDirectory 'ramdoc-bat-temp'
+        $planted = @(); $hold = $null
+        try {
+            if ($script:IsElevated) {
+                $r0 = Invoke-BatHeadless -BatPath $script:Bat -PrivateTemp $priv
+                if ($r0.ExitCode -ne 0) { Set-ItResult -Skipped -Because 'an existing, unsafe ProgramData\RAM-Doctor-run folder blocks the unpacker (that is tested separately)'; return }
+                $busy = Join-Path $script:RunParent ('ci-busy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+                $idle = Join-Path $script:RunParent ('ci-idle-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+            }
+            else {
+                $busy = Join-Path $priv 'RAM-Doctor-run-cibusy1'
+                $idle = Join-Path $priv 'RAM-Doctor-run-ciidle1'
+            }
+            foreach ($d in $busy, $idle) { New-Item -ItemType Directory -Path $d | Out-Null; $planted += $d; [IO.File]::WriteAllText((Join-Path $d 'in-use.lock'), '') }
+            $hold = [IO.File]::Open((Join-Path $busy 'in-use.lock'), 'Open', 'ReadWrite', 'Read')    # what a running copy's header does
+            foreach ($d in $busy, $idle) { (Get-Item -LiteralPath $d).LastWriteTime = (Get-Date).AddDays(-3) }
+            $r = Invoke-BatHeadless -BatPath $script:Bat -PrivateTemp $priv
+            ($r.StdOut + $r.StdErr) | Should -Match 'NoSuchSwitchForCi'
+            Test-Path -LiteralPath $busy | Should -BeTrue -Because 'its in-use.lock is held: the copy that unpacked it is still running'
+            Test-Path -LiteralPath (Join-Path $busy 'in-use.lock') | Should -BeTrue
+            Test-Path -LiteralPath $idle | Should -BeFalse -Because 'an old folder whose lock nobody holds is a leftover'
+        }
+        finally { if ($hold) { $hold.Dispose() }; foreach ($d in $planted) { Remove-TreeForce -Path $d }; Remove-TreeForce -Path $priv }
+    }
+
     It 'with the "min" argument it does not relaunch itself in a second window' {
         $text = [IO.File]::ReadAllText($script:Bat)
         $text | Should -Match '(?m)^if /i "%~1"=="min" goto :started'

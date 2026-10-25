@@ -9,7 +9,7 @@ per upload; nobody uploads directly to this repository.
 ```
 reports/
   <name>-<userId>/              one folder per person (<userId> = 8 random hex chars chosen by their app)
-    <yyyyMMdd-HHmmss>/          one folder per upload (server time, UTC)
+    <yyyyMMdd-HHmmss>-<xxxxxx>/ one folder per upload (server time, UTC, + 6 random chars; older uploads have no suffix)
       summary.md                short plain-text summary  <- read this first, GitHub renders it safely
       plan.json                 machine-readable result (verdict, suspects, memory numbers)
       report.html               the full report (see the warning below)

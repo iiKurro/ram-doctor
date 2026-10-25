@@ -3,8 +3,12 @@
 #
 #   $m = Start-MockRelay            # $m.Url -> http://127.0.0.1:<port>
 #   $m.State.Mode = 'ok'            # ok | 400 | 401 | 413 | 429 | 500 | flaky (500,500,then ok)
+#                                   # lostanswer (stores the report, answers 500 once) | inprogress (409 + Retry-After once)
+#                                   # oldrelay (a relay before "requestId": 400 unknown_field when the field is present)
 #   $m.State.RequireCode = $true    # answer 401 when the request carries no "code"
 #   $m.State.Requests               # recorded requests (Method, Path, ContentType, UserAgent, Body)
+#   $m.State.Commits                # requestIds (or '-' for none) of the reports the mock "stored"; like the real relay,
+#                                   # a known requestId is answered with the first result and "replayed": true
 #   Stop-MockRelay $m
 
 function Start-MockRelay {
@@ -14,7 +18,7 @@ function Start-MockRelay {
         $tl = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
         $tl.Start(); $Port = $tl.LocalEndpoint.Port; $tl.Stop()
     }
-    $state = [hashtable]::Synchronized(@{ Mode = 'ok'; RequireCode = $false; Stop = $false; Counter = 0; Requests = (New-Object System.Collections.ArrayList) })
+    $state = [hashtable]::Synchronized(@{ Mode = 'ok'; RequireCode = $false; Stop = $false; Counter = 0; Requests = (New-Object System.Collections.ArrayList); Commits = (New-Object System.Collections.ArrayList) })
     $rs = [runspacefactory]::CreateRunspace()
     $rs.Open()
     $rs.SessionStateProxy.SetVariable('state', $state)
@@ -40,18 +44,28 @@ function Start-MockRelay {
                     [void]$state.Requests.Add([pscustomobject]@{ Method = $req.HttpMethod; Path = $req.Url.AbsolutePath; ContentType = $req.ContentType; UserAgent = $req.UserAgent; Body = $body })
                     $status = 200
                     $out = '{"ok":true}'
+                    $retryAfter = ''
                     if ($req.Url.AbsolutePath -eq '/v1/reports' -and $req.HttpMethod -eq 'POST') {
                         $state.Counter = [int]$state.Counter + 1
                         $mode = [string]$state.Mode
                         if ($mode -eq 'flaky') { if ($state.Counter -le 2) { $mode = '500' } else { $mode = 'ok' } }
                         $j = $null; try { $j = $body | ConvertFrom-Json } catch { }
                         if ($state.RequireCode -and -not ($j -and $j.code)) { $mode = '401' }
+                        $rid = if ($j -and $j.PSObject.Properties['requestId']) { [string]$j.requestId } else { '' }
+                        if ($mode -eq 'oldrelay') { $mode = $(if ($rid) { 'unknownfield' } else { 'ok' }) }
+                        if ($mode -eq 'inprogress') { $mode = $(if ($state.Counter -le 1) { 'busy409' } else { 'ok' }) }
+                        if ($mode -eq 'lostanswer') { $mode = $(if ($state.Counter -le 1) { 'commit500' } else { 'ok' }) }
+                        $uid = if ($j) { [string]$j.userId } else { '00000000' }
+                        $folder = 'reports/demo-' + $uid + '/20260101-120000-abc' + ('{0:D3}' -f ($state.Commits.Count + 1))
+                        $okBody = { param($f, $replayed) '{"ok":true,"folder":"' + $f + '","url":"https://github.com/example/private-reports/tree/main/' + $f + '"' + $(if ($replayed) { ',"replayed":true' } else { '' }) + '}' }
                         switch ($mode) {
                             'ok' {
-                                $uid = if ($j) { [string]$j.userId } else { '00000000' }
-                                $folder = 'reports/demo-' + $uid + '/20260101-120000'
-                                $out = '{"ok":true,"folder":"' + $folder + '","url":"https://github.com/example/private-reports/tree/main/' + $folder + '"}'
+                                if ($rid -and $state.Commits.Contains($rid)) { $out = & $okBody ('reports/demo-' + $uid + '/replayed') $true }
+                                else { [void]$state.Commits.Add($(if ($rid) { $rid } else { '-' })); $out = & $okBody $folder $false }
                             }
+                            'commit500' { [void]$state.Commits.Add($(if ($rid) { $rid } else { '-' })); $status = 500; $out = '{"ok":false,"error":"upstream_error"}' }
+                            'busy409' { $status = 409; $retryAfter = '1'; $out = '{"ok":false,"error":"in_progress"}' }
+                            'unknownfield' { $status = 400; $out = '{"ok":false,"error":"invalid_request","field":"unknown_field"}' }
                             '400' { $status = 400; $out = '{"ok":false,"error":"invalid"}' }
                             '401' { $status = 401; $out = '{"ok":false,"error":"bad code"}' }
                             '413' { $status = 413; $out = '{"ok":false,"error":"too large"}' }
@@ -61,6 +75,7 @@ function Start-MockRelay {
                     }
                     $bytes = [System.Text.Encoding]::UTF8.GetBytes($out)
                     $ctx.Response.StatusCode = $status
+                    if ($retryAfter) { $ctx.Response.AddHeader('Retry-After', $retryAfter) }
                     $ctx.Response.ContentType = 'application/json; charset=utf-8'
                     $ctx.Response.ContentLength64 = $bytes.Length
                     $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
@@ -77,7 +92,7 @@ function Start-MockRelay {
     if (-not $ready) { throw 'mock relay did not start' }
     # the readiness probe above is itself a (body-less) connection: drop whatever it recorded
     Start-Sleep -Milliseconds 150
-    $state.Requests.Clear(); $state.Counter = 0
+    $state.Requests.Clear(); $state.Counter = 0; $state.Commits.Clear()
     return [pscustomobject]@{ Url = "http://127.0.0.1:$Port"; Port = $Port; State = $state; PS = $ps; Runspace = $rs; Handle = $handle }
 }
 

@@ -1,0 +1,570 @@
+﻿#requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.5.0' }
+# Unit tests for src\lib\Store.ps1: atomic JSON writes, safe reads with the .bak fallback, the inter-process lock.
+# Everything happens inside a private temp folder; nothing else is touched and no process is started.
+
+BeforeAll {
+    . (Join-Path $PSScriptRoot 'helpers\TestHelpers.ps1')
+    $script:StoreLib = Join-Path (Get-RepoRoot) 'src\lib\Store.ps1'
+    . $script:StoreLib
+    $script:Work = New-TempDirectory 'ramdoc-store'
+    $script:N = 0
+    $script:Bom = New-Object System.Text.UTF8Encoding($true)
+
+    function New-CaseDir([string]$Name) {
+        $script:N++
+        $d = Join-Path $script:Work ('{0:D2}-{1}' -f $script:N, $Name)
+        [void][IO.Directory]::CreateDirectory($d)
+        return $d
+    }
+    function Get-Names([string]$Dir) { @([IO.Directory]::GetFileSystemEntries($Dir) | ForEach-Object { [IO.Path]::GetFileName($_) } | Sort-Object) }
+    function Get-B64([string]$Path) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) }
+    function Write-Text([string]$Path, [string]$Text) { [IO.File]::WriteAllText($Path, $Text, $script:Bom) }
+}
+
+AfterAll {
+    if ($script:Work) { Remove-TreeForce -Path $script:Work }
+}
+
+Describe 'Write-JsonAtomic and Read-JsonSafe: normal use' {
+    It 'round-trips Arabic and other Unicode text in a folder and file with Arabic names' {
+        $dir = Join-Path (New-CaseDir 'unicode') 'تقارير الفحص – ملف ✓'
+        [void][IO.Directory]::CreateDirectory($dir)
+        $file = Join-Path $dir 'بيان.json'
+        $obj = [ordered]@{ name = 'صديق'; note = 'Grüße – 日本語 – ✓'; items = @(1, 2, 3); nested = [ordered]@{ ok = $true } }
+        Write-JsonAtomic -Path $file -Object $obj -Schema 2
+
+        $r = Read-JsonSafe -Path $file -MaxSchema 2
+        $r.Status | Should -Be 'Ok'
+        $r.Source | Should -Be 'main'
+        $r.Schema | Should -Be 2
+        $r.Data.name | Should -Be 'صديق'
+        $r.Data.note | Should -Be 'Grüße – 日本語 – ✓'
+        (@($r.Data.items) -join ',') | Should -Be '1,2,3'
+        $r.Data.nested.ok | Should -BeTrue
+        $b = [IO.File]::ReadAllBytes($file)
+        ('{0:X2}{1:X2}{2:X2}' -f $b[0], $b[1], $b[2]) | Should -Be 'EFBBBF' -Because 'Windows PowerShell 5.1 readers need the UTF-8 BOM'
+        (Get-Names $dir) -join '|' | Should -Be 'بيان.json' -Because 'no .tmp is left behind and the first write has no .bak yet'
+    }
+
+    It 'keeps the previous version as .bak, writes "schema" first and replaces a schema field of the input' {
+        $dir = New-CaseDir 'bak'
+        $file = Join-Path $dir 'manifest.json'
+        Write-JsonAtomic -Path $file -Object ([pscustomobject]@{ v = 'one' }) -Schema 1
+        Write-JsonAtomic -Path $file -Object ([pscustomobject]@{ schema = 7; v = 'two' }) -Schema 1
+        (Read-JsonSafe -Path $file -MaxSchema 1).Data.v | Should -Be 'two'
+        (Get-Content -LiteralPath "$file.bak" -Raw -Encoding UTF8 | ConvertFrom-Json).v | Should -Be 'one'
+        [IO.File]::ReadAllText($file) | Should -Match '^\s*\{\s*"schema":\s*1,'
+        (Get-Names $dir) -join '|' | Should -Be 'manifest.json|manifest.json.bak'
+    }
+
+    It 'reads a 1.0.x file (no schema field) as schema 1 and leaves it untouched' {
+        $dir = New-CaseDir 'legacy'
+        $file = Join-Path $dir 'manifest.json'
+        $legacy = @'
+{
+    "batch":  "20261024-215344",
+    "created":  "2026-10-24 21:53:44",
+    "host":  "DESKTOP-DEMO",
+    "plan":  "C:\\Users\\Friend\\Desktop\\RAM-Doctor-Reports\\Plan-DESKTOP-DEMO-20261024-215251.json",
+    "entries":  [
+                    {
+                        "id":  1,
+                        "name":  "svch0st.exe",
+                        "risk":  "High",
+                        "ops":  [ { "type":  "QuarantineFile", "status":  "done" } ]
+                    }
+                ]
+}
+'@
+        Write-Text $file $legacy
+        $before = Get-B64 $file
+        $r = Read-JsonSafe -Path $file -MaxSchema 1
+        $r.Status | Should -Be 'Ok'
+        $r.Schema | Should -Be 1
+        $r.Data.entries[0].name | Should -Be 'svch0st.exe'
+        Get-B64 $file | Should -Be $before
+        (Get-Names $dir) -join '|' | Should -Be 'manifest.json'
+    }
+
+    It 'reports Missing when no copy exists, and creates nothing' {
+        $dir = New-CaseDir 'missing'
+        $r = Read-JsonSafe -Path (Join-Path $dir 'profile.json') -MaxSchema 1
+        $r.Status | Should -Be 'Missing'
+        $r.Data | Should -BeNullOrEmpty
+        @(Get-Names $dir).Count | Should -Be 0
+    }
+
+    It 'ignores the leftover .tmp of a crashed write and replaces it on the next write' {
+        $dir = New-CaseDir 'tmp'
+        $file = Join-Path $dir 'state.json'
+        Write-JsonAtomic -Path $file -Object @{ v = 1 } -Schema 1
+        [IO.File]::WriteAllText("$file.tmp", '{ "v": 2, "half-writ')
+        $r = Read-JsonSafe -Path $file -MaxSchema 1
+        $r.Status | Should -Be 'Ok'
+        $r.Data.v | Should -Be 1
+        Write-JsonAtomic -Path $file -Object @{ v = 3 } -Schema 1
+        (Read-JsonSafe -Path $file -MaxSchema 1).Data.v | Should -Be 3
+        Test-Path -LiteralPath "$file.tmp" | Should -BeFalse
+    }
+}
+
+Describe 'Write-JsonAtomic: refusals' {
+    It 'refuses data it cannot store faithfully and leaves nothing behind' {
+        $dir = New-CaseDir 'refuse'
+        $file = Join-Path $dir 'x.json'
+        { Write-JsonAtomic -Path $file -Object @(1, 2) -Schema 1 } | Should -Throw '*must be a hashtable*'
+        { Write-JsonAtomic -Path $file -Object 'text' -Schema 1 } | Should -Throw '*must be a hashtable*'
+        { Write-JsonAtomic -Path $file -Object @{ a = @{ b = @{ c = @{ d = 1 } } } } -Schema 1 -Depth 2 } | Should -Throw '*nested deeper*'
+        { Write-JsonAtomic -Path (Join-Path $dir 'no-such-folder\x.json') -Object @{ a = 1 } -Schema 1 } | Should -Throw '*does not exist*'
+        @(Get-Names $dir).Count | Should -Be 0
+    }
+
+    It 'never overwrites a file that a newer version wrote' {
+        $dir = New-CaseDir 'newer'
+        $file = Join-Path $dir 'profile.json'
+        Write-Text $file '{ "schema": 5, "v": "from a newer version" }'
+        $before = Get-B64 $file
+        { Write-JsonAtomic -Path $file -Object @{ v = 'old' } -Schema 1 } | Should -Throw '*newer version*'
+        Get-B64 $file | Should -Be $before
+        (Get-Names $dir) -join '|' | Should -Be 'profile.json'
+    }
+
+    It 'sets a damaged current file aside instead of pushing it over the good .bak' {
+        $dir = New-CaseDir 'nopush'
+        $file = Join-Path $dir 'manifest.json'
+        Write-JsonAtomic -Path $file -Object @{ v = 'good' } -Schema 1
+        Write-JsonAtomic -Path $file -Object @{ v = 'newer' } -Schema 1
+        Write-Text $file '{ "v": "tru'
+        Write-JsonAtomic -Path $file -Object @{ v = 'third' } -Schema 1
+        (Get-Content -LiteralPath "$file.bak" -Raw -Encoding UTF8 | ConvertFrom-Json).v | Should -Be 'good'
+        (Read-JsonSafe -Path $file -MaxSchema 1).Data.v | Should -Be 'third'
+        @(Get-Names $dir | Where-Object { $_ -like 'manifest.json.damaged-*' }).Count | Should -Be 1
+    }
+
+    It 'in a folder that cannot be written: throws a clear error, keeps the original byte for byte, leaves no .tmp' {
+        $dir = New-CaseDir 'readonly'
+        $file = Join-Path $dir 'profile.json'
+        $other = Join-Path $dir 'other.json'
+        Write-JsonAtomic -Path $file -Object @{ v = 'original' } -Schema 1
+        Write-Text $other '{ "broken": '
+        $before = Get-B64 $file
+        $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $acl = [IO.Directory]::GetAccessControl($dir)
+        $deny = New-Object Security.AccessControl.FileSystemAccessRule($me, [Security.AccessControl.FileSystemRights]'CreateFiles', [Security.AccessControl.AccessControlType]::Deny)
+        $acl.AddAccessRule($deny)
+        [IO.Directory]::SetAccessControl($dir, $acl)
+        try {
+            { Write-JsonAtomic -Path $file -Object @{ v = 'new' } -Schema 1 } | Should -Throw '*previous version is unchanged*'
+            Get-B64 $file | Should -Be $before
+            Test-Path -LiteralPath "$file.tmp" | Should -BeFalse
+            # reading there never throws either, even when a damaged file cannot be renamed aside
+            $r = Read-JsonSafe -Path $other -MaxSchema 1
+            $r.Status | Should -Be 'Damaged'
+            $r.Message | Should -Match 'could not be renamed aside'
+            Test-Path -LiteralPath $other | Should -BeTrue
+            (Read-JsonSafe -Path $file -MaxSchema 1).Data.v | Should -Be 'original'
+        }
+        finally {
+            [void]$acl.RemoveAccessRule($deny)
+            [IO.Directory]::SetAccessControl($dir, $acl)
+        }
+    }
+}
+
+Describe 'Read-JsonSafe: damage and recovery' {
+    It 'a main file that is <Case> is kept as a .damaged-(time) copy and the .bak copy is used (Recovered)' -ForEach @(
+        @{ Case = 'truncated'; Make = { param($b) $b[0..([int]($b.Length / 2))] }; Reason = 'not valid JSON' }
+        @{ Case = 'all NUL bytes (power loss)'; Make = { param($b) [byte[]]::new($b.Length) }; Reason = 'NUL' }
+        @{ Case = 'empty'; Make = { param($b) }; Reason = 'empty' }
+        @{ Case = 'not UTF-8'; Make = { param($b) 0xC3, 0x28, 0xFF, 0xFE }; Reason = 'UTF-8' }
+        @{ Case = 'a JSON array'; Make = { param($b) [Text.Encoding]::UTF8.GetBytes('[1,2,3]') }; Reason = 'object' }
+        @{ Case = 'carrying a bad schema value'; Make = { param($b) [Text.Encoding]::UTF8.GetBytes('{"schema":"two","v":1}') }; Reason = 'schema' }
+    ) {
+        $dir = New-CaseDir 'damaged'
+        $file = Join-Path $dir 'manifest.json'
+        Write-JsonAtomic -Path $file -Object @{ batch = 'first'; entries = @(@{ id = 1 }) } -Schema 1
+        Write-JsonAtomic -Path $file -Object @{ batch = 'second'; entries = @(@{ id = 1 }, @{ id = 2 }) } -Schema 1
+        $bad = [byte[]]@(& $Make ([IO.File]::ReadAllBytes($file)))
+        [IO.File]::WriteAllBytes($file, $bad)
+
+        $r = Read-JsonSafe -Path $file -MaxSchema 1
+        $r.Status | Should -Be 'Recovered'
+        $r.Source | Should -Be 'bak'
+        $r.Data.batch | Should -Be 'first'
+        $r.Message | Should -Match $Reason
+        @($r.DamagedFiles).Count | Should -Be 1
+        [IO.Path]::GetFileName($r.DamagedFiles[0]) | Should -Match '^manifest\.json\.damaged-\d{8}-\d{6}'
+        Get-B64 $r.DamagedFiles[0] | Should -Be ([Convert]::ToBase64String($bad)) -Because 'the damaged file is kept exactly as it was'
+        Test-Path -LiteralPath "$file.bak" | Should -BeTrue -Because 'the good copy is never moved'
+    }
+
+    It 'main and .bak both bad: Damaged, no data, both kept on disk, and it stays Damaged on the next read' {
+        $dir = New-CaseDir 'bothbad'
+        $file = Join-Path $dir 'manifest.json'
+        Write-Text $file '{"entries": ['
+        [IO.File]::WriteAllBytes("$file.bak", [byte[]](0, 0, 0, 0))
+        $r = Read-JsonSafe -Path $file -MaxSchema 1
+        $r.Status | Should -Be 'Damaged'
+        $r.Data | Should -BeNullOrEmpty
+        @($r.DamagedFiles).Count | Should -Be 2
+        foreach ($d in $r.DamagedFiles) { Test-Path -LiteralPath $d | Should -BeTrue }
+        $main = @($r.DamagedFiles | Where-Object { [IO.Path]::GetFileName($_) -like 'manifest.json.damaged-*' })
+        [IO.File]::ReadAllText($main[0]) | Should -Be '{"entries": ['
+        $again = Read-JsonSafe -Path $file -MaxSchema 1
+        $again.Status | Should -Be 'Damaged' -Because 'a damaged profile must not silently turn into a new one on the next start'
+        @($again.DamagedFiles).Count | Should -Be 2
+        Write-JsonAtomic -Path $file -Object @{ entries = @() } -Schema 1
+        (Read-JsonSafe -Path $file -MaxSchema 1).Status | Should -Be 'Ok'
+    }
+
+    It 'a file from a newer version (schema 99) is TooNew, gives no data and is left exactly as it is' {
+        $dir = New-CaseDir 'toonew'
+        $file = Join-Path $dir 'manifest.json'
+        Write-JsonAtomic -Path $file -Object @{ v = 'old' } -Schema 1
+        Write-JsonAtomic -Path $file -Object @{ v = 'old2' } -Schema 1
+        Write-Text $file '{ "schema": 99, "v": "future" }'
+        $before = Get-B64 $file
+        $r = Read-JsonSafe -Path $file -MaxSchema 1
+        $r.Status | Should -Be 'TooNew'
+        $r.Schema | Should -Be 99
+        $r.Data | Should -BeNullOrEmpty -Because 'the older .bak must not be used in place of newer data'
+        $r.Message | Should -Match 'newer version'
+        Get-B64 $file | Should -Be $before
+        (Get-Names $dir) -join '|' | Should -Be 'manifest.json|manifest.json.bak'
+    }
+
+    It 'a -Validate check that fails counts as damage; a check that throws never escapes' {
+        $dir = New-CaseDir 'validate'
+        $file = Join-Path $dir 'manifest.json'
+        $check = { param($d) $d.entries -is [array] }
+        Write-JsonAtomic -Path $file -Object @{ entries = @(1) } -Schema 1
+        Write-JsonAtomic -Path $file -Object @{ entries = 'not a list' } -Schema 1
+        $r = Read-JsonSafe -Path $file -MaxSchema 1 -Validate $check
+        $r.Status | Should -Be 'Recovered'
+        @($r.Data.entries).Count | Should -Be 1
+        $r.Message | Should -Match 'content check'
+
+        $other = Join-Path $dir 'other.json'
+        Write-JsonAtomic -Path $other -Object @{ v = 1 } -Schema 1
+        $t = Read-JsonSafe -Path $other -MaxSchema 1 -Validate { throw 'synthetic validator failure' }
+        $t.Status | Should -Be 'Damaged'
+        $t.Message | Should -Match 'synthetic validator failure'
+    }
+}
+
+Describe 'Use-StoreLock' {
+    BeforeAll {
+        $script:Me = [Security.Principal.WindowsIdentity]::GetCurrent()
+        # A second thread in this process that holds the lock until released (a mutex is re-entrant for its own thread).
+        function Start-LockHolder([string]$Name) {
+            $ready = New-Object Threading.ManualResetEvent($false)
+            $release = New-Object Threading.ManualResetEvent($false)
+            $ps = [powershell]::Create()
+            [void]$ps.AddScript({
+                    param($lib, $lockName, $ready, $release)
+                    . $lib
+                    $r = Use-StoreLock -Name $lockName -TimeoutMs 0 -TrustedOwners @() -Script { [void]$ready.Set(); [void]$release.WaitOne(30000) }
+                    $r.Status
+                }).AddArgument($script:StoreLib).AddArgument($Name).AddArgument($ready).AddArgument($release)
+            $h = $ps.BeginInvoke()
+            if (-not $ready.WaitOne(15000)) { [void]$release.Set(); $ps.Dispose(); throw 'the lock holder did not start' }
+            return [pscustomobject]@{ PS = $ps; Handle = $h; Ready = $ready; Release = $release }
+        }
+        function Stop-LockHolder($Holder) {
+            [void]$Holder.Release.Set()
+            $out = @($Holder.PS.EndInvoke($Holder.Handle))
+            $Holder.PS.Dispose(); $Holder.Ready.Dispose(); $Holder.Release.Dispose()
+            return ($out -join ',')
+        }
+        function New-LockName { 'test-' + [guid]::NewGuid().ToString('N') }
+    }
+
+    It 'runs the script and returns its output' {
+        $r = Use-StoreLock -Name (New-LockName) -Script { 'a'; 'b' }
+        $r.Status | Should -Be 'Ok'
+        $r.Guarded | Should -BeTrue
+        $r.Scope | Should -BeIn @('Global', 'Local')
+        ($r.Value -join ',') | Should -Be 'a,b'
+    }
+
+    It 'answers Busy (and does not run the script) while another thread holds the lock, Ok once it is free' {
+        $name = New-LockName
+        $holder = Start-LockHolder $name
+        try {
+            $flag = @{ ran = $false }
+            $r = Use-StoreLock -Name $name -TimeoutMs 200 -TrustedOwners @($script:Me.Owner.Value) -Script { $flag.ran = $true }
+            $r.Status | Should -Be 'Busy'
+            $r.Message | Should -Match 'held by another process'
+            $flag.ran | Should -BeFalse
+        }
+        finally { $done = Stop-LockHolder $holder }
+        $done | Should -Be 'Ok'
+        $r2 = Use-StoreLock -Name $name -TimeoutMs 2000 -Script { 'free' }
+        $r2.Status | Should -Be 'Ok'
+        $r2.Value | Should -Be 'free'
+    }
+
+    It 'releases the lock when the script throws, and the error reaches the caller' {
+        $name = New-LockName
+        # an extra handle keeps the named mutex alive, so a lock that was not released would stay taken
+        $keep = [Threading.Mutex]::new($false, "Global\RAM-Doctor-$name")
+        try {
+            { Use-StoreLock -Name $name -Script { throw 'synthetic failure' } } | Should -Throw '*synthetic failure*'
+            $holder = Start-LockHolder $name      # throws 'did not start' if the lock had not been released
+            Stop-LockHolder $holder | Should -Be 'Ok'
+        }
+        finally { $keep.Dispose() }
+    }
+
+    It 'ignores a lock created by an owner that is not trusted instead of waiting for it' {
+        $name = New-LockName
+        $holder = Start-LockHolder $name
+        try {
+            $untrusted = 'S-1-5-80-0'        # a SID no test process runs as
+            $r = Use-StoreLock -Name $name -TimeoutMs 200 -TrustedOwners @($untrusted) -Script { 'ran' }
+            $r.Status | Should -Be 'Ok'
+            $r.Value | Should -Be 'ran'
+            $r.Message | Should -Match 'untrusted owner'
+            $r.Scope | Should -Be 'Local' -Because 'the squatted Global name is skipped'
+        }
+        finally { [void](Stop-LockHolder $holder) }
+    }
+
+    It 'the script sees the caller''s variables, not the lock function''s own ones' {
+        $Name = 'caller-name'; $Script = 'caller-script'; $m = 'caller-m'; $res = 'caller-res'
+        $r = Use-StoreLock -Name (New-LockName) -Script { "$Name|$Script|$m|$res" }
+        $r.Value | Should -Be 'caller-name|caller-script|caller-m|caller-res'
+    }
+}
+
+Describe 'Write-TextAtomic, Enter-StoreLock / Exit-StoreLock, Get-StoreLockName' {
+    BeforeAll {
+        # runs a script in a second thread of this process (a mutex is re-entrant for its own thread) and returns its output
+        function Invoke-OtherThread([scriptblock]$Code, [object[]]$ArgumentList = @()) {
+            $ps = [powershell]::Create()
+            try {
+                [void]$ps.AddScript(". '$($script:StoreLib)'").AddStatement().AddScript($Code)
+                foreach ($a in $ArgumentList) { [void]$ps.AddArgument($a) }
+                return @($ps.Invoke())
+            } finally { $ps.Dispose() }
+        }
+    }
+
+    It 'Write-TextAtomic writes UTF-8 with BOM, keeps the previous version as .bak and leaves no .tmp' {
+        $dir = New-CaseDir 'text'
+        $file = Join-Path $dir 'تقرير.html'
+        Write-TextAtomic -Path $file -Text '<p>واحد</p>'
+        Write-TextAtomic -Path $file -Text '<p>two</p>'
+        [IO.File]::ReadAllText($file) | Should -Be '<p>two</p>'
+        [IO.File]::ReadAllText("$file.bak") | Should -Be '<p>واحد</p>'
+        $b = [IO.File]::ReadAllBytes($file)
+        ('{0:X2}{1:X2}{2:X2}' -f $b[0], $b[1], $b[2]) | Should -Be 'EFBBBF'
+        Test-Path -LiteralPath "$file.tmp" | Should -BeFalse
+        { Write-TextAtomic -Path (Join-Path $dir 'missing\x.html') -Text 'x' } | Should -Throw '*does not exist*'
+    }
+
+    It 'Enter-StoreLock holds the lock until Exit-StoreLock (another thread gets Busy meanwhile)' {
+        $name = 'test-' + [guid]::NewGuid().ToString('N')
+        $h = Enter-StoreLock -Name $name -TimeoutMs 0 -TrustedOwners @()
+        try {
+            $h.Status | Should -Be 'Ok'
+            $h.Guarded | Should -BeTrue
+            (Invoke-OtherThread { param($n) (Enter-StoreLock -Name $n -TimeoutMs 100 -TrustedOwners @()).Status } @($name)) | Should -Be 'Busy'
+        }
+        finally { Exit-StoreLock $h }
+        Exit-StoreLock $h                                        # a second release is harmless
+        (Invoke-OtherThread { param($n) $x = Enter-StoreLock -Name $n -TimeoutMs 100 -TrustedOwners @(); Exit-StoreLock $x; $x.Status } @($name)) | Should -Be 'Ok'
+    }
+
+    It 'Get-StoreLockName gives one name per folder (case-insensitive) that a mutex accepts' {
+        $a = Get-StoreLockName -Prefix 'store' -Path 'C:\ProgramData\RAM-Doctor'
+        $a | Should -Match '^store-[0-9a-f]{16}$'
+        Get-StoreLockName -Prefix 'store' -Path 'c:\programdata\ram-doctor\' | Should -Be $a
+        Get-StoreLockName -Prefix 'store' -Path 'C:\Other' | Should -Not -Be $a
+    }
+}
+
+Describe 'New-StorePrivateDir and Remove-StorePrivateDir' {
+    It 'creates a fresh folder with a random name every time' {
+        $parent = New-CaseDir 'private'
+        $a = New-StorePrivateDir -Parent $parent -Prefix 'RAM-Doctor-share-'
+        $b = New-StorePrivateDir -Parent $parent -Prefix 'RAM-Doctor-share-'
+        $a | Should -Not -Be $b
+        [IO.Path]::GetFileName($a) | Should -Match '^RAM-Doctor-share-[0-9a-f]{32}$'
+        Test-Path -LiteralPath $a -PathType Container | Should -BeTrue
+        ((Get-Item -LiteralPath $a).Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Be 0
+        Remove-StorePrivateDir $a | Should -BeTrue
+        Remove-StorePrivateDir $b | Should -BeTrue
+        @(Get-Names $parent).Count | Should -Be 0
+    }
+
+    It 'removes the files of the folder but never follows a junction inside it, nor a junction in its place' {
+        $parent = New-CaseDir 'private-junction'
+        $victim = Join-Path $parent 'victim'
+        [void][IO.Directory]::CreateDirectory($victim)
+        [IO.File]::WriteAllText((Join-Path $victim 'precious.txt'), 'keep me')
+        $dir = New-StorePrivateDir -Parent $parent -Prefix 'p-'
+        [IO.File]::WriteAllText((Join-Path $dir 'summary.md'), 'x')
+        $null = cmd.exe /c mklink /J "$dir\link" "$victim"
+        Test-Path -LiteralPath (Join-Path $dir 'link\precious.txt') | Should -BeTrue -Because 'the junction must exist for this test to mean anything'
+        Remove-StorePrivateDir $dir | Should -BeTrue
+        Test-Path -LiteralPath $dir | Should -BeFalse
+        [IO.File]::ReadAllText((Join-Path $victim 'precious.txt')) | Should -Be 'keep me'
+
+        $swap = Join-Path $parent 'p-swapped'
+        $null = cmd.exe /c mklink /J "$swap" "$victim"
+        Remove-StorePrivateDir $swap | Should -BeTrue
+        Test-Path -LiteralPath $swap | Should -BeFalse
+        [IO.File]::ReadAllText((Join-Path $victim 'precious.txt')) | Should -Be 'keep me' -Because 'a junction in place of the folder is removed as a link'
+    }
+}
+
+Describe 'A file that exists but cannot be opened right now (Unreadable)' {
+    It 'is reported as Unreadable: the older .bak is NOT used, nothing is renamed, and it is never overwritten' {
+        $dir = New-CaseDir 'locked'
+        $file = Join-Path $dir 'manifest.json'
+        Write-JsonAtomic -Path $file -Object @{ ops = @('one') } -Schema 1
+        Write-JsonAtomic -Path $file -Object @{ ops = @('one', 'two') } -Schema 1
+        $before = Get-B64 $file
+        $hold = [IO.File]::Open($file, 'Open', 'Read', 'None')       # another program holds it (antivirus, backup ...)
+        try {
+            $r = Read-JsonSafe -Path $file -MaxSchema 1
+            $r.Status | Should -Be 'Unreadable'
+            $r.Data | Should -BeNullOrEmpty -Because 'the .bak (one op) is older than the file that is held (two ops)'
+            $r.Message | Should -Match 'could not be opened'
+            { Write-JsonAtomic -Path $file -Object @{ ops = @('one') } -Schema 1 } | Should -Throw '*not overwritten*'
+        }
+        finally { $hold.Dispose() }
+        Get-B64 $file | Should -Be $before
+        @(Get-Names $dir | Where-Object { $_ -like '*.damaged-*' }).Count | Should -Be 0
+        (Read-JsonSafe -Path $file -MaxSchema 1).Data.ops.Count | Should -Be 2
+    }
+}
+
+Describe 'Get-StoreLockOwners' {
+    It 'accepts any owner when not elevated, and SYSTEM, Administrators and this token''s default owner when elevated' {
+        @(Get-StoreLockOwners).Count | Should -Be 0
+        $own = [Security.Principal.WindowsIdentity]::GetCurrent().Owner.Value
+        $list = @(Get-StoreLockOwners -Elevated)
+        $list | Should -Contain 'S-1-5-18'
+        $list | Should -Contain 'S-1-5-32-544'
+        $list | Should -Contain $own -Because 'with UAC off or the "object creator" owner policy every elevated copy creates its locks with this owner'
+        @($list | Select-Object -Unique).Count | Should -Be $list.Count
+    }
+}
+Describe 'Files created with a given security descriptor' {
+    It 'Write-JsonAtomic -FileSecurity creates the .tmp (so the file) with exactly that DACL, also when it replaces one' {
+        $dir = New-CaseDir 'filesec'
+        $file = Join-Path $dir 'manifest.json'
+        $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $sec = New-Object Security.AccessControl.FileSecurity
+        $sec.SetAccessRuleProtection($true, $false)
+        foreach ($id in @($me, (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')))) {
+            $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)))
+        }
+        Write-JsonAtomic -Path $file -Object @{ v = 1 } -Schema 1 -FileSecurity $sec
+        Write-JsonAtomic -Path $file -Object @{ v = 2 } -Schema 1 -FileSecurity $sec
+        foreach ($f in $file, "$file.bak") {
+            $acl = [IO.File]::GetAccessControl($f)
+            $acl.AreAccessRulesProtected | Should -BeTrue -Because "$f must not inherit anything"
+            $sids = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+            ($sids -join ',') | Should -Be ((@($me.Value, 'S-1-5-18') | Sort-Object) -join ',')
+        }
+        (Read-JsonSafe -Path $file -MaxSchema 1).Data.v | Should -Be 2
+    }
+    It 'New-StoreFileSecurity: owner Administrators, inheritance off, SYSTEM and Administrators only' {
+        $s = New-StoreFileSecurity
+        $s.GetOwner([Security.Principal.SecurityIdentifier]).Value | Should -Be 'S-1-5-32-544'
+        $s.AreAccessRulesProtected | Should -BeTrue
+        (@($s.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value } | Sort-Object) -join ',') | Should -Be 'S-1-5-18,S-1-5-32-544'
+    }
+}
+
+Describe 'Enter-StoreSecretLock (a lock name nobody can predict)' {
+    BeforeAll {
+        function Start-SecretHolder([string]$Dir, [int]$TimeoutMs) {
+            $ready = New-Object Threading.ManualResetEvent($false)
+            $release = New-Object Threading.ManualResetEvent($false)
+            $state = [hashtable]::Synchronized(@{ Status = '' })
+            $ps = [powershell]::Create()
+            [void]$ps.AddScript({
+                    param($lib, $dir, $timeout, $ready, $release, $state)
+                    . $lib
+                    $h = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs $timeout -TrustedOwners @()
+                    $state.Status = $h.Status
+                    [void]$ready.Set()
+                    [void]$release.WaitOne(30000)
+                    Exit-StoreSecretLock $h
+                }).AddArgument($script:StoreLib).AddArgument($Dir).AddArgument($TimeoutMs).AddArgument($ready).AddArgument($release).AddArgument($state)
+            $handle = $ps.BeginInvoke()
+            return [pscustomobject]@{ PS = $ps; Handle = $handle; Ready = $ready; Release = $release; State = $state }
+        }
+        function Stop-SecretHolder($H) { [void]$H.Release.Set(); [void]$H.PS.EndInvoke($H.Handle); $H.PS.Dispose(); $H.Ready.Dispose(); $H.Release.Dispose() }
+    }
+
+    It 'derives the name from a random secret in lock.id (not from the path) and replaces the secret on every release' {
+        $dir = New-CaseDir 'secret'
+        $h = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 0 -TrustedOwners @()
+        $h.Status | Should -Be 'Ok'
+        $h.SecretName | Should -BeTrue
+        $s1 = [IO.File]::ReadAllText((Join-Path $dir 'lock.id')).Trim()
+        $s1 | Should -Match '^[0-9a-f]{64}$'
+        $h.Name | Should -Be ('test-' + $s1.Substring(0, 40))
+        $h.Name | Should -Not -Be (Get-StoreLockName -Prefix 'test' -Path $dir)
+        $other = Start-SecretHolder $dir 100
+        try { [void]$other.Ready.WaitOne(10000); $other.State.Status | Should -Be 'Busy' } finally { Stop-SecretHolder $other }
+        Exit-StoreSecretLock $h
+        $s2 = [IO.File]::ReadAllText((Join-Path $dir 'lock.id')).Trim()
+        $s2 | Should -Match '^[0-9a-f]{64}$'
+        $s2 | Should -Not -Be $s1 -Because 'a name seen while the lock was held must be useless afterwards'
+    }
+
+    It 'a copy that waited on the old name moves on to the new one: two copies never both hold the lock' {
+        $dir = New-CaseDir 'secret-rotate'
+        $first = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 0 -TrustedOwners @()
+        $waiter = Start-SecretHolder $dir 8000                  # starts waiting on the current (soon old) name
+        Start-Sleep -Milliseconds 400
+        Exit-StoreSecretLock $first                               # rotates the secret, then releases the old name
+        try {
+            $waiter.Ready.WaitOne(15000) | Should -BeTrue
+            $waiter.State.Status | Should -Be 'Ok'
+            $third = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 200 -TrustedOwners @()
+            $third.Status | Should -Be 'Busy' -Because 'the waiter now holds the CURRENT name'
+        }
+        finally { Stop-SecretHolder $waiter }
+        $again = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 2000 -TrustedOwners @()
+        $again.Status | Should -Be 'Ok'
+        Exit-StoreSecretLock $again
+    }
+
+    It 'never switches to the path-derived name while lock.id exists but cannot be read: it answers Busy' {
+        $dir = New-CaseDir 'secret-held'
+        $first = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 0 -TrustedOwners @()
+        $first.Status | Should -Be 'Ok'
+        $fs = [IO.File]::Open((Join-Path $dir 'lock.id'), 'Open', 'Read', 'None')   # a scanner holds the secret file
+        try {
+            $second = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 1500 -TrustedOwners @()
+            $second.Status | Should -Be 'Busy' -Because 'a second, path-derived name would let two copies hold the lock'
+            $second.Mutex | Should -BeNullOrEmpty
+            $second.Message | Should -Match 'cannot be read'
+        }
+        finally { $fs.Dispose() }
+        Exit-StoreSecretLock $first
+        $again = Enter-StoreSecretLock -Prefix 'test' -Dir $dir -TimeoutMs 2000 -TrustedOwners @()
+        $again.Status | Should -Be 'Ok'
+        $again.SecretName | Should -BeTrue
+        Exit-StoreSecretLock $again
+    }
+
+    It 'falls back to the path-derived name when the folder does not exist (yet)' {
+        $missing = Join-Path $script:Work ('no-such-' + [guid]::NewGuid().ToString('N'))
+        $h = Enter-StoreSecretLock -Prefix 'test' -Dir $missing -TimeoutMs 0 -TrustedOwners @()
+        try {
+            $h.Status | Should -Be 'Ok'
+            $h.SecretName | Should -BeFalse
+            $h.Name | Should -Be (Get-StoreLockName -Prefix 'test' -Path $missing)
+        }
+        finally { Exit-StoreSecretLock $h }
+        Test-Path -LiteralPath $missing | Should -BeFalse
+    }
+}

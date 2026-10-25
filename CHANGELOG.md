@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   English, including the live language switch.
 - `TRADEMARKS.md`: the name "RAM Doctor" and the logo are not covered by the
   licence and may not be used for other builds.
+- `src/lib/Store.ps1`: crash-safe JSON storage (`Write-JsonAtomic`,
+  `Read-JsonSafe` with `.bak` fallback and a `schema` field; 1.0.x files are
+  read as schema 1) and an inter-process lock (`Use-StoreLock`).
+- Relay: optional `requestId`. The same id again returns the first answer
+  (`"replayed": true`) instead of committing a second time; a retry during the
+  first commit gets `409 in_progress`. Such answers do not count against the
+  per-IP limit.
 
 ### Changed
 
@@ -37,6 +44,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and false-positive reports are still welcome.
 - The share client's `summary.md` omits the right-to-left block for English plans (the relay only keeps `<div dir="rtl">`).
 - Docs: Arabic is no longer described as the only language; the roadmap item "English interface" is done.
+
+### Fixed
+
+- Quarantine: the undo record (`manifest.json`) is written before the first
+  change and around every step, atomically, with a `.bak` copy. A power cut,
+  a full disk or a killed process can no longer lose the undo data of removed
+  startup entries or changed services, and a truncated record is recovered
+  from its backup. A batch whose record is damaged or missing is listed and can
+  still be purged instead of being hidden with its files.
+- Restore tells the truth: an item that cannot be put back (a refused or
+  missing quarantined file, an unknown operation from a newer version) is a
+  failure, the batch stays restorable, the window says "finished with
+  problems", and a second try only retries what is not back yet. The target of
+  every file is recorded before it is moved back, so an interrupted restore is
+  finished by the next run. A record that another program holds open is refused
+  for the moment instead of being replaced by its older backup copy.
+- Purge reports what it really did; batches dated in the future (wrong clock)
+  are handled; "Undo the last quarantine" picks the newest batch by a sequence
+  number instead of the clock.
+- Two actions can no longer run on the quarantine store at the same time (per
+  store lock whose name a non-elevated program cannot know; the second one
+  answers "busy"); the window ignores clicks while
+  it waits for a helper process.
+- The scan writes its report and plan crash-safe, never prunes the plan it just
+  wrote (clock behind), and the window picks this PC's plan by its stamp. A damaged plan no longer breaks
+  every start of the window.
+- Share: one `requestId` per upload, the same on every retry (no duplicate
+  folders when an answer is lost); `409 in_progress` is waited for; a relay
+  without the field gets the report again without it. The profile is saved
+  crash-safe and a damaged one is reported (its user id is kept) instead of
+  being silently replaced by a new identity; an unreadable saved invite code is
+  reported as such.
+- The redacted share preview is written to a fresh, randomly named private
+  folder instead of a fixed folder in `%TEMP%` that an elevated process could
+  be tricked into following (junction).
+- When elevated, batch folders and undo records are created with locked
+  permissions from the first moment, and a batch whose folders or records give
+  an allow-rule to anybody but SYSTEM / Administrators is not trusted.
+- The single-file edition no longer deletes the unpack folder of a copy that has
+  been running for more than a day (`in-use.lock`).
+- The window retries deleting the output files of its helper processes and
+  sweeps them again later, so none is left in `%TEMP%`; action logs are pruned
+  to the newest 30.- Relay: a failed upload (GitHub error) no longer counts against the per-user
+  limit; the quota is counted only after a successful commit.
+- Relay: two uploads of one user in the same second no longer share a folder
+  (the second silently replaced the first). Folders are now
+  `<yyyyMMdd-HHmmss>-<6 random chars>`; the data repo's `index.yml` template
+  understands both forms.
+- Relay: when GitHub's answer to the final ref update is lost, the relay checks
+  whether the commit landed instead of answering `502` (which made clients
+  upload the report again).
 
 ## [1.0.1] - 2026-10-25
 
