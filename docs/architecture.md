@@ -330,7 +330,7 @@ therefore:
   *minimised* console), no download;
 * with a header that says what it does.
 
-The cost is a larger file (about 560 KB); the benefit is that it can be audited
+The cost is a larger file (about 590 KB); the benefit is that it can be audited
 and diffed, and it triggers fewer heuristics.
 
 The release file has **no environment-controlled behaviour**: a check in

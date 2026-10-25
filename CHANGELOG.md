@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-25
+
 ### Added
 
 - **Sharp at any display scale.** The window makes itself dpi-aware (Per-Monitor V2 on Windows 10 1703+, per-monitor or system
@@ -214,7 +216,8 @@ First public release.
 - Documentation, issue forms (including a false-positive form), CI and
   release workflows.
 
-[Unreleased]: https://github.com/iiKurro/ram-doctor/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/iiKurro/ram-doctor/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/iiKurro/ram-doctor/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/iiKurro/ram-doctor/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/iiKurro/ram-doctor/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/iiKurro/ram-doctor/releases/tag/v1.0.0

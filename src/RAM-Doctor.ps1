@@ -39,7 +39,7 @@ $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 # polite by design: this tool runs on PCs that are already struggling, so it must never make them feel slower
 try { [Diagnostics.Process]::GetCurrentProcess().PriorityClass = [Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
-$ToolVersion = '1.1.0'
+$ToolVersion = '1.1.1'
 $Inv = [Globalization.CultureInfo]::InvariantCulture
 $Root = $PSScriptRoot
 if (-not $Root) { $Root = (Get-Location).Path }
