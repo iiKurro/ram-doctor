@@ -34,6 +34,7 @@ src/                  the tool (this is what ships)
   lib/Native.cs       P/Invoke helpers (pool tags, PID probe, image names, tag search)
   lib/Fluent.cs       Windows 11 style WinForms controls
   lib/Report.ps1      HTML report builder
+  lib/Store.ps1       crash-safe JSON files (.tmp + rename, .bak fallback) and the inter-process lock
 server/                the relay (Cloudflare Worker) behind the optional Share button
 build/Build-SingleFile.ps1   packs src/ into dist/RAM-Doctor.bat
 tests/                automated checks (also run by CI)

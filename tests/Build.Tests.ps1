@@ -199,7 +199,7 @@ Describe 'Single-file builder - RELEASE variant' {
 
         It 'covers the core scripts' {
             $markers = @([regex]::Matches($script:Text, '(?m)^#@@FILE (.+?)\r?$') | ForEach-Object { $_.Groups[1].Value })
-            foreach ($f in 'src\RAM-Doctor.ps1', 'src\RAM-Doctor-Actions.ps1', 'src\lib\Report.ps1', 'src\lib\Native.cs') { $markers | Should -Contain $f }
+            foreach ($f in 'src\RAM-Doctor.ps1', 'src\RAM-Doctor-Actions.ps1', 'src\lib\Report.ps1', 'src\lib\Store.ps1', 'src\lib\Native.cs') { $markers | Should -Contain $f }
         }
 
         It 'has a sane size (a few hundred KB at most: it is meant to be a light download)' {

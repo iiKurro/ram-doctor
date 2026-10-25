@@ -51,6 +51,7 @@ flowchart TB
 | `src/RAM-Doctor-Actions.ps1` | `Quarantine`, `Restore`, `Purge`, `List`. The only code that changes the system. |
 | `src/lib/Native.cs` | Read-only P/Invoke helpers (see below), compiled with `Add-Type` (C# 5). |
 | `src/lib/Report.ps1` | Builds the HTML report from the scan's data object. Self-contained (inline CSS, no scripts, no network). |
+| `src/lib/Store.ps1` | Crash-safe JSON files and an inter-process lock: `Write-JsonAtomic` (write `<file>.tmp`, flush, one rename that keeps the previous version as `<file>.bak`, adds a `schema` field), `Read-JsonSafe` (falls back to `.bak`, never throws, keeps a damaged file as `<file>.damaged-<stamp>`, reads 1.0.x files without `schema` as schema 1, refuses files from a newer schema) and `Use-StoreLock` (named mutex, `Busy` on timeout). |
 | `build/Build-SingleFile.ps1` | Packs `src/` into the one-file `dist/RAM-Doctor.bat`. |
 | `server/` | The relay (Cloudflare Worker) behind the optional *Share with my helper* button. Deployed and operated by the maintainer/helper. See [server/README.md](../server/README.md). |
 
