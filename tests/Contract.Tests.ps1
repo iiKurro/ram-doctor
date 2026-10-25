@@ -21,8 +21,8 @@ AfterAll {
 
 Describe 'Report and relay contract' {
     It 'the relay accepts the redacted report.html of the "<Scenario>" scenario in <Lang>' -ForEach @(
-        @{ Scenario = 'leak'; Lang = 'ar' }, @{ Scenario = 'miner'; Lang = 'ar' }, @{ Scenario = 'clean'; Lang = 'ar' },
-        @{ Scenario = 'leak'; Lang = 'en' }, @{ Scenario = 'miner'; Lang = 'en' }, @{ Scenario = 'clean'; Lang = 'en' }
+        @{ Scenario = 'leak'; Lang = 'ar' }, @{ Scenario = 'miner'; Lang = 'ar' }, @{ Scenario = 'clean'; Lang = 'ar' }, @{ Scenario = 'hidden'; Lang = 'ar' },
+        @{ Scenario = 'leak'; Lang = 'en' }, @{ Scenario = 'miner'; Lang = 'en' }, @{ Scenario = 'clean'; Lang = 'en' }, @{ Scenario = 'hidden'; Lang = 'en' }
     ) {
         if (-not $script:Node) { Set-ItResult -Skipped -Because 'Node.js is not installed'; return }
         $dir = Join-Path $script:Work "$Scenario-$Lang"
@@ -72,6 +72,28 @@ Describe 'summary.md and the relay sanitiser' {
             $out | Should -Not -Match '&lt;/?div'
             $out | Should -Match 'Most likely cause'
         }
+    }
+
+    It 'the breakdown of the memory Task Manager does not show survives the sanitiser, and plan.json passes the validator (<Lang>)' -ForEach @(@{ Lang = 'ar' }, @{ Lang = 'en' }) {
+        if (-not $script:Node) { Set-ItResult -Skipped -Because 'Node.js is not installed'; return }
+        $dir = Join-Path $script:Work "breakdown-$Lang"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        $files = New-TestPlanFiles -Dir $dir -Stamp '20260101-120000' -Lang $Lang -Breakdown
+        $bundle = New-ShareBundle -PlanPath $files.Plan -Profile ([pscustomobject]@{ displayName = 'Friend'; userId = '0123abcd' })
+        foreach ($f in $bundle.Files) { if ($f.name -ne 'report.html') { [IO.File]::WriteAllText((Join-Path $dir $f.name), $f.content, (New-Object Text.UTF8Encoding($false))) } }
+        $probe = Join-Path $dir 'check.mjs'
+        $js = "import { readFileSync } from 'node:fs';`n" +
+        "import { sanitizeSummary, checkPlanJson } from '$($script:LibUrl)';`n" +
+        "const out = sanitizeSummary(readFileSync(process.argv[2], 'utf8'));`n" +
+        "const plan = checkPlanJson(readFileSync(process.argv[3], 'utf8'));`n" +
+        "console.log(JSON.stringify({ out: out, plan: plan }));`n" +
+        "process.exit(plan.ok ? 0 : 1);`n"
+        [IO.File]::WriteAllText($probe, $js, (New-Object Text.UTF8Encoding($false)))
+        $out = (& node $probe (Join-Path $dir 'summary.md') (Join-Path $dir 'plan.json') 2>&1 | Out-String)
+        $LASTEXITCODE | Should -Be 0 -Because $out
+        $out | Should -Match 'Where the memory is that Task Manager does not show'
+        $out | Should -Match 'Reserved by hardware drivers \(contiguous, pool tag ConT\) \| 2\.26'
+        $out | Should -Match '"plan":\{"ok":true\}'
     }
 }
 

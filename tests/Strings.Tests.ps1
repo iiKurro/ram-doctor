@@ -64,6 +64,25 @@ Describe 'String table: both languages are complete' {
         }
         $bad | Should -BeNullOrEmpty -Because ($bad -join ', ')
     }
+    It 'explains the memory Task Manager does not show in both languages, with the same numbers' {
+        $keys = @('verdict.where', 'verdict.where.one', 'verdict.where.more', 'verdict.drvres', 'verdict.part.shared', 'verdict.part.drivers', 'verdict.part.kernel',
+            'verdict.part.system', 'verdict.part.unexpl', 'obs.drvres.t', 'obs.drvres.high.t', 'obs.drvres.b', 'obs.drvres.grow', 'obs.drvres.nocand',
+            'rpt.tm.h', 'rpt.tm.lead', 'rpt.tm.shared', 'rpt.tm.drivers', 'rpt.tm.drivers.unknown', 'rpt.th.shared', 'sum.hidden', 'sum.shared.top', 'sum.shared.item')
+        $missing = @($keys | Where-Object { -not $script:Ar.ContainsKey($_) -or -not $script:En.ContainsKey($_) })
+        $missing | Should -BeNullOrEmpty -Because ($missing -join ', ')
+        $mem = [pscustomobject]@{ HiddenGB = 9.63; SharedUniqueGB = 4.47; DriverReservedGB = 2.26; DriverReservedKnown = $true; KernelPoolsGB = 2.07; SystemOtherGB = 0.83; UnexplainedGB = 0
+            TopShared = @([pscustomobject]@{ name = 'brave.exe'; count = 32; sharedMB = 5240 }) }
+        $en = @(Get-HiddenMemoryLines -Memory $mem -Lang en)
+        $ar = @(Get-HiddenMemoryLines -Memory $mem -Lang ar)
+        $en.Count | Should -Be 2
+        $ar.Count | Should -Be 2
+        ($en -join ' ') | Should -Not -Match $script:ArabicRx
+        ($ar -join ' ') | Should -Match $script:ArabicRx
+        foreach ($n in '9.63', '4.47', '2.26', '2.07', '0.83', '5.12') {
+            ($en -join ' ') | Should -Match ([regex]::Escape($n))
+            ($ar -join ' ') | Should -Match ([regex]::Escape($n))
+        }
+    }
 }
 
 Describe 'String table: it is the only place with user-facing text' {
@@ -84,6 +103,8 @@ Describe 'String table: it is the only place with user-facing text' {
     }
     It 'every key in the table is used by the code (no dead texts)' {
         $all = ($script:UsageFiles | ForEach-Object { [IO.File]::ReadAllText($_.FullName) }) -join "`n"
+        # the helpers at the top of Strings.ps1 (above the two tables, e.g. Get-HiddenMemoryLines) are code too
+        $all += "`n" + ([IO.File]::ReadAllText((Join-Path $script:Root 'src\lib\Strings.ps1')) -split '(?m)^\$script:RdText = @\{\}')[0]
         $dead = @($script:Ar.Keys | Where-Object {
                 $k = $_
                 -not $all.Contains("'$k'") -and -not ($script:DynamicPrefixes | Where-Object { $k.StartsWith($_) })

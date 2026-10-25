@@ -398,6 +398,65 @@ Describe 'Languages (Arabic and English)' -Tag 'Unit' {
     }
 }
 
+Describe 'Where the memory is: the breakdown lines of the summaries' -Tag 'Unit' {
+    BeforeAll {
+        $script:dir5 = Join-Path $TestDrive 'breakdown'; New-Item -ItemType Directory -Force -Path $script:dir5 | Out-Null
+        $script:bdEn = New-TestPlanFiles -Dir $script:dir5 -Lang en -Breakdown
+        $script:bdAr = New-TestPlanFiles -Dir $script:dir5 -Stamp '20260102-120000' -Lang ar -Breakdown
+        $script:noBd = New-TestPlanFiles -Dir $script:dir5 -Stamp '20260103-120000' -Lang en
+        $script:prof5 = [pscustomobject]@{ displayName = 'Friend'; userId = 'a1b2c3d4' }
+    }
+    It 'the copied summary explains in numbers what Task Manager does not show (English)' {
+        $t = New-ShareShortSummary -PlanPath $script:bdEn.Plan
+        $t | Should -Match 'Not shown by Task Manager: 9\.63 GB = shared memory of programs ~4\.47 GB \+ reserved by drivers 2\.26 GB \+ Windows kernel 2\.07 GB \+ cache and other 0\.83 GB'
+        $t | Should -Match 'Biggest users of shared memory: brave\.exe \(32 processes\) 5\.12 GB'
+        $t | Should -Match 'Unattributed 2\.26 GB'          # the corrected value, not the 0 of the old formula
+        $t | Should -Not -Match '[؀-ۿ]'
+        $t.Length | Should -BeLessOrEqual 1500
+    }
+    It 'the copied summary says the same in Arabic' {
+        $t = New-ShareShortSummary -PlanPath $script:bdAr.Plan
+        $t | Should -Match ([regex]::Escape((Get-Text 'sum.hidden' '9.63' '4.47' '2.26' '2.07' '0.83' -Lang ar)))
+        $t | Should -Match ([regex]::Escape((Get-Text 'sum.shared.item' 'brave.exe' 32 '5.12' -Lang ar)))
+    }
+    It 'keeps the redaction: a program name that carries the user name is masked' {
+        $t = New-ShareShortSummary -PlanPath $script:bdEn.Plan
+        $t | Should -Match '<USER>-sync\.exe'
+        $t | Should -Not -Match 'Friend|DESKTOP-DEMO'
+    }
+    It 'plans of older releases get no breakdown line and keep their old value' {
+        $t = New-ShareShortSummary -PlanPath $script:noBd.Plan
+        $t | Should -Not -Match 'Not shown by Task Manager'
+        $t | Should -Match 'Unattributed 0\.2 GB'
+        @(Get-HiddenMemoryLines -Memory ((Get-Content $script:noBd.Plan -Raw -Encoding UTF8 | ConvertFrom-Json).memory)).Count | Should -Be 0
+        @(Get-HiddenMemoryLines -Memory $null).Count | Should -Be 0
+    }
+    It 'says when the driver reservations could not be measured' {
+        $p = Get-Content $script:bdEn.Plan -Raw -Encoding UTF8 | ConvertFrom-Json
+        $p.memory.DriverReservedKnown = $false
+        (@(Get-HiddenMemoryLines -Memory $p.memory -Lang en))[0] | Should -Match 'not measured: scan as administrator'
+        $p.memory.UnexplainedGB = 1.5
+        (@(Get-HiddenMemoryLines -Memory $p.memory -Lang en))[0] | Should -Match '\+ not explained 1\.5 GB'
+    }
+    It 'summary.md has a table of the hidden memory, the biggest shared-memory users and the candidate drivers' {
+        $md = ((New-ShareBundle -PlanPath $script:bdEn.Plan -Profile $script:prof5).Files | Where-Object name -eq 'summary.md').content
+        $md | Should -Match '## Where the memory is that Task Manager does not show'
+        $md | Should -Match '\| Not shown by Task Manager \(used minus private\) \| 9\.63 \|'
+        $md | Should -Match '\| Shared memory of open programs \(estimate, each page once\) \| 4\.47 \|'
+        $md | Should -Match '\| Reserved by hardware drivers \(contiguous, pool tag ConT\) \| 2\.26 \|'
+        $md | Should -Match '\| Not attributed to any process \| 2\.26 \|'
+        $md | Should -Match 'brave\.exe \(32 processes\) 5\.12 GB'
+        $md | Should -Match 'candidate drivers \(the tag cannot name the driver\): NVIDIA GeForce RTX 4070, Parsec Virtual Display Adapter, amdkmdag\.sys'
+        $md | Should -Match '<USER>-sync\.exe'
+        $md | Should -Not -Match 'Friend-sync|DESKTOP-DEMO'
+    }
+    It 'summary.md of an older plan has no breakdown table and the old "not attributed" value' {
+        $md = ((New-ShareBundle -PlanPath $script:noBd.Plan -Profile $script:prof5).Files | Where-Object name -eq 'summary.md').content
+        $md | Should -Not -Match 'Where the memory is'
+        $md | Should -Match '\| Not attributed to any process \| 0\.2 \|'
+    }
+}
+
 Describe 'Request body' -Tag 'Unit' {
     It 'follows protocol v1 and omits "code" when none is stored' {
         $d = Join-Path $TestDrive 'req'; New-Item -ItemType Directory -Force -Path $d | Out-Null

@@ -5,9 +5,14 @@
 #  "DESKTOP-DEMO", fictional driver "netflt64.sys", IPs from the documentation range 203.0.113.0/24.
 #
 #  Usage:   . tests\fixtures\Demo-ReportData.ps1
-#           $data = Get-DemoReportData -Scenario leak                 # leak | miner | clean
+#           $data = Get-DemoReportData -Scenario leak                 # leak | miner | clean | hidden
 #           $data = Get-DemoReportData -Scenario leak -Lang en        # ar (default) | en
 #           . src\lib\Report.ps1 ; New-RamReportHtml $data | Set-Content demo.html -Encoding UTF8
+#
+#  Scenario "hidden": the case that started the project - "16 GB used on an idle desktop, Task Manager shows nothing".
+#  No leak: the memory Task Manager does not show is shared memory of open programs plus 2.3 GB of contiguous memory
+#  reserved by a graphics driver (pool tag ConT, outside the non-paged pool counter), with two GPUs and a virtual display.
+#  The numbers are synthetic but shaped like that report.
 #
 #  The texts are built from the SAME string-table keys the scan uses (src\lib\Strings.ps1), in the
 #  chosen language, so the demo shows exactly what a real scan writes. The returned object carries Lang.
@@ -19,8 +24,25 @@ if (-not (Get-Command Get-Text -CommandType Function -ErrorAction SilentlyContin
 
 function New-DemoRow([hashtable]$h) { [pscustomobject]$h }
 
+# The fields a scan after 1.1.2 adds to Memory: where the memory Task Manager does not show is. Same arithmetic as
+# Get-MemoryBreakdown in src\RAM-Doctor.ps1 (each part takes at most what is left), so the demo numbers add up like a scan.
+function Add-DemoBreakdown($m, [double]$DriverReservedGB = 0, [bool]$Known = $true, [double]$GrowthMB = 0, $TopShared = @(), $Candidates = @()) {
+    $left = [math]::Max(0.0, [double]$m.UsedGB - [double]$m.ProcPrivateGB); $hidden = $left
+    $kernel = [math]::Min($left, [double]$m.NonPagedGB + [double]$m.PagedResidentGB); $left -= $kernel
+    $system = [math]::Min($left, [double]$m.CacheResidentGB + [double]$m.DriverResidentGB + [double]$m.ModifiedGB); $left -= $system
+    $drv = [math]::Min($left, $DriverReservedGB); $left -= $drv
+    $sh = [math]::Min($left, [double]$m.ProcSharedGB); $left -= $sh
+    $m | Add-Member -NotePropertyMembers ([ordered]@{
+            HiddenGB = [math]::Round($hidden, 2); SharedUniqueGB = [math]::Round($sh, 2); DriverReservedGB = [math]::Round($drv, 2); DriverReservedKnown = $Known
+            DriverReservedGrowthMB = $GrowthMB; KernelPoolsGB = [math]::Round($kernel, 2); SystemOtherGB = [math]::Round($system, 2)
+            UnexplainedGB = [math]::Round($left, 2); UnattributedGB = [math]::Round($drv + $left, 2)
+            TopShared = @($TopShared); DriverReservedCandidates = @($Candidates)
+        })
+    return $m
+}
+
 function Get-DemoReportData {
-    param([ValidateSet('leak', 'miner', 'clean')][string]$Scenario = 'leak', [ValidateSet('ar', 'en')][string]$Lang = 'ar')
+    param([ValidateSet('leak', 'miner', 'clean', 'hidden')][string]$Scenario = 'leak', [ValidateSet('ar', 'en')][string]$Lang = 'ar')
 
     # text in the demo language: Tx 'key' arg1 arg2 ...
     $Tx = { param([string]$k) Get-Text $k @args -Lang $Lang }
@@ -34,15 +56,20 @@ function Get-DemoReportData {
     $counts = New-DemoRow @{ Processes = 142; Services = 258; Tasks = 61; Autoruns = 12; Drivers = 187; Wmi = 0 }
 
     $byProgram = @(
-        (New-DemoRow @{ name = 'chrome.exe'; count = 14; privMB = 1480; commitMB = 2210; trust = 'Signed'; publisher = 'Google LLC' }),
-        (New-DemoRow @{ name = 'msedgewebview2.exe'; count = 9; privMB = 410; commitMB = 780; trust = 'MS'; publisher = 'Microsoft Corporation' }),
-        (New-DemoRow @{ name = 'Code.exe'; count = 6; privMB = 335; commitMB = 640; trust = 'Signed'; publisher = 'Microsoft Corporation' }),
-        (New-DemoRow @{ name = 'Discord.exe'; count = 6; privMB = 262; commitMB = 520; trust = 'Signed'; publisher = 'Discord Inc.' }),
-        (New-DemoRow @{ name = 'MsMpEng.exe'; count = 1; privMB = 214; commitMB = 390; trust = 'MS'; publisher = 'Microsoft Corporation' }),
-        (New-DemoRow @{ name = 'svchost.exe'; count = 62; privMB = 205; commitMB = 530; trust = 'OS'; publisher = 'Microsoft Windows' }),
-        (New-DemoRow @{ name = 'steamwebhelper.exe'; count = 5; privMB = 188; commitMB = 410; trust = 'Signed'; publisher = 'Valve Corp.' }),
-        (New-DemoRow @{ name = 'explorer.exe'; count = 1; privMB = 141; commitMB = 260; trust = 'OS'; publisher = 'Microsoft Windows' }),
-        (New-DemoRow @{ name = 'Memory Compression'; count = 1; privMB = 96; commitMB = 12; trust = 'OS'; publisher = 'Windows kernel' })
+        (New-DemoRow @{ name = 'chrome.exe'; count = 14; privMB = 1480; sharedMB = 1150; commitMB = 2210; trust = 'Signed'; publisher = 'Google LLC' }),
+        (New-DemoRow @{ name = 'msedgewebview2.exe'; count = 9; privMB = 410; sharedMB = 420; commitMB = 780; trust = 'MS'; publisher = 'Microsoft Corporation' }),
+        (New-DemoRow @{ name = 'Code.exe'; count = 6; privMB = 335; sharedMB = 300; commitMB = 640; trust = 'Signed'; publisher = 'Microsoft Corporation' }),
+        (New-DemoRow @{ name = 'Discord.exe'; count = 6; privMB = 262; sharedMB = 250; commitMB = 520; trust = 'Signed'; publisher = 'Discord Inc.' }),
+        (New-DemoRow @{ name = 'MsMpEng.exe'; count = 1; privMB = 214; sharedMB = 52; commitMB = 390; trust = 'MS'; publisher = 'Microsoft Corporation' }),
+        (New-DemoRow @{ name = 'svchost.exe'; count = 62; privMB = 205; sharedMB = 410; commitMB = 530; trust = 'OS'; publisher = 'Microsoft Windows' }),
+        (New-DemoRow @{ name = 'steamwebhelper.exe'; count = 5; privMB = 188; sharedMB = 230; commitMB = 410; trust = 'Signed'; publisher = 'Valve Corp.' }),
+        (New-DemoRow @{ name = 'explorer.exe'; count = 1; privMB = 141; sharedMB = 99; commitMB = 260; trust = 'OS'; publisher = 'Microsoft Windows' }),
+        (New-DemoRow @{ name = 'Memory Compression'; count = 1; privMB = 96; sharedMB = 0; commitMB = 12; trust = 'OS'; publisher = 'Windows kernel' })
+    )
+    $topShared = @(
+        (New-DemoRow @{ name = 'chrome.exe'; count = 14; sharedMB = 1150 }),
+        (New-DemoRow @{ name = 'msedgewebview2.exe'; count = 9; sharedMB = 420 }),
+        (New-DemoRow @{ name = 'svchost.exe'; count = 62; sharedMB = 410 })
     )
     $topProcs = @(
         (New-DemoRow @{ pid = 7412; name = 'chrome.exe'; privMB = 612; wsMB = 790; commitMB = 905; handles = 2210; growthMB = 3; trust = 'Signed'; publisher = 'Google LLC'; path = 'C:\Program Files\Google\Chrome\Application\chrome.exe' }),
@@ -70,6 +97,7 @@ function Get-DemoReportData {
                 CommittedGB = 17.8; CommitLimitGB = 24.3; CacheResidentGB = 0.9; DriverResidentGB = 0.1; WindowSec = 32
                 NonPagedGrowthMB = 118; PagedGrowthMB = 4; CommitGrowthMB = 126; UsedGrowthMB = 131
             }
+            $memory = Add-DemoBreakdown $memory -TopShared $topShared
             $verdict = New-DemoRow @{ Level = 'high'; Headline = (& $Tx 'verdict.driver') }
             $obs = @(
                 (New-DemoRow @{ Level = 'high'; Title = (& $Tx 'obs.npp.high.t'); Body = ((& $Tx 'obs.npp.high.b' '9.6') + (& $Tx 'obs.toptag' 'ExNf' 7424 (& $Tx 'obs.toptag.maybe' 'netflt64.sys'))) }),
@@ -104,6 +132,7 @@ function Get-DemoReportData {
                 CommittedGB = 14.9; CommitLimitGB = 24.3; CacheResidentGB = 1.4; DriverResidentGB = 0.1; WindowSec = 31
                 NonPagedGrowthMB = 2; PagedGrowthMB = 1; CommitGrowthMB = 431; UsedGrowthMB = 420
             }
+            $memory = Add-DemoBreakdown $memory -TopShared $topShared
             $verdict = New-DemoRow @{ Level = 'high'; Headline = (& $Tx 'verdict.urgent') }
             $obs = @(
                 (New-DemoRow @{ Level = 'high'; Title = (& $Tx 'obs.high.t' 1); Body = (& $Tx 'obs.high.b' 'svch0st.exe') }),
@@ -141,8 +170,72 @@ function Get-DemoReportData {
             $topGrowers = @((New-DemoRow @{ pid = 6124; name = 'svch0st.exe'; growthMB = 412; commitMB = 905; trust = 'Unsigned' }))
             $hidden = @()
             $drv = $drivers3p | Select-Object -Skip 1; $pa = $true
-            $byProgram = @((New-DemoRow @{ name = 'svch0st.exe'; count = 1; privMB = 868; commitMB = 905; trust = 'Unsigned'; publisher = '' })) + $byProgram
+            $byProgram = @((New-DemoRow @{ name = 'svch0st.exe'; count = 1; privMB = 868; sharedMB = 12; commitMB = 905; trust = 'Unsigned'; publisher = '' })) + $byProgram
             $topProcs = @((New-DemoRow @{ pid = 6124; name = 'svch0st.exe'; privMB = 868; wsMB = 880; commitMB = 905; handles = 96; growthMB = 412; trust = 'Unsigned'; publisher = ''; path = 'C:\Users\Friend\AppData\Local\Temp\svch0st.exe' })) + $topProcs
+        }
+        'hidden' {
+            # 32 GB desktop, two GPUs (integrated + discrete) and a virtual display adapter; idle, nothing leaks
+            $sys.Cpu = 'AMD Ryzen 7 7800X3D 8-Core Processor'; $sys.Gpus = 'AMD Radeon(TM) Graphics / NVIDIA GeForce RTX 4070 / Parsec Virtual Display Adapter'
+            $sys.InstalledGB = 32; $sys.UsableGB = 31.11; $sys.ReservedGB = 0.89; $sys.Uptime = '3d 2h 10m'; $sys.UptimeDays = 3.1
+            $counts = New-DemoRow @{ Processes = 318; Services = 301; Tasks = 74; Autoruns = 15; Drivers = 214; Wmi = 0 }
+            $memory = New-DemoRow @{
+                TotalGB = 31.11; UsedGB = 18.19; AvailGB = 12.92; FreeGB = 0.01; StandbyGB = 12.91; ModifiedGB = 0.14
+                ProcPrivateGB = 8.56; ProcSharedGB = 9.88; NonPagedGB = 0.9; PagedGB = 1.29; PagedResidentGB = 1.17; UnaccountedGB = 0
+                CommittedGB = 22.45; CommitLimitGB = 37.86; CacheResidentGB = 0.63; DriverResidentGB = 0.06; WindowSec = 31
+                NonPagedGrowthMB = 1; PagedGrowthMB = 0; CommitGrowthMB = 12; UsedGrowthMB = 9
+            }
+            $cands = @('AMD Radeon Graphics', 'NVIDIA GeForce RTX 4070', 'Parsec Virtual Display Adapter', 'amdkmdag.sys', 'nvlddmkm.sys')   # as Get-DriverReservedCandidates writes them
+            $topSharedH = @(
+                (New-DemoRow @{ name = 'brave.exe'; count = 32; sharedMB = 5240 }),
+                (New-DemoRow @{ name = 'steamwebhelper.exe'; count = 12; sharedMB = 1310 }),
+                (New-DemoRow @{ name = 'Discord.exe'; count = 9; sharedMB = 980 })
+            )
+            # ConT = 2310 MB in the tag table (2310 / 1024 = 2.26 GB)
+            $memory = Add-DemoBreakdown $memory -DriverReservedGB 2.26 -TopShared $topSharedH -Candidates $cands
+            $where = (& $Tx 'verdict.where' '9.6' (& $Tx 'verdict.part.shared') '4.5' (& $Tx 'verdict.part.drivers') '2.3') + (& $Tx 'verdict.where.more')
+            $verdict = New-DemoRow @{ Level = 'med'; Headline = $where }
+            $obs = @(
+                (New-DemoRow @{ Level = 'med'; Title = (& $Tx 'obs.drvres.t' '2.26'); Body = (& $Tx 'obs.drvres.b' '2.26' ($cands -join (& $Tx 'sep.list'))) }),
+                (New-DemoRow @{ Level = 'med'; Title = (& $Tx 'obs.med.t' 1); Body = (& $Tx 'obs.med.b' 'StartupHelper.vbs') }),
+                (New-DemoRow @{ Level = 'med'; Title = (& $Tx 'obs.defthreat.t'); Body = (& $Tx 'obs.defthreat.b' 'C:\Users\Friend\Downloads\example-tool.zip') }),
+                (New-DemoRow @{ Level = 'info'; Title = (& $Tx 'obs.standby.t'); Body = (& $Tx 'obs.standby.b' '12.91') })
+            )
+            $mk = { param($t, $mb, $known) New-DemoRow @{ tag = $t; mb = $mb; deltaMB = 0; allocs = 1200; known = $known; candidates = @(); tooGeneric = $false } }
+            $poolNon = @((& $mk 'ConT' 2310 (& $Tx 'tag.cont')), (& $mk 'EtwB' 96 (& $Tx 'tag.etwb')), (& $mk 'NVRM' 71 (& $Tx 'tag.nvrm')), (& $mk 'smNp' 48 (& $Tx 'tag.store')), (& $mk 'File' 41 (& $Tx 'tag.file')), (& $mk 'Thre' 27 (& $Tx 'tag.thre')))
+            $poolPaged = @((& $mk 'MmSt' 260 ''), (& $mk 'CM25' 118 ''), (& $mk 'ObNm' 52 ''))
+            $poolGrow = @(); $topGrowers = @(); $hidden = @()
+            $suspects = @(
+                (New-DemoRow @{
+                        id = 1; risk = 'Medium'; score = 5; name = 'StartupHelper.vbs'; path = 'C:\Users\Friend\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\StartupHelper.vbs'; fileExists = $true; protectedFile = $false
+                        sha256 = ('5e7a0c31' * 8); sizeBytes = 2048; created = '2026-09-14 19:22:03'; trust = 'Script'; sigStatus = 'NotSupportedFileFormat'; publisher = ''; company = ''; description = ''
+                        reasons = @((& $Tx 'sig.zone.data' 'AppData'), (& $Tx 'sig.argpath'))
+                        procs = @(); services = @(); tasks = @()
+                        autoruns = @((New-DemoRow @{ via = 'StartupFolder'; location = 'C:\Users\Friend\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'; name = 'StartupHelper.vbs'; value = ''; file = '' }))
+                        drivers = @(); wmi = @()
+                    })
+            )
+            $defender = New-DemoRow @{ Enabled = $true; RealTime = $true; SignatureAgeDays = 0; QuickScanAgeDays = 2; RecentThreats = @((New-DemoRow @{ time = '2026-10-02 18:40:12'; process = 'explorer.exe'; resources = 'C:\Users\Friend\Downloads\example-tool.zip' })) }
+            $byProgram = @(
+                (New-DemoRow @{ name = 'brave.exe'; count = 32; privMB = 2906; sharedMB = 5240; commitMB = 3980; trust = 'Signed'; publisher = 'Brave Software, Inc.' }),
+                (New-DemoRow @{ name = 'steamwebhelper.exe'; count = 12; privMB = 880; sharedMB = 1310; commitMB = 1420; trust = 'Signed'; publisher = 'Valve Corp.' }),
+                (New-DemoRow @{ name = 'Discord.exe'; count = 9; privMB = 772; sharedMB = 980; commitMB = 1130; trust = 'Signed'; publisher = 'Discord Inc.' }),
+                (New-DemoRow @{ name = 'svchost.exe'; count = 91; privMB = 391; sharedMB = 760; commitMB = 820; trust = 'OS'; publisher = 'Microsoft Windows' }),
+                (New-DemoRow @{ name = 'Memory Compression'; count = 1; privMB = 344; sharedMB = 0; commitMB = 18; trust = 'OS'; publisher = 'Windows kernel' }),
+                (New-DemoRow @{ name = 'MsMpEng.exe'; count = 1; privMB = 251; sharedMB = 96; commitMB = 420; trust = 'MS'; publisher = 'Microsoft Corporation' }),
+                (New-DemoRow @{ name = 'explorer.exe'; count = 1; privMB = 206; sharedMB = 330; commitMB = 290; trust = 'OS'; publisher = 'Microsoft Windows' }),
+                (New-DemoRow @{ name = 'dwm.exe'; count = 1; privMB = 164; sharedMB = 210; commitMB = 240; trust = 'OS'; publisher = 'Microsoft Windows' })
+            )
+            $topProcs = @(
+                (New-DemoRow @{ pid = 9104; name = 'brave.exe'; privMB = 611; wsMB = 905; commitMB = 820; handles = 1910; growthMB = 1; trust = 'Signed'; publisher = 'Brave Software, Inc.'; path = 'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe' }),
+                (New-DemoRow @{ pid = 7720; name = 'steamwebhelper.exe'; privMB = 301; wsMB = 512; commitMB = 455; handles = 880; growthMB = 0; trust = 'Signed'; publisher = 'Valve Corp.'; path = 'C:\Program Files (x86)\Steam\bin\cef\cef.win7x64\steamwebhelper.exe' }),
+                (New-DemoRow @{ pid = 2216; name = 'Memory Compression'; privMB = 344; wsMB = 344; commitMB = 18; handles = 0; growthMB = 0; trust = 'OS'; publisher = 'Windows kernel'; path = '' })
+            )
+            $drv = @(
+                (New-DemoRow @{ name = 'amdkmdag'; display = 'amdkmdag'; file = 'amdkmdag.sys'; path = 'C:\Windows\System32\DriverStore\FileRepository\u0401234.inf_amd64_example\B401234\amdkmdag.sys'; trust = 'Signed'; publisher = 'Advanced Micro Devices, Inc.'; company = 'Advanced Micro Devices, Inc.'; version = '32.0.12011.1036'; installed = '2026-07-30 12:10:00'; startMode = 'Manual' }),
+                (New-DemoRow @{ name = 'nvlddmkm'; display = 'NVIDIA Windows Kernel Mode Driver'; file = 'nvlddmkm.sys'; path = 'C:\Windows\System32\DriverStore\FileRepository\nv_dispi.inf\nvlddmkm.sys'; trust = 'Signed'; publisher = 'NVIDIA Corporation'; company = 'NVIDIA Corporation'; version = '32.0.15.6094'; installed = '2026-08-11 18:02:10'; startMode = 'Manual' }),
+                (New-DemoRow @{ name = 'RTKVHD64'; display = 'Realtek HD Audio Driver'; file = 'RTKVHD64.sys'; path = 'C:\Windows\System32\drivers\RTKVHD64.sys'; trust = 'Signed'; publisher = 'Realtek Semiconductor Corp.'; company = 'Realtek Semiconductor Corp.'; version = '6.0.9500.1'; installed = '2026-03-20 11:45:31'; startMode = 'Manual' })
+            )
+            $pa = $true
         }
         default {
             $memory = New-DemoRow @{
@@ -151,7 +244,9 @@ function Get-DemoReportData {
                 CommittedGB = 9.1; CommitLimitGB = 24.3; CacheResidentGB = 1.1; DriverResidentGB = 0.1; WindowSec = 30
                 NonPagedGrowthMB = 0; PagedGrowthMB = 1; CommitGrowthMB = 6; UsedGrowthMB = 4
             }
-            $verdict = New-DemoRow @{ Level = 'ok'; Headline = (& $Tx 'verdict.ok') }
+            $memory = Add-DemoBreakdown $memory -TopShared $topShared
+            # nothing is wrong, so the headline answers "where is the memory?" (the two biggest hidden parts)
+            $verdict = New-DemoRow @{ Level = 'ok'; Headline = (& $Tx 'verdict.where' '3.1' (& $Tx 'verdict.part.system') '1.3' (& $Tx 'verdict.part.kernel') '1.2') }
             $obs = @((New-DemoRow @{ Level = 'info'; Title = (& $Tx 'obs.standby.t'); Body = (& $Tx 'obs.standby.b' '5.44') }))
             $mk = { param($t, $mb, $known) New-DemoRow @{ tag = $t; mb = $mb; deltaMB = 0; allocs = 1000; known = $known; candidates = @(); tooGeneric = $false } }
             $poolNon = @((& $mk 'EtwB' 78 (& $Tx 'tag.etwb')), (& $mk 'NVRM' 64 (& $Tx 'tag.nvrm')), (& $mk 'smNp' 49 (& $Tx 'tag.store')))

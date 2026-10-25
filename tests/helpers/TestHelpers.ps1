@@ -162,6 +162,34 @@ function Test-RamPlan {
     # optional: the language the scan wrote its texts in (added with the English UI; plans of older releases have none = Arabic)
     if ((& $has $Plan 'lang') -and (@('ar', 'en') -notcontains [string]$Plan.lang)) { $err.Add("plan.lang invalid: '$($Plan.lang)'") }
 
+    # optional (scans after 1.1.2): the breakdown of the memory Task Manager does not show. Additive: older plans have none,
+    # but when a field is there it must have the right type, because the window and the share summaries read it.
+    if ((& $has $Plan 'memory') -and $null -ne $Plan.memory) {
+        $mem = $Plan.memory
+        foreach ($n in 'HiddenGB', 'SharedUniqueGB', 'DriverReservedGB', 'KernelPoolsGB', 'SystemOtherGB', 'UnexplainedGB', 'UnattributedGB') {
+            if (& $has $mem $n) {
+                $v = $mem.$n
+                if (-not ($v -is [int] -or $v -is [long] -or $v -is [double] -or $v -is [decimal])) { $err.Add("plan.memory.$n must be a number") }
+                elseif ([double]$v -lt 0) { $err.Add("plan.memory.$n must not be negative") }
+            }
+        }
+        if ((& $has $mem 'DriverReservedKnown') -and $mem.DriverReservedKnown -isnot [bool]) { $err.Add('plan.memory.DriverReservedKnown must be a boolean') }
+        if (& $has $mem 'TopShared') {
+            if (-not (& $isArr $mem.TopShared)) { $err.Add('plan.memory.TopShared must be an array') }
+            else {
+                $t = 0
+                foreach ($x in $mem.TopShared) {
+                    foreach ($f in 'name', 'count', 'sharedMB') { if (-not (& $has $x $f)) { $err.Add("plan.memory.TopShared[$t]: missing '$f'") } }
+                    $t++
+                }
+            }
+        }
+        if (& $has $mem 'DriverReservedCandidates') {
+            if (-not (& $isArr $mem.DriverReservedCandidates)) { $err.Add('plan.memory.DriverReservedCandidates must be an array') }
+            elseif (@($mem.DriverReservedCandidates | Where-Object { -not (& $isStr $_) }).Count -gt 0) { $err.Add('plan.memory.DriverReservedCandidates must contain strings only') }
+        }
+    }
+
     # verdict + observations are what the window shows
     foreach ($n in 'Level', 'Headline') { if (-not (& $has $Plan.verdict $n)) { $err.Add("plan.verdict: missing '$n'") } }
     if ((& $has $Plan.verdict 'Level') -and (@('ok', 'low', 'med', 'high') -notcontains [string]$Plan.verdict.Level)) { $err.Add("plan.verdict.Level invalid: '$($Plan.verdict.Level)'") }
