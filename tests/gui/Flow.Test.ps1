@@ -1,37 +1,43 @@
 ﻿<#
 .SYNOPSIS
-  End-to-end test of the real GUI (src\RAM-Doctor-GUI.ps1), driven by PerformClick() from inside the window.
+  End-to-end test of the real GUI (src\RAM-Doctor-GUI.ps1), driven by PerformClick() from inside the window, in Arabic and in English.
 
 .DESCRIPTION
-  Flow: scan -> copy summary -> quarantine -> restore -> scan -> quarantine -> purge -> share (dry-run, no network) -> clear reports.
+  Flow: language and layout direction -> scan -> copy summary -> live language switch (and back) -> quarantine -> restore -> scan ->
+  quarantine -> purge -> share (dry-run, no network) -> clear reports.
   It compiles a HARMLESS memory-hog exe with a random name in %TEMP%, registers it under HKCU Run, and only ever selects that file.
   The GUI runs with its own private %TEMP% so we can prove nothing is left behind. No UAC prompt: the GUI uses -AllowNonAdmin.
-  Needs an interactive desktop and takes about 4-5 minutes (two real scans). Exit code 0 = all checks passed.
+  Needs an interactive desktop and takes about 4-5 minutes per language (two real scans each). Exit code 0 = all checks passed.
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File tests\gui\Flow.Test.ps1
+  -Lang ar|en|both   which language(s) to run the window in (default: both, one after the other)
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File tests\gui\Flow.Test.ps1 [-Lang en]
 #>
 [CmdletBinding()]
-param([switch]$KeepWork)
+param([switch]$KeepWork, [ValidateSet('ar', 'en', 'both')][string]$Lang = 'both')
 
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $gui = Join-Path $repo 'src\RAM-Doctor-GUI.ps1'
-# random vowel-free name + digits: looks "random" to the detector (so it is rated High) and cannot collide with anything real
-$cons = 'bcdfghjklmnpqrstvwxz'.ToCharArray()
-$id = (-join ((1..7) | ForEach-Object { $cons[(Get-Random -Maximum $cons.Length)] })) + (Get-Random -Minimum 100 -Maximum 999)
-$work = Join-Path $env:TEMP "ramdoctor-guitest-$id"
-$hog = "zz$id"
-$hogExe = Join-Path $work "$hog.exe"
 $runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
-$runName = "RamDoctorGuiTest-$id"
-$result = Join-Path $work 'result.txt'
 $utf8 = New-Object System.Text.UTF8Encoding($true)
-New-Item -ItemType Directory -Force -Path $work, (Join-Path $work 'tmp'), (Join-Path $work 'reports'), (Join-Path $work 'store'), (Join-Path $work 'profile') | Out-Null
-$oldTemp = $env:TEMP; $oldTmp = $env:TMP
-$exit = 1
 
-try {
-    # ---- harmless memory hog (allocates ~300 MB, grows a little, sleeps) + Run-key persistence
-    $code = @'
+function Invoke-Flow([string]$flowLang) {
+    # random vowel-free name + digits: looks "random" to the detector (so it is rated High) and cannot collide with anything real
+    $cons = 'bcdfghjklmnpqrstvwxz'.ToCharArray()
+    $id = (-join ((1..7) | ForEach-Object { $cons[(Get-Random -Maximum $cons.Length)] })) + (Get-Random -Minimum 100 -Maximum 999)
+    $work = Join-Path $env:TEMP "ramdoctor-guitest-$id"
+    $hog = "zz$id"
+    $hogExe = Join-Path $work "$hog.exe"
+    $runName = "RamDoctorGuiTest-$id"
+    $result = Join-Path $work 'result.txt'
+    New-Item -ItemType Directory -Force -Path $work, (Join-Path $work 'tmp'), (Join-Path $work 'reports'), (Join-Path $work 'store'), (Join-Path $work 'profile') | Out-Null
+    $oldTemp = $env:TEMP; $oldTmp = $env:TMP
+    $exit = 1
+    Write-Host ("`n===== window language: {0} =====" -f $flowLang) -ForegroundColor Cyan
+
+    try {
+        # ---- harmless memory hog (allocates ~300 MB, grows a little, sleeps) + Run-key persistence
+        $code = @'
 using System; using System.Collections.Generic; using System.Threading;
 class P { static void Main() {
   var keep = new List<byte[]>();
@@ -40,36 +46,59 @@ class P { static void Main() {
   Thread.Sleep(900000);
 } }
 '@
-    Add-Type -TypeDefinition $code -OutputAssembly $hogExe -OutputType ConsoleApplication
-    Start-Process -FilePath $hogExe -WindowStyle Hidden | Out-Null
-    if (-not (Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey -Force | Out-Null }   # empty profiles (CI runners) have no Run key yet
-    New-ItemProperty -LiteralPath $runKey -Name $runName -Value ('"' + $hogExe + '"') -PropertyType String -Force | Out-Null
-    Write-Host "hog: $hog.exe  (run value $runName)"
+        Add-Type -TypeDefinition $code -OutputAssembly $hogExe -OutputType ConsoleApplication
+        Start-Process -FilePath $hogExe -WindowStyle Hidden | Out-Null
+        if (-not (Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey -Force | Out-Null }   # empty profiles (CI runners) have no Run key yet
+        New-ItemProperty -LiteralPath $runKey -Name $runName -Value ('"' + $hogExe + '"') -PropertyType String -Force | Out-Null
+        Write-Host "hog: $hog.exe  (run value $runName)"
 
-    # ---- the script that runs INSIDE the GUI process
-    $inner = @'
+        # ---- the script that runs INSIDE the GUI process
+        $inner = @'
 $out = '%RESULT%'
-$hog = '%HOG%'; $hogExe = '%HOGEXE%'; $runKey = '%RUNKEY%'; $runName = '%RUNNAME%'; $work = '%WORK%'
+$hog = '%HOG%'; $hogExe = '%HOGEXE%'; $runKey = '%RUNKEY%'; $runName = '%RUNNAME%'; $work = '%WORK%'; $flow = '%LANG%'
 function Log2($s) { Add-Content -LiteralPath $out -Value $s -Encoding UTF8 }
 function Check([string]$name, $cond) { if ($cond) { Log2 "PASS  $name" } else { Log2 "FAIL  $name" } }
 function Wait-Until([scriptblock]$cond, [int]$sec) { $end = (Get-Date).AddSeconds($sec); while ((Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); if (& $cond) { return $true }; Start-Sleep -Milliseconds 150 }; return $false }
 function Idle { Wait-Until { $script:proc -eq $null } 300 }
 function Hog-State { [pscustomobject]@{ Proc = [bool](Get-Process -Name $hog -ErrorAction SilentlyContinue); Exe = (Test-Path $hogExe); Run = [bool](Get-ItemProperty $runKey -Name $runName -ErrorAction SilentlyContinue) } }
 function Only-Hog { foreach ($it in $list.Items) { $it.Checked = ($it.Name -ieq "$hog.exe") }; Refresh-Buttons; $list.Invalidate() }
+$arabic = '[؀-ۿ]'
+$rtlWant = $(if ($flow -eq 'ar') { 'Yes' } else { 'No' })
 
 Log2 '== initial state'
 Check 'scan button enabled' $btnScan.Enabled
 Check 'copy-summary disabled before a scan' (-not $btnCopy.Enabled)
 Check 'findings card hidden before a scan' (-not $find.Visible)
 
+Log2 '== language and direction'
+Check "window language is $flow" ((Get-UiLang) -eq $flow)
+Check 'layout direction follows the language (RightToLeft + mirrored frame)' ($form.RightToLeft -eq $rtlWant -and $form.RightToLeftLayout -eq ($flow -eq 'ar'))
+Check 'controls inherit the direction' ($btnScan.RightToLeft -eq $rtlWant -and $list.RightToLeft -eq $rtlWant -and $info.RightToLeft -eq $rtlWant)
+Check 'the technical log stays left-to-right' ($txtLog.RightToLeft -eq 'No')
+Check 'window title and scan button come from the string table' ($form.Text -eq (Get-Text 'gui.window.title') -and $btnScan.Text -eq (Get-Text 'gui.btn.scan'))
+Check 'the language button names the other language' ($btnLang.Text -eq (Get-Text 'gui.lang.other') -and $btnLang.Enabled)
+Check 'header subtitle is the "sharing is optional" one (forced configured)' ($lblSub.Text -eq (Get-Text 'gui.sub.share'))
+Check 'script of the window matches the language (Arabic only in Arabic mode)' ((($form.Text + $lblTitle.Text + $lblSub.Text + $btnScan.Text + $lblStatus.Text + $info.Title + $info.Message) -match $arabic) -eq ($flow -eq 'ar'))
+
 Log2 '== scan #1'
 $btnScan.PerformClick()
 Check 'scan button disabled while scanning' (-not $btnScan.Enabled)
+Check 'language button disabled while scanning' (-not $btnLang.Enabled)
 Check 'scan finished' (Idle)
 Check 'results card shows the hog as high risk' (@($list.Items | Where-Object { $_.Name -ieq "$hog.exe" -and $_.Level -eq 2 }).Count -eq 1)
 Check 'infobar is Error level' ($info.Level -eq 'Error')
 Check 'report/copy buttons enabled' ($btnReport.Enabled -and $btnCopy.Enabled -and $btnFolder.Enabled)
 Check 'findings card visible' $find.Visible
+$latest = Get-LatestResult
+$planObj = Get-Content -LiteralPath $latest.Plan -Raw -Encoding UTF8 | ConvertFrom-Json
+Check "the scan wrote its plan in $flow (lang field)" ($planObj.lang -eq $flow)
+$texts = @([string]$planObj.verdict.Headline) + @(@($planObj.suspects) | ForEach-Object { @($_.reasons) }) + @(@($planObj.observations) | ForEach-Object { $_.Title; $_.Body })
+Check 'the verdict, the observations and the reasons are in that language' ((($texts -join ' ') -match $arabic) -eq ($flow -eq 'ar'))
+$htmlText = [IO.File]::ReadAllText($latest.Html, [Text.Encoding]::UTF8)
+Check "the report is <html lang=$flow> with the matching direction" ($htmlText -match ('<html lang="{0}" dir="{1}">' -f $flow, $(if ($flow -eq 'ar') { 'rtl' } else { 'ltr' })))
+Check 'the report carries the inert-report marker right after the doctype' ($htmlText -match '(?i)^\s*<!doctype html>\r?\n<!-- ram-doctor-report v\d+\.\d+\.\d+ -->')
+Check 'the report has no unresolved string key or placeholder' ($htmlText -notmatch '\[\[[a-z]+\.[A-Za-z0-9.\-]+\]\]' -and $htmlText -notmatch '@@[A-Z]+@@')
+Check 'the verdict bar shows the plan headline' ($info.Title -eq [string]$planObj.verdict.Headline)
 
 Log2 '== copy summary'
 $btnCopy.PerformClick()
@@ -77,9 +106,31 @@ $btnCopy.PerformClick()
 Check 'toast shown (Success)' ($toast.Visible -and $toast.Level -eq 'Success')
 $clip = ''; try { $clip = [System.Windows.Forms.Clipboard]::GetText() } catch { }
 Check 'clipboard has text' ($clip.Length -gt 20)
+Check 'clipboard summary is in the window language' ($clip -match [regex]::Escape((Get-Text 'sum.title')))
 Check 'clipboard text has no Windows user name' (-not ($clip -match [regex]::Escape($env:USERNAME)))
 Check 'clipboard text has no drive path' (-not ($clip -match '[A-Za-z]:\\'))
 Check 'share preview temp folder removed' (-not (Test-Path (Join-Path $env:TEMP 'RAM-Doctor-share-preview')))
+
+Log2 '== live language switch (no restart, nothing saved)'
+$other = $(if ($flow -eq 'ar') { 'en' } else { 'ar' })
+$rtlOther = $(if ($other -eq 'ar') { 'Yes' } else { 'No' })
+Only-Hog
+$itemsBefore = $list.Items.Count; $checkedBefore = $list.CheckedCount
+$btnLang.PerformClick()
+[System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 500; [System.Windows.Forms.Application]::DoEvents()
+Check "the window switched to $other" ((Get-UiLang) -eq $other)
+Check 'direction switched with it (form, mirrored frame, children)' ($form.RightToLeft -eq $rtlOther -and $form.RightToLeftLayout -eq ($other -eq 'ar') -and $btnScan.RightToLeft -eq $rtlOther -and $list.RightToLeft -eq $rtlOther)
+Check 'static texts switched' ($form.Text -eq (Get-Text 'gui.window.title') -and $btnScan.Text -eq (Get-Text 'gui.btn.scan') -and $btnReport.Text -eq (Get-Text 'gui.btn.report') -and $btnLang.Text -eq (Get-Text 'gui.lang.other'))
+Check 'the status line switched' ($lblStatus.Text -eq (Get-Text 'gui.status.done'))
+Check 'the risk labels in the list switched' (@($list.Items | Where-Object { $_.Level -eq 2 })[0].Risk -eq (Get-Text 'level.high'))
+Check 'the results stayed (same files, same selection)' ($list.Items.Count -eq $itemsBefore -and $list.CheckedCount -eq $checkedBefore -and $find.Visible)
+Check 'the scan text keeps its own language and a note says so' ($info.Title -eq [string]$planObj.verdict.Headline -and $info.Message.Contains((Get-Text 'gui.note.otherlang')))
+Check 'the window still has a handle and the buttons work' ($form.IsHandleCreated -and $btnScan.Enabled -and $btnQ.Enabled)
+$btnLang.PerformClick()
+[System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 500; [System.Windows.Forms.Application]::DoEvents()
+Check "and back to $flow" ((Get-UiLang) -eq $flow -and $form.RightToLeft -eq $rtlWant -and $form.RightToLeftLayout -eq ($flow -eq 'ar'))
+Check 'the note is gone again' (-not $info.Message.Contains((Get-Text 'gui.note.otherlang')))
+Check 'the selection survived the round trip' ($list.CheckedCount -eq $checkedBefore)
 
 Log2 '== quarantine #1'
 Only-Hog
@@ -93,6 +144,7 @@ Check 'hog process stopped' (-not $s.Proc)
 Check 'hog exe moved away' (-not $s.Exe)
 Check 'Run value removed' (-not $s.Run)
 Check 'verdict now Success' ($info.Level -eq 'Success')
+Check 'the verdict bar says "quarantined" in the window language' ($info.Title -eq (Get-Text 'gui.q.done.t'))
 Check 'restore + purge enabled' ($btnRestore.Enabled -and $btnPurge.Enabled)
 
 Log2 '== restore'
@@ -120,7 +172,7 @@ Log2 '== share (dry-run, no network)'
 Check 'share button visible (forced configured)' $btnShare.Visible
 if (-not $exMore.Expanded) { $exMore.Toggle() }   # the account row lives in the collapsed "More" section
 Check 'account row visible (More expanded)' $rowShare.Visible
-Check 'header subtitle mentions optional sharing' ($lblSub.Text -match 'اختيارية')
+Check 'header subtitle mentions optional sharing' ($lblSub.Text -eq (Get-Text 'gui.sub.share'))
 $script:TestProfile = @{ Username = 'tester_01'; Code = '' }
 $btnShare.PerformClick()
 Check 'share task finished' (Idle)
@@ -135,6 +187,7 @@ Check 'reports exist before' (Test-Path $ReportsDir)
 $btnClean.PerformClick()
 Check 'reports folder removed' (-not (Test-Path $ReportsDir))
 Check 'action row hidden' (-not $acts.Visible)
+Check 'verdict bar back to "ready" in the window language' ($info.Title -eq (Get-Text 'gui.info.ready.t'))
 
 Log2 '== leftovers in the GUI private TEMP'
 $left = @()
@@ -148,38 +201,45 @@ Check ('no ramdoctor-* temp files left (found ' + $left.Count + ')') ($left.Coun
 Log2 'DONE'
 $form.Close()
 '@
-    $inner = $inner.Replace('%RESULT%', $result).Replace('%HOG%', $hog).Replace('%HOGEXE%', $hogExe).Replace('%RUNKEY%', $runKey).Replace('%RUNNAME%', $runName).Replace('%WORK%', $work)
-    $testScript = Join-Path $work 'inner.test.ps1'
-    [IO.File]::WriteAllText($testScript, $inner, $utf8)
+        $inner = $inner.Replace('%RESULT%', $result).Replace('%HOG%', $hog).Replace('%HOGEXE%', $hogExe).Replace('%RUNKEY%', $runKey).Replace('%RUNNAME%', $runName).Replace('%WORK%', $work).Replace('%LANG%', $flowLang)
+        $testScript = Join-Path $work 'inner.test.ps1'
+        [IO.File]::WriteAllText($testScript, $inner, $utf8)
 
-    # ---- run the GUI with a private TEMP
-    $env:TEMP = (Join-Path $work 'tmp'); $env:TMP = $env:TEMP
-    $guiArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"{0}"' -f $gui),
-        '-ReportsDir', ('"{0}"' -f (Join-Path $work 'reports')), '-QuarantineDir', ('"{0}"' -f (Join-Path $work 'store')),
-        '-AllowNonAdmin', '-Unattended', '-Theme', 'Light', '-Accent', 'default',
-        '-ShareForceConfigured', '-ShareDryRun', '-ShareProfileDir', ('"{0}"' -f (Join-Path $work 'profile')),
-        '-TestScript', ('"{0}"' -f $testScript))
-    $p = Start-Process -FilePath powershell.exe -ArgumentList $guiArgs -PassThru
-    $env:TEMP = $oldTemp; $env:TMP = $oldTmp
-    Write-Host 'GUI started, running the flow (about 4-5 minutes) ...'
-    if (-not $p.WaitForExit(900000)) { try { $p.Kill() } catch { }; Write-Warning 'GUI test timed out and was killed' }
+        # ---- run the GUI with a private TEMP
+        $env:TEMP = (Join-Path $work 'tmp'); $env:TMP = $env:TEMP
+        $guiArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"{0}"' -f $gui),
+            '-ReportsDir', ('"{0}"' -f (Join-Path $work 'reports')), '-QuarantineDir', ('"{0}"' -f (Join-Path $work 'store')),
+            '-AllowNonAdmin', '-Unattended', '-Theme', 'Light', '-Accent', 'default', '-Lang', $flowLang,
+            '-ShareForceConfigured', '-ShareDryRun', '-ShareProfileDir', ('"{0}"' -f (Join-Path $work 'profile')),
+            '-TestScript', ('"{0}"' -f $testScript))
+        $p = Start-Process -FilePath powershell.exe -ArgumentList $guiArgs -PassThru
+        $env:TEMP = $oldTemp; $env:TMP = $oldTmp
+        Write-Host 'GUI started, running the flow (about 4-5 minutes) ...'
+        if (-not $p.WaitForExit(900000)) { try { $p.Kill() } catch { }; Write-Warning 'GUI test timed out and was killed' }
 
-    # ---- report
-    Write-Host ''
-    if (Test-Path $result) { Get-Content $result -Encoding UTF8 | ForEach-Object { if ($_ -match '^FAIL') { Write-Host $_ -ForegroundColor Red } elseif ($_ -match '^PASS') { Write-Host $_ -ForegroundColor Green } else { Write-Host $_ } } }
-    else { Write-Host 'no result file produced' -ForegroundColor Red }
-    if (Test-Path ($testScript + '.error.txt')) { Write-Host '--- test script error ---' -ForegroundColor Red; Get-Content ($testScript + '.error.txt') }
-    $lines = if (Test-Path $result) { @(Get-Content $result -Encoding UTF8) } else { @() }
-    $fail = @($lines | Where-Object { $_ -match '^FAIL' }).Count; $pass = @($lines | Where-Object { $_ -match '^PASS' }).Count
-    $done = ($lines -contains 'DONE')
-    Write-Host ("`n{0} passed, {1} failed{2}" -f $pass, $fail, $(if (-not $done) { ', flow did NOT finish' } else { '' }))
-    $exit = $(if ($fail -eq 0 -and $done) { 0 } else { 1 })
+        # ---- report
+        Write-Host ''
+        if (Test-Path $result) { Get-Content $result -Encoding UTF8 | ForEach-Object { if ($_ -match '^FAIL') { Write-Host $_ -ForegroundColor Red } elseif ($_ -match '^PASS') { Write-Host $_ -ForegroundColor Green } else { Write-Host $_ } } }
+        else { Write-Host 'no result file produced' -ForegroundColor Red }
+        if (Test-Path ($testScript + '.error.txt')) { Write-Host '--- test script error ---' -ForegroundColor Red; Get-Content ($testScript + '.error.txt') }
+        $lines = if (Test-Path $result) { @(Get-Content $result -Encoding UTF8) } else { @() }
+        $fail = @($lines | Where-Object { $_ -match '^FAIL' }).Count; $pass = @($lines | Where-Object { $_ -match '^PASS' }).Count
+        $done = ($lines -contains 'DONE')
+        Write-Host ("`n[{0}] {1} passed, {2} failed{3}" -f $flowLang, $pass, $fail, $(if (-not $done) { ', flow did NOT finish' } else { '' }))
+        $exit = $(if ($fail -eq 0 -and $done) { 0 } else { 1 })
+    }
+    finally {
+        $env:TEMP = $oldTemp; $env:TMP = $oldTmp
+        Get-Process -Name $hog -ErrorAction SilentlyContinue | Stop-Process -Force
+        Remove-ItemProperty -LiteralPath $runKey -Name $runName -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+        if (-not $KeepWork) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    return $exit
 }
-finally {
-    $env:TEMP = $oldTemp; $env:TMP = $oldTmp
-    Get-Process -Name $hog -ErrorAction SilentlyContinue | Stop-Process -Force
-    Remove-ItemProperty -LiteralPath $runKey -Name $runName -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
-    if (-not $KeepWork) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
-}
-exit $exit
+
+$langs = $(if ($Lang -eq 'both') { @('en', 'ar') } else { @($Lang) })
+$worst = 0
+foreach ($l in $langs) { $r = @(Invoke-Flow $l) | Select-Object -Last 1; if ($r -ne 0) { $worst = 1 } }
+Write-Host ("`nFlow test: {0}" -f $(if ($worst -eq 0) { 'ALL PASSED (' + ($langs -join ', ') + ')' } else { 'FAILED' })) -ForegroundColor $(if ($worst -eq 0) { 'Green' } else { 'Red' })
+exit $worst
