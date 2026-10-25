@@ -352,7 +352,8 @@ function Get-PoolSnapshot {
     try {
         $rows = [RamDoc.Native]::GetPoolTags()
         if ($rows.Count -eq 0) { return $null }
-        $h = @{}
+        # pool tags are case-sensitive ('ConT' is not 'cont'): an ordinary @{} would merge different tags
+        $h = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
         foreach ($r in $rows) {
             if ($h.ContainsKey($r.Tag)) { $h[$r.Tag].NonPagedUsed += $r.NonPagedUsed; $h[$r.Tag].PagedUsed += $r.PagedUsed }
             else { $h[$r.Tag] = $r }
@@ -361,14 +362,141 @@ function Get-PoolSnapshot {
     } catch { return $null }
 }
 
-# pool tag -> string-table key of its description (lib\Strings.ps1); the text is looked up in the scan language
-$KnownTagKeys = @{
-    'File' = 'tag.file'; 'MmCa' = 'tag.mmca'; 'Thre' = 'tag.thre'; 'Proc' = 'tag.proc'; 'Toke' = 'tag.toke'; 'ALPC' = 'tag.alpc'
-    'Even' = 'tag.even'; 'EtwB' = 'tag.etwb'; 'Irp ' = 'tag.irp'; 'Mdl ' = 'tag.mdl'; 'Cont' = 'tag.cont'; 'NVRM' = 'tag.nvrm'
-    'smNp' = 'tag.store'; 'smCB' = 'tag.store'; 'smBt' = 'tag.store'
-}
-$KnownTags = @{}
+# pool tag -> string-table key of its description (lib\Strings.ps1); the text is looked up in the scan language.
+# Tags are case-sensitive, so both tables compare ordinally ('ConT' and 'Cont' are listed separately on purpose).
+$KnownTagKeys = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+foreach ($pair in @(
+        @('File', 'tag.file'), @('MmCa', 'tag.mmca'), @('Thre', 'tag.thre'), @('Proc', 'tag.proc'), @('Toke', 'tag.toke'), @('ALPC', 'tag.alpc'),
+        @('Even', 'tag.even'), @('EtwB', 'tag.etwb'), @('Irp ', 'tag.irp'), @('Mdl ', 'tag.mdl'), @('ConT', 'tag.cont'), @('Cont', 'tag.cont'),
+        @('NVRM', 'tag.nvrm'), @('smNp', 'tag.store'), @('smCB', 'tag.store'), @('smBt', 'tag.store'))) { $KnownTagKeys[$pair[0]] = $pair[1] }
+$KnownTags = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
 foreach ($tagName in $KnownTagKeys.Keys) { $KnownTags[$tagName] = Get-Text $KnownTagKeys[$tagName] }
+# Contiguous physical memory of drivers (MmAllocateContiguousMemory*): Windows takes these pages straight from the physical
+# page lists, NOT from the non-paged pool, and only RECORDS them in the pool tag table (ExInsertPoolTag) under 'ConT'
+# (Windows 10/11; 'Cont' in older kernels, and Windows 11 still shows a few MB of multi-page blocks under 'Cont'). They are
+# therefore missing from Pool Nonpaged Bytes and from Task Manager. Get-DriverReservedBytes checks this against the counter,
+# so a tag that does sit inside the pool on some build is not counted twice. See docs\how-detection-works.md. (The in-pool
+# path of the same API is tagged 'MmCm' and IS counted in the pool, so it is not listed here.)
+$ContigTags = @('ConT', 'Cont')
+
+# ---------------------------------------------------------------- memory breakdown (pure functions: tests\Heuristics.Tests.ps1)
+# Driver-reserved memory = the contiguous allocations of $ContigTags that are NOT inside the Pool Nonpaged Bytes counter.
+# The documented case (Windows Research Kernel: MiAllocateContiguousMemory takes the pages from the physical page lists and
+# then calls ExInsertPoolTag) is that none of them is inside. Check on this PC: when the OTHER non-paged tags already explain
+# at least half of the counter, at most (counter - others) of the contiguous bytes could hide in it, so they count in full.
+# Otherwise only the part the counter provably cannot hold (others + contiguous - counter) counts, so a Windows build that
+# did put them inside the pool is never counted twice by much.
+function Get-DriverReservedBytes {
+    param([double]$ContigBytes, [double]$OtherNonPagedTagBytes, [double]$NonPagedCounter)
+    if ($ContigBytes -le 0) { return 0.0 }
+    if ($OtherNonPagedTagBytes -ge 0.5 * $NonPagedCounter) { return [double]$ContigBytes }
+    return [math]::Max(0.0, [math]::Min([double]$ContigBytes, $OtherNonPagedTagBytes + $ContigBytes - $NonPagedCounter))
+}
+
+# Where the memory in use is, in parts that add up to Used. Task Manager's Memory column shows the private working sets
+# only; everything else is "hidden" from it. Each part takes at most what is left (in this order), so sampling noise never
+# makes the parts add up to more than the memory in use:
+#   Kernel       non-paged pool + paged pool in RAM
+#   System       system file cache in RAM + pageable driver code in RAM + modified page list
+#   Drivers      driver-reserved contiguous memory (Get-DriverReservedBytes)
+#   Shared       what is left, at most SharedSum = sum over processes of (Working Set - Private Working Set). That sum
+#                counts a page once for EVERY process that maps it, so it is only an upper bound: Shared is an ESTIMATE
+#                (it also holds small kernel structures that have no counter, such as page tables and kernel stacks)
+#   Unexplained  what is left even beyond that upper bound: driver-locked pages the tag table does not record, AWE, a RAM
+#                disk, a hidden process ...
+# Unattributed (the corrected "not attributed to any process") = Drivers + Unexplained: outside every working set and
+# outside the kernel pool and cache counters. The old formula (Used - sum of working sets - non-paged - modified) let the
+# double-counted shared working sets cancel the driver reservations out; here they are measured on their own.
+function Get-MemoryBreakdown {
+    param([double]$Used, [double]$Private, [double]$SharedSum, [double]$NonPaged, [double]$PagedResident, [double]$CacheResident,
+        [double]$DriverResident, [double]$Modified, [double]$DriverReserved)
+    $left = [math]::Max(0.0, $Used - [math]::Max(0.0, $Private))
+    $hidden = $left
+    $kernel = [math]::Min($left, [math]::Max(0.0, $NonPaged + $PagedResident)); $left -= $kernel
+    $system = [math]::Min($left, [math]::Max(0.0, $CacheResident + $DriverResident + $Modified)); $left -= $system
+    $drivers = [math]::Min($left, [math]::Max(0.0, $DriverReserved)); $left -= $drivers
+    $sharedPart = [math]::Min($left, [math]::Max(0.0, $SharedSum)); $left -= $sharedPart
+    return [pscustomobject]@{ Hidden = $hidden; Kernel = $kernel; System = $system; Drivers = $drivers; Shared = $sharedPart; Unexplained = $left; Unattributed = $drivers + $left }
+}
+
+# Memory reserved by drivers: medium from 512 MB (it stays well below that on ordinary PCs: a few contiguous DMA buffers),
+# high from 2 GB only when it also grew by 30 MB or more during the window (a stable reservation is a driver setting or a
+# second graphics adapter, not a leak; the 30 MB matches the kernel-pool leak rule). Byte thresholds follow -ThresholdScale.
+function Get-DriverReservedLevel {
+    param([double]$Bytes, [double]$GrowthBytes = 0, [double]$Scale = 1.0)
+    if ($Bytes -ge $Scale * 2GB -and $GrowthBytes -ge 30MB) { return 'high' }
+    if ($Bytes -ge $Scale * 512MB) { return 'med' }
+    return ''
+}
+
+# Candidates for driver-reserved memory. The tag is written by the Windows memory manager on behalf of the driver, so it can
+# never name the driver: these are only the usual suspects - the display adapters (their drivers reserve DMA / frame
+# memory) and running graphics, capture, virtual-display or virtual-machine drivers that are not Microsoft's own.
+# $Drivers: Name, Display, Path, Company (file version info) and Trust. Graphics drivers are WHQL-signed by Microsoft, so
+# the signature cannot tell them apart from Windows' inbox drivers; the company in the file can (when it was readable).
+$DisplayDriverRx = '(?i)amdkmd|atikm|nvlddmkm|igdkmd|igfx|iigd|graphic|display|video|\bgpu|capture|parsec|virtual|vdd|spacedesk|displaylink|elgato|avermedia|magewell|vbox|vmx86'
+function Get-DriverReservedCandidates {
+    param([object[]]$Drivers = @(), [string[]]$Adapters = @(), [int]$Max = 6)
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($a in $Adapters) {
+        # "(TM)" / "(R)" inside a name only scrambles the text in a right-to-left report
+        $nm = ((([string]$a) -replace '\((TM|R|C)\)|[\u00AE\u2122]', '') -replace '\s{2,}', ' ').Trim()
+        if ($nm -and $nm -notmatch '^(?i)microsoft\b' -and -not $out.Contains($nm)) { $out.Add($nm) }
+    }
+    foreach ($d in $Drivers) {
+        if (-not $d) { continue }
+        if ($d.Company) { if ([string]$d.Company -match '^(?i)microsoft\b') { continue } }
+        elseif ($d.Trust -in 'OS', 'MS') { continue }
+        $file = if ($d.Path) { [IO.Path]::GetFileName([string]$d.Path) } else { '' }
+        if (("{0} {1} {2}" -f $d.Name, $d.Display, $file) -notmatch $DisplayDriverRx) { continue }
+        $label = if ($file) { $file } else { [string]$d.Name }
+        if ($d.Display -and [string]$d.Display -ne [string]$d.Name) { $label += ' (' + [string]$d.Display + ')' }
+        if (-not $out.Contains($label)) { $out.Add($label) }
+    }
+    return @($out | Select-Object -First $Max)
+}
+
+# "Where is my memory?" as a headline: the two biggest parts of what Task Manager does not show ($Breakdown = the GB fields
+# of the plan's memory object). Empty when less than 1 GB is hidden (then the classic headlines are clearer). -NoLeak:$false
+# leaves out "No leak found" (a program is growing right now, so that cannot be claimed).
+function Get-WhereHeadline {
+    param($Breakdown, [bool]$NoLeak = $true)
+    if (-not $Breakdown -or [double]$Breakdown.HiddenGB -lt 1) { return '' }
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $parts = @(
+        @{ Key = 'verdict.part.shared'; GB = [double]$Breakdown.SharedUniqueGB; Order = 0 },
+        @{ Key = 'verdict.part.drivers'; GB = [double]$Breakdown.DriverReservedGB; Order = 1 },
+        @{ Key = 'verdict.part.kernel'; GB = [double]$Breakdown.KernelPoolsGB; Order = 2 },
+        @{ Key = 'verdict.part.system'; GB = [double]$Breakdown.SystemOtherGB; Order = 3 },
+        @{ Key = 'verdict.part.unexpl'; GB = [double]$Breakdown.UnexplainedGB; Order = 4 }
+    ) | Sort-Object @{ Expression = { $_.GB }; Descending = $true }, @{ Expression = { $_.Order }; Descending = $false }
+    $one = $parts[0]; $two = $parts[1]
+    $hid = ([double]$Breakdown.HiddenGB).ToString('0.#', $inv)
+    $keys = $(if ($NoLeak) { @('verdict.where', 'verdict.where.one') } else { @('verdict.where.part', 'verdict.where.part.one') })
+    if ($two.GB -lt 0.1) { return (Get-Text $keys[1] $hid (Get-Text $one.Key) ($one.GB.ToString('0.#', $inv))) }
+    return (Get-Text $keys[0] $hid (Get-Text $one.Key) ($one.GB.ToString('0.#', $inv)) (Get-Text $two.Key) ($two.GB.ToString('0.#', $inv)))
+}
+
+# The verdict headline, most urgent first. The breakdown headline answers the user's real question ("where is my memory?")
+# whenever nothing worse is going on: no urgent or kernel finding, no growing driver reservation or unexplained memory and
+# no high observation (an active pool leak is one). It says "No leak found" only when no program is growing right now.
+function Get-VerdictHeadline {
+    param([bool]$Urgent, [bool]$KernelPool, [bool]$DriverReservedLeak, [double]$DriverReservedGB = 0, [bool]$Unexplained,
+        [bool]$Growing, $Breakdown, [int]$MaxLevel = 0)
+    if ($Urgent) { return (Get-Text 'verdict.urgent') }
+    if ($KernelPool) { return (Get-Text 'verdict.driver') }
+    if ($DriverReservedLeak) { return (Get-Text 'verdict.drvres' (([double]$DriverReservedGB).ToString('0.#', [Globalization.CultureInfo]::InvariantCulture))) }
+    if ($Unexplained) { return (Get-Text 'verdict.unacc') }
+    if ($MaxLevel -lt 3) {
+        $where = Get-WhereHeadline $Breakdown -NoLeak (-not $Growing)
+        if ($where) {
+            if ($MaxLevel -ge 2) { $where += Get-Text 'verdict.where.more' }
+            return $where
+        }
+    }
+    if ($MaxLevel -ge 2) { return (Get-Text 'verdict.medium') }
+    return (Get-Text 'verdict.ok')
+}
 
 # ---------------------------------------------------------------- snapshot #1
 Phase 'start'
@@ -734,8 +862,47 @@ $used = $mem2.TotalBytes - $mem2.AvailBytes
 $allProc = @($Items | Where-Object Kind -eq 'Process')
 $sumPriv = ($allProc | Measure-Object PrivWS -Sum).Sum
 $sumWS = ($allProc | Measure-Object WS -Sum).Sum
-$unaccounted = [math]::Max(0.0, [double]($used - $sumWS - $mem2.NonPaged - $mem2.ModifiedBytes))
-$shared = [math]::Max(0.0, [double]($sumWS - $sumPriv))
+$unaccounted = [math]::Max(0.0, [double]($used - $sumWS - $mem2.NonPaged - $mem2.ModifiedBytes))   # 1.0-1.1 formula, kept for older readers
+$shared = [math]::Max(0.0, [double]($sumWS - $sumPriv))   # summed over processes: a page mapped by 10 processes counts 10 times
+
+# top consumers (per process and per program); "shared" per program = its working sets minus their private part
+$topProcs = @($allProc | Sort-Object PrivWS -Descending | Select-Object -First 15 | ForEach-Object {
+        [pscustomobject]@{ pid = $_.Pid; name = $_.Name; privMB = (ToMB $_.PrivWS); wsMB = (ToMB $_.WS); commitMB = (ToMB $_.PrivBytes); handles = $_.Handles; growthMB = (ToMB $_.Growth); trust = $_.Sig.Trust; publisher = $_.Sig.Publisher; path = $_.Path }
+    })
+$programs = @($allProc | Group-Object { $_.Name.ToLowerInvariant() } | ForEach-Object {
+        $pw = [double]($_.Group | Measure-Object PrivWS -Sum).Sum
+        $pws = [double]($_.Group | Measure-Object WS -Sum).Sum
+        $pb = ($_.Group | Measure-Object PrivBytes -Sum).Sum
+        $f = $_.Group | Where-Object { $_.Sig.Trust -ne 'Unknown' } | Select-Object -First 1   # prefer an instance whose path we could read
+        if (-not $f) { $f = $_.Group | Select-Object -First 1 }
+        [pscustomobject]@{ name = $f.Name; count = $_.Count; privMB = (ToMB $pw); sharedMB = (ToMB ([math]::Max(0.0, $pws - $pw))); commitMB = (ToMB $pb); trust = $f.Sig.Trust; publisher = $f.Sig.Publisher }
+    })
+$byProgram = @($programs | Sort-Object privMB -Descending | Select-Object -First 12)
+$topShared = @($programs | Where-Object { $_.sharedMB -gt 0 } | Sort-Object sharedMB -Descending | Select-Object -First 3 | ForEach-Object { [pscustomobject]@{ name = $_.name; count = $_.count; sharedMB = $_.sharedMB } })
+
+# memory reserved by drivers (contiguous allocations recorded in the pool tag table, see Get-DriverReservedBytes)
+$drvResBytes = 0.0; $drvResGrowth = 0.0
+if ($pool2) {
+    $contig2 = 0.0; $otherNon2 = 0.0
+    foreach ($r in $pool2.Values) { if ($ContigTags -ccontains [string]$r.Tag) { $contig2 += [double]$r.NonPagedUsed } else { $otherNon2 += [double]$r.NonPagedUsed } }
+    $drvResBytes = Get-DriverReservedBytes -ContigBytes $contig2 -OtherNonPagedTagBytes $otherNon2 -NonPagedCounter ([double]$mem2.NonPaged)
+    if ($pool1) {
+        $contig1 = 0.0
+        foreach ($r in $pool1.Values) { if ($ContigTags -ccontains [string]$r.Tag) { $contig1 += [double]$r.NonPagedUsed } }
+        $drvResGrowth = $contig2 - $contig1
+    }
+}
+# the company is read only for the few drivers whose name looks like graphics / capture / virtual display
+$drvForCands = @($Items | Where-Object { $_.Kind -eq 'Driver' } | ForEach-Object {
+        $file = if ($_.Path) { [IO.Path]::GetFileName($_.Path) } else { '' }
+        if (("{0} {1} {2}" -f $_.Name, $_.Display, $file) -match $DisplayDriverRx) {
+            $co = ''; try { $co = [string](Get-Item -LiteralPath $_.Path -Force -ErrorAction Stop).VersionInfo.CompanyName } catch { }
+            [pscustomobject]@{ Name = $_.Name; Display = $_.Display; Path = $_.Path; Company = $co; Trust = $_.Sig.Trust }
+        }
+    })
+$drvResCands = @(Get-DriverReservedCandidates -Drivers $drvForCands -Adapters $gpus)
+$bd = Get-MemoryBreakdown -Used ([double]$used) -Private ([double]$sumPriv) -SharedSum $shared -NonPaged ([double]$mem2.NonPaged) -PagedResident ([double]$mem2.PagedResident) `
+    -CacheResident ([double]$mem2.CacheResident) -DriverResident ([double]$mem2.DriverResident) -Modified ([double]$mem2.ModifiedBytes) -DriverReserved $drvResBytes
 $memory = [pscustomobject]@{
     TotalGB = ToGB $mem2.TotalBytes; UsedGB = ToGB $used; AvailGB = ToGB $mem2.AvailBytes
     FreeGB = ToGB $mem2.FreeBytes; StandbyGB = ToGB $mem2.StandbyBytes; ModifiedGB = ToGB $mem2.ModifiedBytes
@@ -746,19 +913,12 @@ $memory = [pscustomobject]@{
     WindowSec = [math]::Round($windowSec, 0)
     NonPagedGrowthMB = ToMB ($mem2.NonPaged - $mem1.NonPaged); PagedGrowthMB = ToMB ($mem2.Paged - $mem1.Paged)
     CommitGrowthMB = ToMB ($mem2.Committed - $mem1.Committed); UsedGrowthMB = ToMB (($mem2.TotalBytes - $mem2.AvailBytes) - ($mem1.TotalBytes - $mem1.AvailBytes))
+    # additive fields (added after 1.1.2): where the memory that Task Manager does not show is (Get-MemoryBreakdown)
+    HiddenGB = ToGB $bd.Hidden; SharedUniqueGB = ToGB $bd.Shared; DriverReservedGB = ToGB $bd.Drivers; DriverReservedKnown = [bool]$pool2
+    DriverReservedGrowthMB = ToMB $drvResGrowth; KernelPoolsGB = ToGB $bd.Kernel; SystemOtherGB = ToGB $bd.System
+    UnexplainedGB = ToGB $bd.Unexplained; UnattributedGB = ToGB $bd.Unattributed
+    TopShared = @($topShared); DriverReservedCandidates = @($drvResCands)
 }
-
-# top consumers (per process and per program)
-$topProcs = @($allProc | Sort-Object PrivWS -Descending | Select-Object -First 15 | ForEach-Object {
-        [pscustomobject]@{ pid = $_.Pid; name = $_.Name; privMB = (ToMB $_.PrivWS); wsMB = (ToMB $_.WS); commitMB = (ToMB $_.PrivBytes); handles = $_.Handles; growthMB = (ToMB $_.Growth); trust = $_.Sig.Trust; publisher = $_.Sig.Publisher; path = $_.Path }
-    })
-$byProgram = @($allProc | Group-Object { $_.Name.ToLowerInvariant() } | ForEach-Object {
-        $pw = ($_.Group | Measure-Object PrivWS -Sum).Sum
-        $pb = ($_.Group | Measure-Object PrivBytes -Sum).Sum
-        $f = $_.Group | Where-Object { $_.Sig.Trust -ne 'Unknown' } | Select-Object -First 1   # prefer an instance whose path we could read
-        if (-not $f) { $f = $_.Group | Select-Object -First 1 }
-        [pscustomobject]@{ name = $f.Name; count = $_.Count; privMB = (ToMB $pw); commitMB = (ToMB $pb); trust = $f.Sig.Trust; publisher = $f.Sig.Publisher }
-    } | Sort-Object privMB -Descending | Select-Object -First 12)
 $topGrowers = @($allProc | Where-Object { $_.Growth -ge 20MB } | Sort-Object Growth -Descending | Select-Object -First 8 | ForEach-Object {
         [pscustomobject]@{ pid = $_.Pid; name = $_.Name; growthMB = (ToMB $_.Growth); commitMB = (ToMB $_.PrivBytes); trust = $_.Sig.Trust }
     })
@@ -779,7 +939,8 @@ Phase 'after correlation'
             } | Where-Object { $_.Delta -ge 1MB } | Sort-Object Delta -Descending | Select-Object -First 6)
     }
     $wanted = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($r in ($topNon + $topPg + ($growNon | ForEach-Object { $_.Row }))) { if ($r.Printable) { [void]$wanted.Add($r.Tag) } }
+    # the contiguous tags are written by the memory manager for whichever driver asked, so a byte search would only find chance matches
+    foreach ($r in ($topNon + $topPg + ($growNon | ForEach-Object { $_.Row }))) { if ($r.Printable -and $ContigTags -cnotcontains [string]$r.Tag) { [void]$wanted.Add($r.Tag) } }
     $driverFiles = @($Items | Where-Object { $_.Kind -eq 'Driver' -and $_.Path -and (Test-Path -LiteralPath $_.Path) } | ForEach-Object { $_.Path } | Select-Object -Unique)
     $tagMap = @{}
     if ($NativeOk -and $driverFiles.Count -gt 0) {
@@ -892,10 +1053,22 @@ if ($mem2.NonPaged -ge $Th.NppHigh) {
 if ($mem2.Paged -ge $Th.PagedHigh) {
     Add-Obs 'high' (Get-Text 'obs.paged.t') (Get-Text 'obs.paged.b' (Num (ToGB $mem2.Paged)))
 }
-if ($unaccounted -ge $Th.UnaccHigh) {
-    Add-Obs 'high' (Get-Text 'obs.unacc.high.t') (Get-Text 'obs.unacc.high.b' (Num (ToGB $unaccounted)))
-} elseif ($unaccounted -ge $Th.UnaccMed) {
-    Add-Obs 'med' (Get-Text 'obs.unacc.med.t') (Get-Text 'obs.unacc.med.b' (Num (ToGB $unaccounted)))
+# memory reserved by a hardware driver (invisible in Task Manager and in the pool counters), before the security findings
+$drvResLevel = Get-DriverReservedLevel -Bytes $drvResBytes -GrowthBytes $drvResGrowth -Scale $ThresholdScale
+if ($drvResLevel) {
+    $candText = if ($drvResCands.Count -gt 0) { $drvResCands -join (Get-Text 'sep.list') } else { Get-Text 'obs.drvres.nocand' }
+    $drvBody = Get-Text 'obs.drvres.b' (Num (ToGB $drvResBytes)) $candText
+    if ($drvResGrowth -ge 30MB) { $drvBody += ' ' + (Get-Text 'obs.drvres.grow' (ToMB $drvResGrowth) $memory.WindowSec) }
+    $drvTitle = if ($drvResLevel -eq 'high') { Get-Text 'obs.drvres.high.t' } else { Get-Text 'obs.drvres.t' (Num (ToGB $drvResBytes)) }
+    Add-Obs $drvResLevel $drvTitle $drvBody
+}
+# memory that nothing explains: the corrected remainder (Get-MemoryBreakdown), which no longer counts the kernel pools, the
+# cache or the driver reservations (they have counters / observations of their own) and no longer hides behind shared pages
+$unexplained = [double]$bd.Unexplained
+if ($unexplained -ge $Th.UnaccHigh) {
+    Add-Obs 'high' (Get-Text 'obs.unacc.high.t') (Get-Text 'obs.unacc.high.b' (Num (ToGB $unexplained)))
+} elseif ($unexplained -ge $Th.UnaccMed) {
+    Add-Obs 'med' (Get-Text 'obs.unacc.med.t') (Get-Text 'obs.unacc.med.b' (Num (ToGB $unexplained)))
 }
 if ($allProc.Count -gt 0 -and $byProgram.Count -gt 0) {
     $topP = $byProgram[0]
@@ -943,18 +1116,18 @@ if ($mem2.StandbyBytes -ge 0.25 * $totalB) {
 
 $levels = @{ high = 3; med = 2; low = 1; info = 0 }
 $maxLevel = 0; foreach ($o in $obs) { if ($levels[$o.Level] -gt $maxLevel) { $maxLevel = $levels[$o.Level] } }
-$headline = ''
-if ($hiddenLive.Count -gt 0 -or $highS.Count -gt 0) { $headline = Get-Text 'verdict.urgent' }
-elseif ($mem2.NonPaged -ge $Th.NppMed -or $mem2.Paged -ge $Th.PagedHigh) { $headline = Get-Text 'verdict.driver' }
-elseif ($unaccounted -ge $Th.UnaccMed) { $headline = Get-Text 'verdict.unacc' }
-elseif ($maxLevel -ge 2) { $headline = Get-Text 'verdict.medium' }
-else { $headline = Get-Text 'verdict.ok' }
+$headline = Get-VerdictHeadline -Urgent ($hiddenLive.Count -gt 0 -or $highS.Count -gt 0) -KernelPool ($mem2.NonPaged -ge $Th.NppMed -or $mem2.Paged -ge $Th.PagedHigh) `
+    -DriverReservedLeak ($drvResLevel -eq 'high') -DriverReservedGB (ToGB $drvResBytes) -Unexplained ($unexplained -ge $Th.UnaccMed) `
+    -Growing ($topGrowers.Count -gt 0 -and $topGrowers[0].growthMB -ge 100) -Breakdown $memory -MaxLevel $maxLevel
 $verdict = [pscustomobject]@{ Level = $(@('ok', 'low', 'med', 'high')[$maxLevel]); Headline = $headline }
+# most severe first; findings of the same level keep the order they were added in (memory explanations before security ones)
+$obsSorted = @(for ($i = 0; $i -lt $obs.Count; $i++) { [pscustomobject]@{ O = $obs[$i]; I = $i } }) |
+    Sort-Object @{ Expression = { -$levels[$_.O.Level] } }, @{ Expression = { $_.I } } | ForEach-Object { $_.O }
 
 # ---------------------------------------------------------------- write outputs
 $data = [pscustomobject]@{
     Tool = 'RAM-Doctor'; Version = $ToolVersion; Lang = (Get-UiLang); Created = IsoDate (Get-Date); Sys = $sys; Memory = $memory; Verdict = $verdict
-    Observations = @($obs | Sort-Object { -$levels[$_.Level] }); TopProcesses = $topProcs; ByProgram = $byProgram; TopGrowers = $topGrowers
+    Observations = @($obsSorted); TopProcesses = $topProcs; ByProgram = $byProgram; TopGrowers = $topGrowers
     PoolNonPaged = $poolNon; PoolPaged = $poolPaged; PoolGrowing = $poolGrow; PoolAvailable = [bool]$pool2
     Suspects = @($suspectOut); Drivers3p = $drivers3p; Hidden = @($hidden); Defender = $defender; Exhaustion = $exhaustion
     Warnings = @($Warnings); ItemCounts = [pscustomobject]@{
@@ -1019,7 +1192,8 @@ if ($planOk) { try { Remove-OldScans -Dir $OutDir -HostName $HostName -CurrentSt
 Exit-StoreLock $outLock
 Write-Host ''
 Write-Host '================ RESULT ================' -ForegroundColor Cyan
-Write-Host ("Memory: used {0} GB of {1} GB | NonPaged {2} GB | Paged {3} GB | unaccounted {4} GB" -f $memory.UsedGB, $memory.TotalGB, $memory.NonPagedGB, $memory.PagedGB, $memory.UnaccountedGB)
+Write-Host ("Memory: used {0} GB of {1} GB | NonPaged {2} GB | Paged {3} GB | not attributed {4} GB (old formula {5} GB)" -f $memory.UsedGB, $memory.TotalGB, $memory.NonPagedGB, $memory.PagedGB, $memory.UnattributedGB, $memory.UnaccountedGB)
+Write-Host ("Not shown by Task Manager: {0} GB = shared (estimate) {1} + driver-reserved {2}{3} + kernel pools {4} + cache/other {5} + unexplained {6} GB" -f $memory.HiddenGB, $memory.SharedUniqueGB, $memory.DriverReservedGB, $(if ($memory.DriverReservedKnown) { '' } else { ' (not measured)' }), $memory.KernelPoolsGB, $memory.SystemOtherGB, $memory.UnexplainedGB)
 Write-Host ("Suspects: {0} high, {1} medium, {2} low | hidden live processes: {3}" -f $highS.Count, $medS.Count, @($suspectOut | Where-Object { $_.risk -eq 'Low' }).Count, $hiddenLive.Count)
 Write-Host "Report : $htmlPath"
 Write-Host "Plan   : $planPath   (read by the Quarantine step; nothing has been changed)"

@@ -579,6 +579,9 @@ try {
         elseif ($kernel.Count -gt 0) { $hint = Get-Text 'gui.hint.kernel' }
         elseif ($obs.Count -gt 0) { $hint = Get-Text 'gui.hint.obs' }
         else { $hint = Get-Text 'gui.hint.none' }
+        # the numbers behind the headline: where the memory that Task Manager does not show is (plans after 1.1.2)
+        $hidLines = @(Get-HiddenMemoryLines -Memory $plan.memory)
+        if ($hidLines.Count -gt 0) { $hint += "`n" + $hidLines[0] }
         if ($obs.Count -gt 0) { $hint += "`n" + (Get-Text 'gui.hint.top') + ((@($obs | Select-Object -First 3) | ForEach-Object { $_.Title }) -join '   •   ') }
         if ($lowCount -gt 0) {
             $lowText = switch ($lowCount) { 1 { Get-Text 'gui.low.1' } 2 { Get-Text 'gui.low.2' } default { Get-Text 'gui.low.n' $lowCount } }
@@ -629,6 +632,7 @@ try {
         $L.Add((Get-Text 'gui.sum.result') + [string]$plan.verdict.Headline)
         if ($plan.memory) {
             $L.Add((Get-Text 'gui.sum.mem' $plan.memory.UsedGB $plan.memory.TotalGB $plan.memory.NonPagedGB $plan.memory.PagedGB))
+            foreach ($x in @(Get-HiddenMemoryLines -Memory $plan.memory)) { $L.Add($x) }   # where the memory Task Manager does not show is (none for older plans)
         }
         $o = @($plan.observations | Where-Object { $_.Level -in 'high', 'med' } | Select-Object -First 4)
         foreach ($x in $o) { $L.Add('• ' + [string]$x.Title) }
