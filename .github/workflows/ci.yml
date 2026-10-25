@@ -164,3 +164,10 @@ jobs:
         run: |
           & .\tests\gui\Flow.Test.ps1
           exit $LASTEXITCODE
+
+      - name: tests/gui/LangSwitch.Test.ps1 (the window survives a language switch)
+        if: always() && hashFiles('tests/gui/LangSwitch.Test.ps1') != ''
+        shell: powershell
+        run: |
+          & .\tests\gui\LangSwitch.Test.ps1
+          exit $LASTEXITCODE
